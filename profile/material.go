@@ -52,6 +52,7 @@ func (p *parser) setMaterial(m *material) error {
 }
 
 func (p *parser) loadTLS() error {
+	passwordOnly := p.opts.AllowPasswordOnly && p.auth != nil && p.cert == nil && p.key == nil
 	for _, required := range []struct {
 		name string
 		ref  *material
@@ -62,6 +63,9 @@ func (p *parser) loadTLS() error {
 		{"key", p.key, &p.cfg.TLS.PrivateKey},
 	} {
 		if required.ref == nil {
+			if passwordOnly && required.name != "ca" {
+				continue
+			}
 			return (location{name: required.name}).diagnostic(CodeRequired)
 		}
 		raw, err := p.load(required.ref)
@@ -78,11 +82,14 @@ func (p *parser) loadTLS() error {
 		*required.dest = raw
 	}
 	if len(p.cfg.TLS.CA)+len(p.cfg.TLS.Certificate)+len(p.cfg.TLS.PrivateKey) > maxProfile {
-		return p.key.loc.diagnostic(CodeLimit)
+		return p.ca.loc.diagnostic(CodeLimit)
 	}
-	if _, err := tls.X509KeyPair(p.cfg.TLS.Certificate, p.cfg.TLS.PrivateKey); err != nil {
-		return p.key.loc.diagnostic(CodeMaterial)
+	if !passwordOnly {
+		if _, err := tls.X509KeyPair(p.cfg.TLS.Certificate, p.cfg.TLS.PrivateKey); err != nil {
+			return p.key.loc.diagnostic(CodeMaterial)
+		}
 	}
+	p.cfg.TLS.AllowPasswordOnly = passwordOnly
 	return p.loadCredentials()
 }
 

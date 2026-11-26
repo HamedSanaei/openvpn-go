@@ -26,6 +26,8 @@ sudo ip rule add priority 10400 oif ovpn0 lookup 400
 
 Provide the trusted CA, client certificate and key in a supported
 profile. Credentials may be inline or referenced under `-root`.
+Use `-allow-password-only` for a profile with verified server trust
+and explicit `auth-user-pass` that omits both client identity fields.
 Use service-account-readable permissions for these files. The device's
 addresses must match the negotiated addresses. Provision the same
 addresses on each eligible peer for recovery across remotes.
@@ -75,6 +77,14 @@ The command closes its TUN handle after the client joins its workers.
 The host owns the persistent device, routes and Xray process. To change
 the host or peer address assignment, update the device and restart the
 adapter with matching expected addresses.
+
+Applications embedding the Go adapter can instead use
+`xray.NewConfigured` to prepare and roll back changed assignments on
+the same caller-owned device. The application resolver can consume the
+authenticated DNS groups with `ActiveDNS` and open generation-bound
+sockets using `DialDNS` with `BindDNSDevice`. Configure Xray itself to
+send resolver traffic through that intended path.
+[Transaction and DNS contract](../../docs/TUNNEL.md)
 
 ## Verify
 

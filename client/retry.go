@@ -77,10 +77,10 @@ func (c *Client) establish(ctx context.Context, start int, recovery bool, lost E
 		c.mu.Lock()
 		stopped := c.operationError(ctx, "connect")
 		if err == nil && stopped == nil {
-			active := &connection{link: link, index: index, position: position}
+			c.stats.Connections++
+			active := &connection{link: link, index: index, position: position, generation: c.stats.Connections}
 			c.active = active
 			c.state = StateConnected
-			c.stats.Connections++
 			if recovery {
 				c.stats.Reconnects++
 			}

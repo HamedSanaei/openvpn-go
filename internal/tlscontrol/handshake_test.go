@@ -30,7 +30,7 @@ func TestVerifiedTLSIdentityAndValidity(t *testing.T) {
 		{"not_yet_valid", testkit.TestServerName, time.Now().Add(-2 * time.Hour), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			config, err := ClientConfig(pki.CA, pki.Client.Certificate, pki.Client.PrivateKey, false)
+			config, err := ClientConfig(pki.CA, pki.Client.Certificate, pki.Client.PrivateKey, false, false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -82,7 +82,7 @@ func TestRejectIncompleteTLSConfiguration(t *testing.T) {
 		{pki.CA, pki.Client.Certificate, nil},
 		{pki.CA, pki.Client.Certificate, other.Client.PrivateKey},
 	} {
-		if _, err := ClientConfig(tc.root, tc.cert, tc.key, false); !errors.Is(err, ErrConfig) {
+		if _, err := ClientConfig(tc.root, tc.cert, tc.key, false, false); !errors.Is(err, ErrConfig) {
 			t.Fatalf("invalid configuration error = %v", err)
 		}
 	}

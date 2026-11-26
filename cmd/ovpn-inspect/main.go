@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -15,13 +16,15 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("ovpn-inspect", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	rootPath := flags.String("root", "", "authorized directory for referenced material")
+	capabilities := flags.Bool("capabilities", false, "print a redacted directive report")
+	passwordOnly := flags.Bool("allow-password-only", false, "allow verified profiles without a client certificate")
 	err := flags.Parse(args)
 	if err != nil || flags.NArg() != 1 {
 		if err == flag.ErrHelp {
-			fmt.Fprintln(stdout, "Usage: ovpn-inspect [-root directory] profile.ovpn|-")
+			fmt.Fprintln(stdout, "Usage: ovpn-inspect [-capabilities] [-root directory] [-allow-password-only] profile.ovpn|-")
 			return 0
 		}
-		fmt.Fprintln(stderr, "Usage: ovpn-inspect [-root directory] profile.ovpn|-")
+		fmt.Fprintln(stderr, "Usage: ovpn-inspect [-capabilities] [-root directory] [-allow-password-only] profile.ovpn|-")
 		return 2
 	}
 
@@ -35,7 +38,23 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		defer file.Close()
 		r = file
 	}
-	var opts profile.Options
+	if *capabilities {
+		report, err := profile.Inspect(r)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		if err := json.NewEncoder(stdout).Encode(report); err != nil {
+			return 1
+		}
+		for _, entry := range report.Entries {
+			if entry.Capability == profile.Rejected || entry.Capability == profile.PolicyDisabled {
+				return 1
+			}
+		}
+		return 0
+	}
+	opts := profile.Options{AllowPasswordOnly: *passwordOnly}
 	if *rootPath != "" {
 		root, err := os.OpenRoot(*rootPath)
 		if err != nil {

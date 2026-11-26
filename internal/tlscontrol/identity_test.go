@@ -64,7 +64,7 @@ func TestPeerIdentityPolicies(t *testing.T) {
 		{"ambiguous_common_name", host, "name", "b", duplicateCN, duplicateCN.CA, 0, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			config, err := ClientConfig(tc.roots, tc.server.Client.Certificate, tc.server.Client.PrivateKey, false)
+			config, err := ClientConfig(tc.roots, tc.server.Client.Certificate, tc.server.Client.PrivateKey, false, false)
 			if err != nil {
 				t.Fatal(err)
 			}

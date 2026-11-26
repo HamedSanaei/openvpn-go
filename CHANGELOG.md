@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Explicit password-only client authentication with verified server trust.
+- Redacted, line-numbered profile capability reports.
+- Authenticated address, route, gateway, MTU and DNS snapshots with push policy.
+- Transactional tunnel setup on reconnect and generation-bound Xray DNS sockets.
+  [Tunnel and DNS contracts](docs/TUNNEL.md)
+
 ## v0.1.0-beta
 
 - Embeddable OpenVPN TLS client with UDP and framed TCP transport, verified

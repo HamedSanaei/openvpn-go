@@ -16,12 +16,15 @@ import (
 
 // TLSConfig supplies the verified control channel's trust and client identity.
 // CA can contain a PEM CA bundle. System roots are added only when requested.
-// Certificate and PrivateKey must contain a matching PEM client key pair.
+// Certificate and PrivateKey contain a matching PEM client key pair.
 type TLSConfig struct {
 	CA             []byte
 	Certificate    []byte
 	PrivateKey     []byte
 	UseSystemRoots bool
+	// AllowPasswordOnly allows omission of both identity fields when valid
+	// Credentials are configured. Server verification remains mandatory.
+	AllowPasswordOnly bool
 	// MinVersion and MaxVersion use crypto/tls version constants.
 	// Zero selects TLS 1.2 for the minimum and TLS 1.3 for the maximum.
 	MinVersion, MaxVersion uint16
@@ -29,8 +32,7 @@ type TLSConfig struct {
 	RequireServerUsage bool
 }
 
-// Credentials enables username/password authentication in addition to the
-// required client certificate. Credentials travel inside verified TLS.
+// Credentials enables username/password authentication inside verified TLS.
 type Credentials struct {
 	Username string
 	Password string
@@ -73,6 +75,7 @@ type ControlInfo struct {
 	KeyID      uint8
 	TunnelIP   netip.Addr
 	TunnelIPv6 netip.Prefix
+	Tunnel     tunnel.Configuration
 }
 
 // ControlInfo reports negotiated settings for the active control session.
@@ -83,14 +86,20 @@ func (c *Client) ControlInfo() (ControlInfo, bool) {
 	if active == nil {
 		return ControlInfo{}, false
 	}
-	link, ok := active.link.(*session.Session)
+	return controlInfo(active)
+}
+
+func controlInfo(active *connection) (ControlInfo, bool) {
+	link, ok := active.link.(interface {
+		Info() (tlscontrol.Negotiation, uint8)
+	})
 	if !ok {
 		return ControlInfo{}, false
 	}
 	info, keyID := link.Info()
 	return ControlInfo{
 		TLSVersion: info.TLSVersion, DataCipher: info.Cipher, PeerID: info.PeerID,
-		KeyID: keyID, TunnelIP: info.TunnelIP, TunnelIPv6: info.TunnelIPv6,
+		KeyID: keyID, TunnelIP: info.Tunnel.IPv4.Addr(), TunnelIPv6: info.Tunnel.IPv6, Tunnel: info.Tunnel,
 	}, true
 }
 
@@ -112,7 +121,8 @@ func prepareHandshakes(cfg Config) ([]handshakeFunc, error) {
 	}
 	var settings *tls.Config
 	if cfg.TLS != nil {
-		settings, err = tlscontrol.ClientConfig(cfg.TLS.CA, cfg.TLS.Certificate, cfg.TLS.PrivateKey, cfg.TLS.UseSystemRoots)
+		optional := cfg.TLS.AllowPasswordOnly && cfg.Credentials != nil
+		settings, err = tlscontrol.ClientConfig(cfg.TLS.CA, cfg.TLS.Certificate, cfg.TLS.PrivateKey, cfg.TLS.UseSystemRoots, optional)
 		if err != nil || !tlscontrol.ValidVersions(cfg.TLS.MinVersion, cfg.TLS.MaxVersion) {
 			return nil, configError("TLS")
 		}
@@ -147,7 +157,7 @@ func prepareHandshakes(cfg Config) ([]handshakeFunc, error) {
 		peer := tlscontrol.PeerConfig(settings, endpoint.ServerName, string(endpoint.VerifyX509Name.Mode),
 			endpoint.VerifyX509Name.Value, cfg.TLS.RequireServerUsage)
 		opts := limits
-		opts.TLS = tlscontrol.Options{TLS: peer, Digest: wireDigest, Ciphers: ciphers}
+		opts.TLS = tlscontrol.Options{TLS: peer, Digest: wireDigest, Ciphers: ciphers, PushPolicy: cfg.PushPolicy}
 		opts.Protection = protection
 		handshakes[i] = openHandshake(opts, user)
 	}

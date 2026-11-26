@@ -32,7 +32,17 @@ file references.
 ~~~sh
 go run ./cmd/ovpn-inspect client.ovpn
 go run ./cmd/ovpn-inspect -root ./materials client.ovpn
+go run ./cmd/ovpn-inspect -capabilities client.ovpn
 ~~~
+
+`profile.Inspect` and `ovpn-inspect -capabilities` enumerate directive
+capabilities before parsing material. The report uses stable
+`supported`, `ignored`, `rejected` and `policy-disabled` values and
+one-based line numbers. Unknown names and all raw arguments stay out
+of the report. A rejected inline block is skipped as material. A block
+without a matching close consumes its remaining body. The JSON command
+returns a failing exit status for rejected or disabled entries. Use
+`Parse` to check required directives and load authorized material afterward.
 
 ## Directive registry
 
@@ -54,8 +64,8 @@ their own lines.
 | `port`, `rport` | Numeric remote port from 1 to 65535. |
 | `remote-random` | Shuffle the complete list once at `client.New`. `profile.Parse` returns declared order. |
 | `ca` | Relative PEM certificate bundle path or `<ca>` block. Required. |
-| `cert` | Relative PEM client certificate chain path or `<cert>` block. Required. |
-| `key` | Relative PEM client private key path or `<key>` block. The unencrypted key must match the certificate. Required. |
+| `cert` | Relative PEM client certificate chain path or `<cert>` block. Required with `key`, except when password-only authentication is explicitly authorized. |
+| `key` | Relative PEM client private key path or `<key>` block. The unencrypted key must match the certificate. |
 | `auth-user-pass` | Relative path, `<auth-user-pass>` block, or bare directive with `profile.Options.Credentials`. Material contains exactly the username and password on separate lines. Their surrounding spaces are preserved. |
 | `tls-auth` | Relative Static Key V1 path with optional direction `0` or `1`, or `<tls-auth>` block. |
 | `tls-crypt` | Relative Static Key V1 path or `<tls-crypt>` block. |
@@ -115,6 +125,16 @@ decimal OIDs are accepted. Escape literal commas, plus signs, equal signs
 and backslashes with a backslash inside single quotes. A `name-prefix`
 checks both the common-name prefix and the normal DNS or IP SAN. All
 policies require a valid chain and server TLS purpose.
+
+Set `profile.Options.AllowPasswordOnly` together with an
+`auth-user-pass` directive to authorize a profile that omits both
+`cert` and `key`. The peer must allow password authentication without a
+client certificate. `ovpn-inspect` and `ovpn-xray` expose the
+`-allow-password-only` switch. Direct Go clients can set
+`client.TLSConfig.AllowPasswordOnly` with valid `client.Credentials`.
+A single identity field is invalid in either mode. The verified
+server CA and identity checks still apply.
+[OpenVPN password authentication](https://openvpn.net/community-docs/using-alternative-authentication-methods/)
 
 Use inline material for a standalone profile. For references, supply
 `profile.Options.Root` with an `os.OpenRoot` handle to an authorized

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/hamedsanaei/openvpn-go/transport"
+	"github.com/hamedsanaei/openvpn-go/tunnel"
 )
 
 // MaxEndpoints limits the number of configured remote candidates.
@@ -48,10 +49,12 @@ type Config struct {
 	RemoteRandom bool
 	// Retry controls endpoint failover and reconnect during Run.
 	Retry RetryPolicy
+	// PushPolicy selects how authenticated tunnel metadata is handled.
+	PushPolicy tunnel.PushPolicy
 
-	// TLS supplies the trust anchors and client key pair for Connect.
+	// TLS supplies the trust anchors and client identity policy for Connect.
 	TLS *TLSConfig
-	// Credentials optionally supplement certificate authentication.
+	// Credentials supplies username/password authentication when configured.
 	Credentials *Credentials
 	// Control selects outer control-channel protection.
 	Control ControlProtection
@@ -79,6 +82,11 @@ type Config struct {
 }
 
 func (cfg Config) validated() (Config, error) {
+	policy := cfg.PushPolicy
+	if policy.Addresses > tunnel.PushReject || policy.Routes > tunnel.PushReject ||
+		policy.DNS > tunnel.PushReject || policy.MTU > tunnel.PushReject {
+		return Config{}, configError("push policy")
+	}
 	if len(cfg.Endpoints) == 0 || len(cfg.Endpoints) > MaxEndpoints {
 		return Config{}, configError("endpoints")
 	}

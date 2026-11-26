@@ -16,9 +16,7 @@ var (
 	ErrTunnelConfig  = errors.New("invalid host tunnel configuration")
 )
 
-// Addresses identifies the host's configured IPv4 address and IPv6 prefix.
-// At least one family must be provisioned. The negotiated values must match
-// exactly, including across reconnects.
+// Addresses identifies fixed addresses provisioned by the host.
 type Addresses struct {
 	IPv4 netip.Addr
 	IPv6 netip.Prefix
@@ -30,24 +28,52 @@ func (a Addresses) valid() bool {
 		(!a.IPv6.IsValid() || a.IPv6.Addr().Is6() && !a.IPv6.Addr().Is4In6() && a.IPv6.Addr().IsGlobalUnicast())
 }
 
+func (a Addresses) matches(info client.ControlInfo) bool {
+	return a.IPv4 == info.TunnelIP && a.IPv6 == info.TunnelIPv6
+}
+
+// Options supplies application-owned configuration and DNS socket handling.
+type Options struct {
+	Configure client.TunnelConfigurer
+	DNSDialer DNSDialer
+}
+
 // Adapter owns a single OpenVPN client and borrows a packet device.
 type Adapter struct {
 	client  *client.Client
-	device  *checkedDevice
+	device  tunnel.PacketConn
+	options Options
+	fixed   *Addresses
 	started atomic.Bool
+	dns     atomic.Pointer[dnsScope]
 }
 
+// New uses an already configured device with fixed tunnel addresses.
 func New(cfg client.Config, device tunnel.PacketConn, addresses Addresses) (*Adapter, error) {
-	if device == nil || !addresses.valid() {
+	if !addresses.valid() {
+		return nil, ErrTunnelConfig
+	}
+	return newAdapter(cfg, device, &addresses, Options{})
+}
+
+// NewConfigured lets the caller prepare and roll back the device and its
+// routes for each connection, including a changed assignment on reconnect.
+func NewConfigured(cfg client.Config, device tunnel.PacketConn, opts Options) (*Adapter, error) {
+	if opts.Configure == nil {
+		return nil, ErrTunnelConfig
+	}
+	return newAdapter(cfg, device, nil, opts)
+}
+
+func newAdapter(cfg client.Config, device tunnel.PacketConn, fixed *Addresses, opts Options) (*Adapter, error) {
+	if device == nil {
 		return nil, ErrTunnelConfig
 	}
 	c, err := client.New(cfg)
 	if err != nil {
 		return nil, err
 	}
-	return &Adapter{client: c, device: &checkedDevice{
-		PacketConn: device, current: c.ControlInfo, expected: addresses,
-	}}, nil
+	return &Adapter{client: c, device: device, options: opts, fixed: fixed}, nil
 }
 
 // Run connects, forwards and recovers until cancellation, terminal failure or
@@ -60,15 +86,42 @@ func (a *Adapter) Run(ctx context.Context) error {
 	if err := a.client.Connect(ctx); err != nil {
 		return err
 	}
-	if !a.device.check() {
-		return ErrTunnelAddress
-	}
-	err := a.client.Run(ctx, a.device)
+	mismatch := false
+	err := a.client.RunConfigured(ctx, a.device, func(ctx context.Context, gen client.TunnelGeneration) (func(), error) {
+		if a.fixed != nil && !a.fixed.matches(gen.Control) {
+			mismatch = true
+			return nil, ErrTunnelAddress
+		}
+		return a.prepare(ctx, gen)
+	})
 	var failure *client.Error
-	if a.device.mismatch.Load() && errors.As(err, &failure) && failure.Code == client.CodeTunnel {
+	if mismatch && errors.As(err, &failure) && failure.Code == client.CodeTunnel {
 		return ErrTunnelAddress
 	}
 	return err
+}
+
+func (a *Adapter) prepare(ctx context.Context, gen client.TunnelGeneration) (func(), error) {
+	var rollback func()
+	if a.options.Configure != nil {
+		var err error
+		rollback, err = a.options.Configure(ctx, gen)
+		if err != nil || ctx.Err() != nil {
+			return rollback, err
+		}
+	}
+	if a.options.DNSDialer == nil {
+		return rollback, nil
+	}
+	scope := &dnsScope{ctx: ctx, generation: gen.Number, config: gen.Control.Tunnel.DNS(), connections: make(map[*dnsConn]struct{})}
+	a.dns.Store(scope)
+	return func() {
+		a.dns.CompareAndSwap(scope, nil)
+		scope.close()
+		if rollback != nil {
+			rollback()
+		}
+	}, nil
 }
 
 // Close interrupts the owned client. The caller closes the borrowed device.
@@ -76,32 +129,3 @@ func (a *Adapter) Close() error { return a.client.Close() }
 
 // Stats returns the core's redacted lifecycle and traffic counters.
 func (a *Adapter) Stats() client.Stats { return a.client.Stats() }
-
-type checkedDevice struct {
-	tunnel.PacketConn
-	current  func() (client.ControlInfo, bool)
-	expected Addresses
-	mismatch atomic.Bool
-}
-
-func (d *checkedDevice) check() bool {
-	info, live := d.current()
-	if live && (info.TunnelIP != d.expected.IPv4 || info.TunnelIPv6 != d.expected.IPv6) {
-		d.mismatch.Store(true)
-	}
-	return !d.mismatch.Load()
-}
-
-func (d *checkedDevice) ReadPacket(ctx context.Context, packet []byte) (int, error) {
-	if !d.check() {
-		return 0, ErrTunnelAddress
-	}
-	return d.PacketConn.ReadPacket(ctx, packet)
-}
-
-func (d *checkedDevice) WritePacket(ctx context.Context, packet []byte) error {
-	if !d.check() {
-		return ErrTunnelAddress
-	}
-	return d.PacketConn.WritePacket(ctx, packet)
-}

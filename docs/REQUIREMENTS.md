@@ -17,7 +17,7 @@ the [M0 decision](adr/0006-m0-governance-and-scope.md) and
 | FR-005 | Establish and maintain the TLS control channel. | MUST |
 | FR-006 | Validate certificate chain and server identity by default; support explicit name override and verify-x509-name policy. | MUST |
 | FR-007 | Support client certificate/private-key authentication. | MUST |
-| FR-008 | Support username/password authentication alongside client certificates when configured. | MUST |
+| FR-008 | Support username/password alongside a client certificate and explicit password-only authentication with verified server identity. | MUST |
 | FR-009 | Support tls-auth, tls-crypt and tls-crypt-v2 in the declared compatibility matrix. | MUST, staged by milestone |
 | FR-010 | Implement control-channel ACK, retransmission, packet IDs and replay protection. | MUST |
 | FR-011 | Negotiate and implement the declared AES-128-GCM, AES-256-GCM and ChaCha20-Poly1305 data ciphers. | MUST |
@@ -70,7 +70,7 @@ the [M0 decision](adr/0006-m0-governance-and-scope.md) and
 - Scripts, plugins and arbitrary external command execution from profiles.
 - Route/DNS mutation and privileged OS configuration.
 - Management interface emulation.
-- Password-only deployments and interactive deferred authentication or SSO.
+- Interactive deferred authentication and SSO.
 - Extensions excluded by the initial compatibility matrix.
 - Full parity with every OpenVPN directive.
 

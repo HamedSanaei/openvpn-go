@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"syscall"
 	"time"
 
 	"github.com/hamedsanaei/openvpn-go/transport"
@@ -48,7 +49,27 @@ func OpenDevice(name string, addresses Addresses) (tunnel.PacketConn, error) {
 		file.Close()
 		return nil, ErrTunnelConfig
 	}
-	return &tunDevice{file: file, inbound: make([]byte, iface.MTU+1)}, nil
+	return &tunDevice{file: file, inbound: make([]byte, transport.MaxPacketSize+1)}, nil
+}
+
+// BindDNSDevice creates a numeric DNS dialer with mandatory Linux interface
+// binding. The caller provisions the VPN interface and its routes.
+func BindDNSDevice(name string) DNSDialer {
+	return func(ctx context.Context, network string, server netip.AddrPort) (net.Conn, error) {
+		if name == "" || !server.IsValid() || server.Port() == 0 || (network != "udp" && network != "tcp") {
+			return nil, ErrDNSUnavailable
+		}
+		dialer := net.Dialer{Control: func(_, _ string, raw syscall.RawConn) error {
+			var bindErr error
+			if err := raw.Control(func(fd uintptr) {
+				bindErr = unix.SetsockoptString(int(fd), unix.SOL_SOCKET, unix.SO_BINDTODEVICE, name)
+			}); err != nil {
+				return err
+			}
+			return bindErr
+		}}
+		return dialer.DialContext(ctx, network, server.String())
+	}
 }
 
 func ownsAddresses(local []net.Addr, expected Addresses) bool {

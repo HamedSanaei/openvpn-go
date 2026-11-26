@@ -5,8 +5,9 @@ import (
 	"net/netip"
 	"slices"
 	"strconv"
-	"strings"
 	"time"
+
+	"github.com/hamedsanaei/openvpn-go/tunnel"
 )
 
 // Negotiation is the authenticated subset needed by the data channel and
@@ -19,20 +20,26 @@ type Negotiation struct {
 	PingInterval time.Duration
 	PingTimeout  time.Duration
 	PingExit     bool
-	TunnelIP     netip.Addr
-	TunnelIPv6   netip.Prefix
+	Tunnel       tunnel.Configuration
 }
 
 type pushState struct {
 	Negotiation
-	allowed   []string
-	havePeer  bool
-	exporter  bool
-	continued bool
-	parts     int
-	total     int
-	token     []byte
-	tokenUser string
+	allowed         []string
+	havePeer        bool
+	exporter        bool
+	continued       bool
+	parts           int
+	total           int
+	token           []byte
+	tokenUser       string
+	policy          tunnel.PushPolicy
+	ipv4, ipv4Param netip.Addr
+	routes          []tunnel.Route
+	dns             tunnel.DNSConfig
+	legacyDNS       []netip.AddrPort
+	modernSearch    []string
+	dnsGroups       map[uint8]tunnel.DNSServer
 }
 
 func (p *pushState) add(message []byte) (bool, error) {
@@ -71,6 +78,9 @@ func (p *pushState) add(message []byte) (bool, error) {
 	}
 	if p.continued != (marker == "1") || !p.exporter || !p.havePeer || p.Cipher == "" {
 		return false, ErrNegotiation
+	}
+	if err := p.finishTunnel(); err != nil {
+		return false, err
 	}
 	return true, nil
 }
@@ -116,55 +126,19 @@ func (p *pushState) option(name string, arg []byte) error {
 		}
 		value := time.Duration(seconds) * time.Second
 		if name == "ping" {
+			if p.PingInterval != 0 {
+				return ErrNegotiation
+			}
 			p.PingInterval = value
 		} else {
 			exit := name == "ping-exit"
-			if p.PingTimeout != 0 && p.PingExit != exit {
+			if p.PingTimeout != 0 {
 				return ErrNegotiation
 			}
 			p.PingTimeout, p.PingExit = value, exit
 		}
-	case "tun-ipv6":
-		if len(arg) != 0 {
-			return ErrNegotiation
-		}
-	case "topology":
-		switch string(arg) {
-		case "subnet", "net30", "p2p":
-		default:
-			return ErrNegotiation
-		}
-	case "ifconfig", "ifconfig-ipv6":
-		fields := strings.Fields(string(arg))
-		if len(fields) != 2 {
-			return ErrNegotiation
-		}
-		remote, err := netip.ParseAddr(fields[1])
-		if err != nil {
-			return ErrNegotiation
-		}
-		if name == "ifconfig-ipv6" {
-			local, err := netip.ParsePrefix(fields[0])
-			if err != nil || !local.Addr().Is6() || !remote.Is6() || p.TunnelIPv6.IsValid() {
-				return ErrNegotiation
-			}
-			p.TunnelIPv6 = local
-		} else {
-			local, err := netip.ParseAddr(fields[0])
-			if err != nil || !local.Is4() || !remote.Is4() || p.TunnelIP.IsValid() {
-				return ErrNegotiation
-			}
-			p.TunnelIP = local
-		}
-	case "route", "route-ipv6", "route-gateway", "redirect-gateway", "dhcp-option",
-		"block-outside-dns", "tun-mtu":
-		// This stage does not export or apply advisory network settings.
-		// Recognize the documented fields and bound their input.
-		if len(arg) > 1024 || !validKeyString(string(arg)) {
-			return ErrNegotiation
-		}
 	default:
-		return ErrNegotiation
+		return p.tunnelOption(name, string(arg))
 	}
 	return nil
 }

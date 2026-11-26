@@ -22,6 +22,28 @@ import (
 // after transport loss under the configured retry policy and resumes
 // forwarding on the same device. Cancel the context or call Close to stop.
 func (c *Client) Run(ctx context.Context, device tunnel.PacketConn) error {
+	return c.RunConfigured(ctx, device, nil)
+}
+
+// TunnelGeneration identifies one authenticated connection. Rekeying within
+// that connection keeps the same generation number.
+type TunnelGeneration struct {
+	Number   uint64
+	Endpoint Endpoint
+	Control  ControlInfo
+}
+
+// TunnelConfigurer prepares caller-owned tunnel state for one generation.
+// Returning nil error acknowledges the configuration and permits forwarding.
+// A returned rollback is called exactly once after forwarding stops or if
+// the setup fails. It must restore any changes made even on partial failure.
+// The context ends on disconnect or stop. Both callbacks must return
+// promptly and must not call Client.Close synchronously.
+type TunnelConfigurer func(context.Context, TunnelGeneration) (rollback func(), err error)
+
+// RunConfigured calls configure before any forwarding on each authenticated
+// connection. A rejection stops Run. RunConfigured borrows the packet device.
+func (c *Client) RunConfigured(ctx context.Context, device tunnel.PacketConn, configure TunnelConfigurer) error {
 	if device == nil {
 		return configError("tunnel")
 	}
@@ -49,7 +71,7 @@ func (c *Client) Run(ctx context.Context, device tunnel.PacketConn) error {
 	inbound := make([]byte, c.config.MaxPacketSize)
 	outbound := make([]byte, c.config.MaxPacketSize)
 	for {
-		result := c.forwardSession(runCtx, device, active.link, inbound, outbound)
+		result := c.forwardGeneration(runCtx, device, active, configure, inbound, outbound)
 		result, stopped := c.endSession(runCtx, active, result)
 		if stopped != nil {
 			return stopped
@@ -67,6 +89,49 @@ func (c *Client) Run(ctx context.Context, device tunnel.PacketConn) error {
 			return err
 		}
 	}
+}
+
+func (c *Client) forwardGeneration(ctx context.Context, device tunnel.PacketConn, active *connection, configure TunnelConfigurer, inbound, outbound []byte) forwardingError {
+	if configure == nil {
+		return c.forwardSession(ctx, device, active.link, inbound, outbound)
+	}
+	info, ok := controlInfo(active)
+	if !ok {
+		return forwardingError{err: &Error{Op: "configure tunnel", Code: CodeTunnel}}
+	}
+	generationCtx, cancel := context.WithCancel(ctx)
+	var watcher sync.WaitGroup
+	if status, ok := active.link.(sessionStatus); ok {
+		watcher.Go(func() {
+			select {
+			case <-status.Done():
+				cancel()
+			case <-generationCtx.Done():
+			}
+		})
+	}
+	var rollback func()
+	defer func() {
+		cancel()
+		watcher.Wait()
+		if rollback != nil {
+			rollback()
+		}
+	}()
+	generation := TunnelGeneration{
+		Number: active.generation, Endpoint: c.config.Endpoints[active.index], Control: info,
+	}
+	var err error
+	if generationCtx.Err() == nil {
+		rollback, err = configure(generationCtx, generation)
+	}
+	if err != nil && !errors.Is(err, generationCtx.Err()) {
+		return forwardingError{err: &Error{Op: "configure tunnel", Code: CodeTunnel}}
+	}
+	if generationCtx.Err() != nil {
+		return forwardingError{err: &Error{Op: "configure tunnel", Code: CodeNetwork}, fromSession: true}
+	}
+	return c.forwardSession(generationCtx, device, active.link, inbound, outbound)
 }
 
 func (c *Client) endSession(ctx context.Context, active *connection, result forwardingError) (forwardingError, error) {

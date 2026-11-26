@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hamedsanaei/openvpn-go/internal/control"
+	"github.com/hamedsanaei/openvpn-go/tunnel"
 )
 
 const pushRetry = 3 * time.Second
@@ -25,11 +26,12 @@ type Link struct {
 }
 
 type Options struct {
-	TLS     *tls.Config
-	Network string
-	Digest  string
-	Ciphers []string
-	Auth    *Authentication
+	TLS        *tls.Config
+	Network    string
+	Digest     string
+	Ciphers    []string
+	Auth       *Authentication
+	PushPolicy tunnel.PushPolicy
 }
 
 func Establish(ctx context.Context, stream *control.Stream, opts Options, previous *Negotiation) (_ *Link, failure error) {
@@ -80,7 +82,7 @@ func Establish(ctx context.Context, stream *control.Stream, opts Options, previo
 		}
 		info = *previous
 	} else {
-		push := pushState{allowed: opts.Ciphers}
+		push := pushState{allowed: opts.Ciphers, policy: opts.PushPolicy}
 		if err := readPush(ctx, conn, reader, &push); err != nil {
 			clear(push.token)
 			return nil, ctxError(ctx, err)

@@ -9,30 +9,15 @@ import (
 	"github.com/hamedsanaei/openvpn-go/client"
 )
 
-func TestTunnelAddressChangeStopsTraffic(t *testing.T) {
+func TestFixedAddressesRequireAnExactAssignment(t *testing.T) {
 	expected := Addresses{IPv4: netip.MustParseAddr("10.49.0.2")}
 	current := client.ControlInfo{TunnelIP: expected.IPv4}
-	live := true
-	device := &countingDevice{}
-	guard := checkedDevice{
-		PacketConn: device,
-		expected:   expected,
-		current:    func() (client.ControlInfo, bool) { return current, live },
+	if !expected.matches(current) {
+		t.Fatal("expected the fixed assignment to match")
 	}
-	if err := guard.WritePacket(t.Context(), []byte{1}); err != nil {
-		t.Fatal(err)
-	}
-	live = false
-	if !guard.check() {
-		t.Fatal("transient disconnect blocked recovery")
-	}
-	live = true
 	current.TunnelIP = netip.MustParseAddr("10.49.0.3")
-	if _, err := guard.ReadPacket(t.Context(), make([]byte, 8)); !errors.Is(err, ErrTunnelAddress) {
-		t.Fatalf("mismatched read: %v", err)
-	}
-	if err := guard.WritePacket(t.Context(), []byte{1}); !errors.Is(err, ErrTunnelAddress) || device.calls != 1 {
-		t.Fatalf("a mismatched session reached the host device: %v", err)
+	if expected.matches(current) {
+		t.Fatal("changed IPv4 assignment matched")
 	}
 }
 
