@@ -48,6 +48,7 @@ func (c *Client) establish(ctx context.Context, start int, recovery bool, lost E
 	backoff := failover.NewBackoff(policy.InitialBackoff, policy.MaxBackoff)
 	position := start
 	remaining := policy.MaxAttempts
+	var visits [MaxEndpoints]int
 	for {
 		index := c.order[position]
 		if recovery || lost != "" {
@@ -73,7 +74,8 @@ func (c *Client) establish(ctx context.Context, start int, recovery bool, lost E
 		c.record(EventDialing, index, "", 0)
 		c.mu.Unlock()
 
-		link, err := c.dial(ctx, index)
+		link, err := c.dial(ctx, index, visits[index])
+		visits[index]++
 		c.mu.Lock()
 		stopped := c.operationError(ctx, "connect")
 		if err == nil && stopped == nil {

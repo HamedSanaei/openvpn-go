@@ -13,6 +13,7 @@ import (
 	"github.com/hamedsanaei/openvpn-go/internal/data"
 	"github.com/hamedsanaei/openvpn-go/internal/tlscontrol"
 	"github.com/hamedsanaei/openvpn-go/transport"
+	"github.com/hamedsanaei/openvpn-go/tunnel"
 )
 
 const (
@@ -29,6 +30,7 @@ type Options struct {
 	MaxPacketSize  int
 	RekeyInterval  time.Duration
 	HandshakeLimit time.Duration
+	TunnelMTU      int
 }
 
 // Session owns one authenticated OpenVPN link. Control generations share its
@@ -45,9 +47,12 @@ type Session struct {
 	inbound   chan []byte
 	writeGate chan struct{}
 	rotate    chan struct{}
+	notify    sync.Once
+	packetMTU int
 
 	mu       sync.Mutex
 	channel  *data.Channel
+	link     *tlscontrol.Link
 	info     tlscontrol.Negotiation
 	keyID    uint8
 	lastSent time.Time
@@ -84,6 +89,24 @@ func Open(ctx context.Context, raw transport.PacketConn, opts Options) (*Session
 	if err != nil {
 		return nil, err
 	}
+	mtu := opts.MaxPacketSize - data.Overhead
+	if link.Info.Tunnel.MTU != 0 || opts.TunnelMTU != 0 {
+		if opts.TunnelMTU != 0 {
+			mtu = min(mtu, opts.TunnelMTU)
+		}
+		if link.Info.Tunnel.MTU != 0 {
+			mtu = min(mtu, int(link.Info.Tunnel.MTU))
+		}
+		if mtu < 68 {
+			return nil, tlscontrol.ErrNegotiation
+		}
+		link.Info.Tunnel.MTU = uint16(mtu)
+	}
+	if link.Info.Tunnel.IPv6.IsValid() && mtu < 1280 {
+		return nil, tlscontrol.ErrNegotiation
+	}
+	link.Info.PacketMTU = mtu
+	opts.TunnelMTU = int(link.Info.Tunnel.MTU)
 	keys, err := link.DataKeys()
 	if err != nil {
 		return nil, err
@@ -97,7 +120,7 @@ func Open(ctx context.Context, raw transport.PacketConn, opts Options) (*Session
 	s := &Session{
 		opts: opts, raw: raw, mux: mux, ctx: lifetime, cancel: cancel, done: make(chan struct{}),
 		inbound: make(chan []byte, queueSize), writeGate: make(chan struct{}, 1), rotate: make(chan struct{}, 1),
-		channel: ch, info: link.Info, lastSent: now, lastRecv: now,
+		channel: ch, link: link, packetMTU: mtu, info: link.Info, lastSent: now, lastRecv: now,
 	}
 	mux.Expect(stream, data.NextKeyID(ch.KeyID()))
 	opened = true
@@ -129,6 +152,22 @@ func (s *Session) Close() error {
 	return s.closeErr
 }
 
+// CloseGracefully makes one bounded attempt to notify a negotiated UDP peer.
+func (s *Session) CloseGracefully() error {
+	s.notify.Do(func() {
+		s.mu.Lock()
+		link := s.link
+		s.mu.Unlock()
+		if link == nil || !link.Info.ExitNotify || s.ctx.Err() != nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(s.ctx, 250*time.Millisecond)
+		defer cancel()
+		_ = link.NotifyExit(ctx)
+	})
+	return s.Close()
+}
+
 func (s *Session) ReadPacket(ctx context.Context, dst []byte) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -151,7 +190,10 @@ func (s *Session) ReadPacket(ctx context.Context, dst []byte) (int, error) {
 }
 
 func (s *Session) WritePacket(ctx context.Context, packet []byte) error {
-	if len(packet) > s.opts.MaxPacketSize-data.Overhead {
+	if len(packet) > s.packetMTU {
+		if s.opts.TunnelMTU != 0 {
+			return tunnel.ErrMTUExceeded
+		}
 		return transport.ErrPacketTooLarge
 	}
 	if !data.IsIP(packet) {
@@ -226,7 +268,7 @@ func (s *Session) receive(wrapped []byte) {
 	packet, err := s.channel.Open(wrapped, now)
 	keepalive, validIP := false, false
 	if err == nil {
-		keepalive, validIP = data.IsKeepalive(packet), data.IsIP(packet)
+		keepalive, validIP = data.IsKeepalive(packet), len(packet) <= s.packetMTU && data.IsIP(packet)
 		if keepalive || validIP {
 			s.lastRecv = now
 		}

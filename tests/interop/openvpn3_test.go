@@ -37,7 +37,6 @@ const (
 	connected   = "connected"
 	certificate = "certificate"
 	authFailed  = "authentication"
-	profileFail = "profile-policy"
 )
 
 type conformanceCase struct {
@@ -60,7 +59,6 @@ type comparison struct {
 	Go         observation `json:"openvpn_go"`
 	Core       observation `json:"openvpn_3_core"`
 	Result     string      `json:"result"`
-	Policy     string      `json:"policy,omitempty"`
 }
 
 type conformanceReport struct {
@@ -119,7 +117,7 @@ func TestOpenVPN3Differential(t *testing.T) {
 		{"wrong-server-name", "tcp", "tls", "1.3", "AES-256-GCM", "name", false},
 		{"wrong-ca", "tcp", "tls", "1.3", "AES-256-GCM", "ca", false},
 		{"wrong-password", "tcp", "tls", "1.3", "AES-256-GCM", "password", true},
-		{"retry-directive-policy", "udp", "tls", "1.2", "AES-256-GCM", "retry-directive", false},
+		{"retry-directive", "udp", "tls", "1.2", "AES-256-GCM", "", false},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			pki := testkit.NewPKI(t)
@@ -151,15 +149,10 @@ func TestOpenVPN3Differential(t *testing.T) {
 				wantGo, wantCore = observation{Outcome: certificate}, observation{Outcome: certificate}
 			case "password":
 				wantGo, wantCore = observation{Outcome: authFailed}, observation{Outcome: authFailed}
-			case "retry-directive":
-				wantGo = observation{Outcome: profileFail}
-				result.Policy = "Go configures retry through the caller's RetryPolicy. Core accepts connect-retry-max."
 			}
 			if !goOK || !coreOK || result.Go != wantGo || result.Core != wantCore {
 				t.Errorf("unexpected difference or failed expectation: Go %+v, Core %+v; want Go %+v, Core %+v",
 					result.Go, result.Core, wantGo, wantCore)
-			} else if result.Policy != "" {
-				result.Result = "intentional-policy-difference"
 			} else {
 				result.Result = "match"
 			}
@@ -217,7 +210,7 @@ func coreProfile(t *testing.T, f fixture, scenario conformanceCase, pki testkit.
 			text += "auth SHA256\nkey-direction 1\n"
 		}
 	}
-	if scenario.reject == "retry-directive" {
+	if scenario.name == "retry-directive" {
 		text += "connect-retry-max 1\n"
 	}
 	if !scenario.password {
@@ -234,17 +227,9 @@ func probeGo(t *testing.T, text string, creds *client.Credentials, echo *net.UDP
 	t.Helper()
 	cfg, _, err := profile.Parse(strings.NewReader(text), profile.Options{Credentials: creds})
 	if err != nil {
-		var diagnostic *profile.Diagnostic
-		if errors.As(err, &diagnostic) && diagnostic.Code == profile.CodeUnsupported &&
-			diagnostic.Line == strings.Count(text, "\n") && strings.HasSuffix(text, "connect-retry-max 1\n") {
-			result.Outcome = profileFail
-			return
-		}
-		t.Fatal("unexpected rejection of the generated Go profile")
-		return
+		t.Fatalf("generated Go profile: %v", err)
 	}
 	cfg.HandshakeTimeout = 5 * time.Second
-	cfg.Retry.MaxAttempts = 1
 	c, err := client.New(cfg)
 	if err != nil {
 		t.Fatal(err)

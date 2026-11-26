@@ -2,6 +2,8 @@ package profile
 
 import (
 	"bytes"
+	"context"
+	"crypto"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
@@ -22,6 +24,13 @@ import (
 // owns and closes the returned file and applies its aggregate byte limit.
 type Resolver func(path string) (fs.File, error)
 
+// KeyIdentity supplies an external key for the profile's cert directive.
+// Exactly one of Signer and Provider may be set.
+type KeyIdentity struct {
+	Signer   crypto.Signer
+	Provider func(context.Context) (crypto.Signer, error)
+}
+
 type material struct {
 	loc       location
 	path      string
@@ -41,6 +50,14 @@ func (p *parser) setMaterial(m *material) error {
 		target = &p.key
 	case "auth-user-pass":
 		target = &p.auth
+	case "crl-verify":
+		target = &p.crl
+	case "peer-fingerprint":
+		if len(p.pins) == 32 {
+			return m.loc.diagnostic(CodeLimit)
+		}
+		p.pins = append(p.pins, m)
+		return nil
 	default:
 		return p.setProtection(m)
 	}
@@ -52,7 +69,13 @@ func (p *parser) setMaterial(m *material) error {
 }
 
 func (p *parser) loadTLS() error {
-	passwordOnly := p.opts.AllowPasswordOnly && p.auth != nil && p.cert == nil && p.key == nil
+	identity := p.opts.Identity
+	external := identity.Signer != nil || identity.Provider != nil
+	if external && (p.key != nil || identity.Signer != nil && identity.Provider != nil) {
+		return (location{name: "key"}).diagnostic(CodeConflict)
+	}
+	passwordOnly := !external && p.opts.AllowPasswordOnly &&
+		(p.auth != nil || p.opts.Authentication.Credentials != nil) && p.cert == nil && p.key == nil
 	for _, required := range []struct {
 		name string
 		ref  *material
@@ -63,7 +86,7 @@ func (p *parser) loadTLS() error {
 		{"key", p.key, &p.cfg.TLS.PrivateKey},
 	} {
 		if required.ref == nil {
-			if passwordOnly && required.name != "ca" {
+			if passwordOnly && required.name != "ca" || external && required.name == "key" {
 				continue
 			}
 			return (location{name: required.name}).diagnostic(CodeRequired)
@@ -84,13 +107,64 @@ func (p *parser) loadTLS() error {
 	if len(p.cfg.TLS.CA)+len(p.cfg.TLS.Certificate)+len(p.cfg.TLS.PrivateKey) > maxProfile {
 		return p.ca.loc.diagnostic(CodeLimit)
 	}
-	if !passwordOnly {
+	if external {
+		if err := tlscontrol.SetKeyProvider(&tls.Config{}, p.cfg.TLS.Certificate, identity.Signer, identity.Provider); err != nil {
+			return p.cert.loc.diagnostic(CodeMaterial)
+		}
+		p.cfg.TLS.Signer, p.cfg.TLS.KeyProvider = identity.Signer, identity.Provider
+	} else if !passwordOnly {
 		if _, err := tls.X509KeyPair(p.cfg.TLS.Certificate, p.cfg.TLS.PrivateKey); err != nil {
 			return p.key.loc.diagnostic(CodeMaterial)
 		}
 	}
 	p.cfg.TLS.AllowPasswordOnly = passwordOnly
+	if err := p.loadTrust(); err != nil {
+		return err
+	}
 	return p.loadCredentials()
+}
+
+func (p *parser) loadTrust() error {
+	settings := p.cfg.TLS
+	for _, ref := range p.pins {
+		raw, err := p.load(ref)
+		if err != nil {
+			return err
+		}
+		start := len(settings.ServerFingerprints)
+		for line := range bytes.SplitSeq(raw, []byte{'\n'}) {
+			line = bytes.TrimSpace(line)
+			if len(line) != 0 {
+				settings.ServerFingerprints = append(settings.ServerFingerprints, string(line))
+			}
+			if len(settings.ServerFingerprints) > 32 {
+				return ref.loc.diagnostic(CodeLimit)
+			}
+		}
+		if len(settings.ServerFingerprints) == start {
+			return ref.loc.diagnostic(CodeMaterial)
+		}
+		if _, err := tlscontrol.ParseServerTrust(settings.ServerFingerprints, nil); err != nil {
+			return ref.loc.diagnostic(CodeMaterial)
+		}
+	}
+	if p.crl != nil {
+		raw, err := p.load(p.crl)
+		if err != nil {
+			return err
+		}
+		if len(raw) == 0 {
+			return p.crl.loc.diagnostic(CodeMaterial)
+		}
+		if _, err := tlscontrol.ParseServerTrust(nil, raw); err != nil {
+			return p.crl.loc.diagnostic(CodeMaterial)
+		}
+		settings.CRL = raw
+	}
+	if len(settings.CA)+len(settings.Certificate)+len(settings.PrivateKey)+len(settings.CRL) > maxProfile {
+		return p.crl.loc.diagnostic(CodeLimit)
+	}
+	return nil
 }
 
 func (p *parser) loadCredentials() error {
@@ -99,6 +173,12 @@ func (p *parser) loadCredentials() error {
 		return nil
 	}
 	var credentials client.Credentials
+	if p.opts.Authentication.Credentials != nil {
+		if m.inline || m.path != "" || p.opts.Credentials != nil {
+			return m.loc.diagnostic(CodeConflict)
+		}
+		return nil
+	}
 	if !m.inline && m.path == "" {
 		if p.opts.Credentials == nil {
 			return m.loc.diagnostic(CodeRequired)

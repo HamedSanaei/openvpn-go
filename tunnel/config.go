@@ -1,9 +1,16 @@
 package tunnel
 
 import (
+	"errors"
 	"net/netip"
 	"slices"
 )
+
+// ErrMTUExceeded reports an IP packet larger than the active tunnel MTU.
+var ErrMTUExceeded = errors.New("IP packet exceeds the OpenVPN tunnel MTU")
+
+// ValidMTU reports whether mtu is unset or within the supported IP range.
+func ValidMTU(mtu int) bool { return mtu == 0 || mtu >= 68 && mtu <= 65535 }
 
 // PushAction controls an authenticated class of optional push directives.
 type PushAction uint8

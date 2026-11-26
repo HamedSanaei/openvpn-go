@@ -36,6 +36,9 @@ func (a Addresses) matches(info client.ControlInfo) bool {
 type Options struct {
 	Configure client.TunnelConfigurer
 	DNSDialer DNSDialer
+	// MSSMTU enables TCP MSS clamping using this inner IP MTU ceiling.
+	// An authenticated smaller generation MTU takes precedence.
+	MSSMTU int
 }
 
 // Adapter owns a single OpenVPN client and borrows a packet device.
@@ -44,16 +47,22 @@ type Adapter struct {
 	device  tunnel.PacketConn
 	options Options
 	fixed   *Addresses
+	mss     *mssDevice
 	started atomic.Bool
 	dns     atomic.Pointer[dnsScope]
 }
 
 // New uses an already configured device with fixed tunnel addresses.
 func New(cfg client.Config, device tunnel.PacketConn, addresses Addresses) (*Adapter, error) {
+	return NewFixed(cfg, device, addresses, Options{})
+}
+
+// NewFixed uses fixed host addresses with optional adapter settings.
+func NewFixed(cfg client.Config, device tunnel.PacketConn, addresses Addresses, opts Options) (*Adapter, error) {
 	if !addresses.valid() {
 		return nil, ErrTunnelConfig
 	}
-	return newAdapter(cfg, device, &addresses, Options{})
+	return newAdapter(cfg, device, &addresses, opts)
 }
 
 // NewConfigured lets the caller prepare and roll back the device and its
@@ -66,14 +75,19 @@ func NewConfigured(cfg client.Config, device tunnel.PacketConn, opts Options) (*
 }
 
 func newAdapter(cfg client.Config, device tunnel.PacketConn, fixed *Addresses, opts Options) (*Adapter, error) {
-	if device == nil {
+	if device == nil || !tunnel.ValidMTU(opts.MSSMTU) {
 		return nil, ErrTunnelConfig
 	}
 	c, err := client.New(cfg)
 	if err != nil {
 		return nil, err
 	}
-	return &Adapter{client: c, device: device, options: opts, fixed: fixed}, nil
+	a := &Adapter{client: c, device: device, options: opts, fixed: fixed}
+	if opts.MSSMTU != 0 {
+		a.mss = &mssDevice{PacketConn: device}
+		a.device = a.mss
+	}
+	return a, nil
 }
 
 // Run connects, forwards and recovers until cancellation, terminal failure or
@@ -109,6 +123,16 @@ func (a *Adapter) prepare(ctx context.Context, gen client.TunnelGeneration) (fun
 		if err != nil || ctx.Err() != nil {
 			return rollback, err
 		}
+	}
+	if a.mss != nil {
+		mtu := a.options.MSSMTU
+		if gen.Control.MaxTunnelPacketSize > 0 {
+			mtu = min(mtu, gen.Control.MaxTunnelPacketSize)
+		}
+		if gen.Control.TunnelIPv6.IsValid() && mtu < 1280 {
+			return rollback, ErrTunnelConfig
+		}
+		a.mss.mtu.Store(int32(mtu))
 	}
 	if a.options.DNSDialer == nil {
 		return rollback, nil

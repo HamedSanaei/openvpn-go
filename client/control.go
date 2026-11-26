@@ -2,12 +2,14 @@ package client
 
 import (
 	"context"
+	"crypto"
 	"crypto/tls"
 	"net/netip"
 	"strings"
 
 	"github.com/hamedsanaei/openvpn-go/internal/control"
 	"github.com/hamedsanaei/openvpn-go/internal/crypt"
+	"github.com/hamedsanaei/openvpn-go/internal/data"
 	"github.com/hamedsanaei/openvpn-go/internal/session"
 	"github.com/hamedsanaei/openvpn-go/internal/tlscontrol"
 	"github.com/hamedsanaei/openvpn-go/transport"
@@ -22,6 +24,16 @@ type TLSConfig struct {
 	Certificate    []byte
 	PrivateKey     []byte
 	UseSystemRoots bool
+	// ServerFingerprints adds an allow-list of colon-separated SHA-256
+	// leaf fingerprints to the configured CA and endpoint identity checks.
+	ServerFingerprints []string
+	// CRL is a PEM bundle of complete, current certificate revocation lists
+	// covering every non-root certificate in the accepted server chain.
+	CRL []byte
+	// Signer or KeyProvider can supply the matching key for Certificate.
+	// They are mutually exclusive with each other and PrivateKey.
+	Signer      crypto.Signer
+	KeyProvider func(context.Context) (crypto.Signer, error)
 	// AllowPasswordOnly allows omission of both identity fields when valid
 	// Credentials are configured. Server verification remains mandatory.
 	AllowPasswordOnly bool
@@ -36,6 +48,21 @@ type TLSConfig struct {
 type Credentials struct {
 	Username string
 	Password string
+}
+
+// Challenge is a text prompt from a verified OpenVPN peer. Prompt is
+// untrusted display text and may contain sensitive information.
+type Challenge = tlscontrol.Challenge
+
+// Authentication callbacks run only after peer verification. They must honor
+// context cancellation and must not call Client.Close from the callback.
+// Credentials reacquires secrets when no session token is available. WebAuth
+// hands the HTTPS URL to the application and awaits completion of its local
+// interaction. The verified VPN peer still decides whether login succeeded.
+type Authentication struct {
+	Credentials func(context.Context) (Credentials, error)
+	Challenge   func(context.Context, Challenge) (string, error)
+	WebAuth     func(context.Context, string) error
 }
 
 // ControlMode selects the optional outer protection of the TLS control channel.
@@ -76,6 +103,8 @@ type ControlInfo struct {
 	TunnelIP   netip.Addr
 	TunnelIPv6 netip.Prefix
 	Tunnel     tunnel.Configuration
+	// MaxTunnelPacketSize is the active ceiling for a complete inner IP packet.
+	MaxTunnelPacketSize int
 }
 
 // ControlInfo reports negotiated settings for the active control session.
@@ -100,6 +129,7 @@ func controlInfo(active *connection) (ControlInfo, bool) {
 	return ControlInfo{
 		TLSVersion: info.TLSVersion, DataCipher: info.Cipher, PeerID: info.PeerID,
 		KeyID: keyID, TunnelIP: info.Tunnel.IPv4.Addr(), TunnelIPv6: info.Tunnel.IPv6, Tunnel: info.Tunnel,
+		MaxTunnelPacketSize: info.PacketMTU,
 	}, true
 }
 
@@ -113,6 +143,16 @@ func prepareHandshakes(cfg Config) ([]handshakeFunc, error) {
 		return nil, configError("auth digest")
 	}
 	var user tlscontrol.Credentials
+	auth := tlscontrol.Interaction{Challenge: cfg.Authentication.Challenge, WebAuth: cfg.Authentication.WebAuth}
+	if provider := cfg.Authentication.Credentials; provider != nil {
+		if cfg.Credentials != nil {
+			return nil, configError("credentials")
+		}
+		auth.Credentials = func(ctx context.Context) (tlscontrol.Credentials, error) {
+			user, err := provider(ctx)
+			return tlscontrol.Credentials(user), err
+		}
+	}
 	if cfg.Credentials != nil {
 		user = tlscontrol.Credentials(*cfg.Credentials)
 		if err := user.Validate(); err != nil {
@@ -120,11 +160,32 @@ func prepareHandshakes(cfg Config) ([]handshakeFunc, error) {
 		}
 	}
 	var settings *tls.Config
+	var trust tlscontrol.ServerTrust
 	if cfg.TLS != nil {
-		optional := cfg.TLS.AllowPasswordOnly && cfg.Credentials != nil
-		settings, err = tlscontrol.ClientConfig(cfg.TLS.CA, cfg.TLS.Certificate, cfg.TLS.PrivateKey, cfg.TLS.UseSystemRoots, optional)
+		optional := cfg.TLS.AllowPasswordOnly && (cfg.Credentials != nil || auth.Credentials != nil)
+		tlsSettings := cfg.TLS
+		certificate, key := tlsSettings.Certificate, tlsSettings.PrivateKey
+		external := tlsSettings.Signer != nil || tlsSettings.KeyProvider != nil
+		if external && len(key) != 0 {
+			return nil, configError("TLS identity")
+		}
+		if external {
+			certificate = nil
+		}
+		if len(tlsSettings.CA)+len(tlsSettings.Certificate)+len(key)+len(tlsSettings.CRL) > 1<<20 {
+			return nil, configError("TLS material")
+		}
+		settings, err = tlscontrol.ClientConfig(tlsSettings.CA, certificate, key, tlsSettings.UseSystemRoots, optional || external)
 		if err != nil || !tlscontrol.ValidVersions(cfg.TLS.MinVersion, cfg.TLS.MaxVersion) {
 			return nil, configError("TLS")
+		}
+		if external && tlscontrol.SetKeyProvider(settings, tlsSettings.Certificate,
+			tlsSettings.Signer, tlsSettings.KeyProvider) != nil {
+			return nil, configError("TLS identity")
+		}
+		trust, err = tlscontrol.ParseServerTrust(tlsSettings.ServerFingerprints, tlsSettings.CRL)
+		if err != nil {
+			return nil, configError("TLS server trust")
 		}
 		if cfg.TLS.MinVersion != 0 {
 			settings.MinVersion = cfg.TLS.MinVersion
@@ -142,6 +203,7 @@ func prepareHandshakes(cfg Config) ([]handshakeFunc, error) {
 	handshakes := make([]handshakeFunc, len(cfg.Endpoints))
 	limits := session.Options{
 		MaxPacketSize: cfg.MaxPacketSize, RekeyInterval: cfg.RekeyInterval, HandshakeLimit: cfg.HandshakeTimeout,
+		TunnelMTU: cfg.TunnelMTU,
 	}
 	for i, endpoint := range cfg.Endpoints {
 		protection, wireDigest := common, digest
@@ -154,10 +216,21 @@ func prepareHandshakes(cfg Config) ([]handshakeFunc, error) {
 		if settings == nil {
 			continue
 		}
-		peer := tlscontrol.PeerConfig(settings, endpoint.ServerName, string(endpoint.VerifyX509Name.Mode),
-			endpoint.VerifyX509Name.Value, cfg.TLS.RequireServerUsage)
+		peer := tlscontrol.PeerConfigWithTrust(settings, endpoint.ServerName, string(endpoint.VerifyX509Name.Mode),
+			endpoint.VerifyX509Name.Value, cfg.TLS.RequireServerUsage, trust)
 		opts := limits
-		opts.TLS = tlscontrol.Options{TLS: peer, Digest: wireDigest, Ciphers: ciphers, PushPolicy: cfg.PushPolicy}
+		if endpoint.TunnelMTU != 0 {
+			opts.TunnelMTU = endpoint.TunnelMTU
+		}
+		if opts.TunnelMTU != 0 {
+			opts.TunnelMTU = min(opts.TunnelMTU, opts.MaxPacketSize-data.Overhead)
+			if opts.TunnelMTU < 68 {
+				return nil, configError("tunnel MTU")
+			}
+		}
+		opts.TLS = tlscontrol.Options{TLS: peer, Digest: wireDigest, Ciphers: ciphers, PushPolicy: cfg.PushPolicy,
+			Interaction: auth, ExitNotify: (cfg.ExplicitExitNotify || endpoint.ExplicitExitNotify) && strings.HasPrefix(endpoint.Network, "udp"),
+			TunnelMTU: opts.TunnelMTU}
 		opts.Protection = protection
 		handshakes[i] = openHandshake(opts, user)
 	}

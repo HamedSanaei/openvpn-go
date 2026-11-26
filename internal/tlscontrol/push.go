@@ -20,7 +20,9 @@ type Negotiation struct {
 	PingInterval time.Duration
 	PingTimeout  time.Duration
 	PingExit     bool
+	ExitNotify   bool
 	Tunnel       tunnel.Configuration
+	PacketMTU    int
 }
 
 type pushState struct {
@@ -28,6 +30,8 @@ type pushState struct {
 	allowed         []string
 	havePeer        bool
 	exporter        bool
+	allowExit       bool
+	haveFlags       bool
 	continued       bool
 	parts           int
 	total           int
@@ -99,12 +103,26 @@ func (p *pushState) option(name string, arg []byte) error {
 			return ErrNegotiation
 		}
 		p.PeerID, p.havePeer = uint32(id), true
-	case "key-derivation", "protocol-flags":
-		// We advertise the exporter, and no other optional protocol flags.
+	case "key-derivation":
 		if string(arg) != "tls-ekm" || p.exporter {
 			return ErrNegotiation
 		}
 		p.exporter = true
+	case "protocol-flags":
+		if p.haveFlags {
+			return ErrNegotiation
+		}
+		p.haveFlags = true
+		for flag := range bytes.SplitSeq(arg, []byte{' '}) {
+			switch {
+			case string(flag) == "tls-ekm" && !p.exporter:
+				p.exporter = true
+			case string(flag) == "cc-exit" && p.allowExit && !p.ExitNotify:
+				p.ExitNotify = true
+			default:
+				return ErrNegotiation
+			}
+		}
 	case "auth-token":
 		if len(p.token) != 0 || len(arg) == 0 || !validKeyString(string(arg)) {
 			return ErrNegotiation

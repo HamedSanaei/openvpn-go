@@ -2,7 +2,10 @@ package profile
 
 import (
 	"bytes"
+	"context"
+	"crypto"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/pem"
@@ -16,6 +19,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/hamedsanaei/openvpn-go/client"
 	"github.com/hamedsanaei/openvpn-go/internal/testkit"
@@ -71,6 +75,7 @@ func TestDirectiveRegistry(t *testing.T) {
 		"key.pem":     {Data: pki.Client.PrivateKey},
 		"shared.key":  {Data: staticFixture()},
 		"wrapped.pem": {Data: wrappedFixture()},
+		"crl.pem":     {Data: pki.CRL(t, time.Now(), false)},
 	}
 	opts := Options{Resolver: files.Open, Credentials: &client.Credentials{Username: "fixture", Password: "synthetic"}}
 	covered := make(map[string]bool)
@@ -106,10 +111,23 @@ func TestDirectiveRegistry(t *testing.T) {
 		{"tls-version-max", "tls-version-max 1.2", "tls-version-max 1.3 or-highest", false},
 		{"allow-compression", "allow-compression no", "allow-compression asym", false},
 		{"nobind", "nobind", "nobind yes", false},
+		{"bind", "bind", "bind\nnobind", false},
+		{"local", "local 127.0.0.1", "local not-a-literal", false},
+		{"lport", "lport 1195", "lport 0", false},
+		{"connect-timeout", "connect-timeout 5", "connect-timeout 121", false},
+		{"connect-retry", "connect-retry 1 30", "connect-retry 30 1", false},
+		{"connect-retry-max", "connect-retry-max 3", "connect-retry-max 1025", false},
+		{"hand-window", "hand-window 90", "hand-window 301", false},
+		{"reneg-sec", "reneg-sec 0", "reneg-sec 86401", false},
+		{"explicit-exit-notify", "explicit-exit-notify 2", "explicit-exit-notify -1", false},
+		{"tun-mtu", "tun-mtu 1400", "tun-mtu 67", false},
+		{"auth-nocache", "auth-nocache", "auth-nocache\nauth-user-pass", false},
+		{"peer-fingerprint", "peer-fingerprint " + pki.ServerFingerprint(), "peer-fingerprint ff:ff", false},
+		{"crl-verify", "crl-verify crl.pem", "crl-verify crl.pem dir", false},
 		{"disable-dco", "disable-dco", "disable-dco yes", false},
 		{"persist-key", "persist-key", "persist-key yes", true},
 		{"persist-tun", "persist-tun", "persist-tun yes", true},
-		{"resolv-retry", "resolv-retry infinite", "resolv-retry forever", true},
+		{"resolv-retry", "resolv-retry infinite", "resolv-retry forever", false},
 		{"verb", "verb 3", "verb 12", true},
 	} {
 		covered[tc.name] = true
@@ -148,6 +166,39 @@ func TestDirectiveRegistry(t *testing.T) {
 	for name := range directives {
 		if !covered[name] {
 			t.Errorf("directive %s needs valid and invalid fixtures", name)
+		}
+	}
+}
+
+func TestProfileTrustAndCredentialCallbacks(t *testing.T) {
+	pki, rotating := testkit.NewPKI(t), testkit.NewPKI(t)
+	certificate := section("ca", pki.CA) + section("cert", pki.Client.Certificate)
+	pins := section("peer-fingerprint", []byte(pki.ServerFingerprint()+"\n"+rotating.ServerFingerprint()))
+	base := testProfile + certificate + pins + section("crl-verify", pki.CRL(t, time.Now(), false))
+	user := func(context.Context) (client.Credentials, error) {
+		return client.Credentials{Username: "test-user", Password: "test-password"}, nil
+	}
+	raw, _ := pem.Decode(pki.Client.PrivateKey)
+	key, err := x509.ParsePKCS8PrivateKey(raw.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := Options{Identity: KeyIdentity{Signer: key.(crypto.Signer)},
+		Authentication: client.Authentication{Credentials: user}}
+	cfg, warnings, err := Parse(strings.NewReader(base+"auth-user-pass\nauth-nocache\n"), opts)
+	if err != nil || len(warnings) != 0 || cfg.Credentials != nil ||
+		cfg.Authentication.Credentials == nil || cfg.TLS.Signer == nil || len(cfg.TLS.ServerFingerprints) != 2 {
+		t.Fatalf("policy profile failed: %v, warnings %v", err, warnings)
+	}
+	c, err := client.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Close()
+	for _, extra := range []string{"peer-fingerprint " + pki.ServerFingerprint() + "\n", "crl-verify ../outside.crl\n",
+		section("key", pki.Client.PrivateKey), "auth-user-pass private-file\nauth-nocache\n", "up arbitrary-hook\n"} {
+		if _, _, err := Parse(strings.NewReader(base+extra), opts); err == nil {
+			t.Fatal("rejected policy variant was accepted")
 		}
 	}
 }
