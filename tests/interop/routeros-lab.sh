@@ -14,10 +14,11 @@ test -f "$repo/tests/interop/routeros-console.py"
 case "$lab/" in "$repo/"*|*,*) echo "Choose a private directory outside the checkout" >&2; exit 2 ;; esac
 
 stop_process() {
-    local pid
+    local pid attached
     pid=$(sudo cat "$lab/$1.pid" 2>/dev/null) || return 0
     [[ "$pid" =~ ^[0-9]+$ ]] || return 1
-    if [ "$(sudo ip netns identify "$pid")" = "$namespace" ]; then
+    attached=$(sudo ip netns identify "$pid" 2>/dev/null) || return 0
+    if [ "$attached" = "$namespace" ]; then
         sudo kill -TERM "$pid"
     fi
 }

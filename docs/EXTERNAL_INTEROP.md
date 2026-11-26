@@ -110,8 +110,15 @@ client had required both in the reset packet. Handling the split proof
 reached verified TLS and exposed a second difference. The authenticated
 CHR key-method response carried the OCC options field without the modern
 trailing fields. The fixed policy validates the cipher in this response.
-CHR's authenticated push established `DATA_V2` via `peer-id`, with no
-exporter selection. [Design and regression rationale](adr/0009-fixed-aead-compatibility.md)
+CHR's authenticated push supplied `peer-id` without exporter selection.
+The data-channel capture confirmed `P_DATA_V2` framing.
+[Design and regression rationale](adr/0009-fixed-aead-compatibility.md)
+
+The additional OpenVPN 3 Core 3.11.8 reference used the same four listener
+profiles with the fixed cipher specified as `cipher`. Core connected with
+TLS 1.2 and the expected AES-GCM cipher, and IPv4 ICMP echo bound to its
+tunnel interface passed on all four listeners. The Core reference ran
+one session per listener. [Core pin and build](../tests/interop/README.md#compare-openvpn-3-core-with-openvpn-go)
 
 Wrong CA, hostname and pin returned `connect:certificate_verification_failure`
 during `tls_verification`. CHR closed the mismatched fixed-cipher connection
@@ -128,8 +135,9 @@ Community 2.6.22, 2.6.23 and 2.7.9, including the loss/rekey and
 Xray 26.10.21 fixtures. Core 3.11.8 ran in the
 Community differential harness. Signed Community 2.4.12 and 2.5.11
 retained the default-policy rejection. The package, race, vet, module
-verification and fuzz checks are separate from the CHR matrix.
-[Interop commands](../tests/interop/README.md) · [CI hardening workflow](../.github/workflows/hardening.yml)
+verification and fuzz checks are separate from the CHR matrix. The
+hosted jobs were run against implementation commit `ae771e2`.
+[Interop commands](../tests/interop/README.md) · [CI logs](https://github.com/HamedSanaei/openvpn-go/actions/runs/45897905931) · [Hardening logs](https://github.com/HamedSanaei/openvpn-go/actions/runs/45897902334) · [Lossy soak logs](https://github.com/HamedSanaei/openvpn-go/actions/runs/45898243377)
 
 Qualification is limited to these four virtual IPv4, IP-mode cases with
 plain outer control and TLS 1.2. Physical RB5009 qualification awaits
