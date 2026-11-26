@@ -43,6 +43,67 @@ adapter attaches a host TUN through the public client API.
 - Managing operating-system routes or firewall rules inside the protocol core.
 - A dependency on 3x-ui or Xray from the core module.
 
+## Architecture
+
+The diagram presents the complete target architecture, assuming the planned
+capabilities are implemented. It describes the intended design, not a
+claim that every optional backend is available in the current release.
+See the [compatibility matrix](docs/COMPATIBILITY_MATRIX.md) for verified
+support and the [development backlog](https://github.com/HamedSanaei/openvpn-go/issues)
+for implementation status.
+
+```mermaid
+flowchart TB
+    X["3x-ui / Xray"]
+    M["Mobile SDK"]
+    G["Go applications"]
+
+    SDK["Public Go SDK<br/>Configuration · Client · Events · Statistics"]
+    S["Session management<br/>Lifecycle · Authentication · Retry · Failover"]
+
+    subgraph CORE["Independent OpenVPN protocol core"]
+        direction TB
+        C["Control plane<br/>TLS · PKI · Authentication<br/>Negotiation · Reliability · Profile · Push options"]
+        D["Data plane<br/>AEAD · Replay protection<br/>Rekey · Packet I/O · MTU · Optional DCO"]
+    end
+
+    T["Transport and tunnel interfaces<br/>TCP · UDP · PacketConn"]
+    K["Kernel TUN"]
+    U["Userspace network stack"]
+    P["Platform adapters"]
+
+    X --> SDK
+    M --> SDK
+    G --> SDK
+    SDK --> S
+    S --> C
+    S --> D
+    C <--> D
+    C --> T
+    D --> T
+    T --> K
+    T --> U
+    T --> P
+
+    classDef consumer fill:#e2e8f0,stroke:#64748b,color:#0f172a,stroke-width:1.2px
+    classDef api fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:1.5px
+    classDef plane fill:#dbeafe,stroke:#2563eb,color:#1e3a8a,stroke-width:1.3px
+    classDef boundary fill:#f1f5f9,stroke:#64748b,color:#0f172a,stroke-width:1.2px
+    class X,M,G consumer
+    class SDK,K,U,P api
+    class C,D plane
+    class S,T boundary
+```
+
+The protocol core remains independent of Xray, 3x-ui, userspace network
+stacks and operating-system-specific networking. Optional adapters own
+platform integration, routes, DNS and privileges. The core owns verified
+protocol negotiation, authenticated packet processing and session lifecycle.
+The transport interface connects to the remote OpenVPN peer; the tunnel
+interface connects to the local packet source and sink.
+
+[Detailed architecture and API contracts](docs/ARCHITECTURE.md)
+
 ## Repository map
 
 - client/: public client lifecycle and configuration API.
