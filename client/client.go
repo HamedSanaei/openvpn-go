@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math/rand/v2"
 	"sync"
+	"time"
 
 	"github.com/hamedsanaei/openvpn-go/internal/failover"
 	"github.com/hamedsanaei/openvpn-go/internal/observability"
@@ -55,6 +56,8 @@ type connection struct {
 	link            tunnel.PacketConn
 	index, position int
 	generation      uint64
+	started         time.Time
+	sent, recv      observability.Traffic
 }
 
 // A handshake returns an authenticated IP packet session. A returned session
@@ -75,10 +78,12 @@ type Client struct {
 	run     *operation
 	active  *connection
 
-	stats  Stats
-	events observability.History[Event]
-	sent   observability.Traffic
-	recv   observability.Traffic
+	stats       Stats
+	events      observability.History[Event]
+	attempts    *observability.History[AttemptReport]
+	generations *observability.History[GenerationReport]
+	sent        observability.Traffic
+	recv        observability.Traffic
 
 	closeOnce sync.Once
 	closeErr  error
@@ -173,7 +178,7 @@ func (c *Client) operationError(ctx context.Context, op string) error {
 	return nil
 }
 
-func (c *Client) dial(ctx context.Context, index, visit int) (tunnel.PacketConn, error) {
+func (c *Client) dial(ctx context.Context, index, visit int) (tunnel.PacketConn, AttemptStage, error) {
 	endpoint := c.config.Endpoints[index]
 	timeout := endpoint.ConnectTimeout
 	if timeout == 0 {
@@ -181,6 +186,10 @@ func (c *Client) dial(ctx context.Context, index, visit int) (tunnel.PacketConn,
 	}
 	dialCtx, cancelDial := context.WithTimeout(ctx, timeout)
 	conn, network, err := c.connectSocket(dialCtx, endpoint, visit)
+	stage := StageDial
+	if errors.Is(err, errResolution) {
+		stage = StageResolve
+	}
 	if dialCtx.Err() != nil {
 		err = dialCtx.Err()
 	}
@@ -197,14 +206,14 @@ func (c *Client) dial(ctx context.Context, index, visit int) (tunnel.PacketConn,
 			errors.Is(err, transport.ErrInvalidConnection) {
 			code = CodeConfig
 		}
-		return nil, &Error{Op: "dial", Code: code}
+		return nil, stage, &Error{Op: "dial", Code: code}
 	}
 
 	c.mu.Lock()
 	if err := c.operationError(ctx, "handshake"); err != nil {
 		c.mu.Unlock()
 		conn.Close()
-		return nil, err
+		return nil, StageControl, err
 	}
 	c.state = StateHandshaking
 	c.record(EventHandshaking, index, "", 0)
@@ -228,9 +237,16 @@ func (c *Client) dial(ctx context.Context, index, visit int) (tunnel.PacketConn,
 		if errors.As(err, &handshakeError) {
 			code = handshakeError.Code
 		}
-		return nil, &Error{Op: "handshake", Code: code}
+		stage = StageControl
+		switch code {
+		case CodeAuthentication:
+			stage = StageAuthentication
+		case CodeCertificate:
+			stage = StageCertificate
+		}
+		return nil, stage, &Error{Op: "handshake", Code: code}
 	}
-	return session, nil
+	return session, StageControl, nil
 }
 
 // Close permanently closes the client. It cancels in-flight operations, closes
@@ -276,6 +292,9 @@ func (c *Client) Close() error {
 		var code ErrorCode
 		if c.closeErr != nil {
 			code = CodeNetwork
+		}
+		if active != nil {
+			c.finishGeneration(active, code)
 		}
 		c.record(EventClosed, -1, code, 0)
 		c.mu.Unlock()

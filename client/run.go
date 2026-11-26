@@ -93,7 +93,7 @@ func (c *Client) RunConfigured(ctx context.Context, device tunnel.PacketConn, co
 
 func (c *Client) forwardGeneration(ctx context.Context, device tunnel.PacketConn, active *connection, configure TunnelConfigurer, inbound, outbound []byte) forwardingError {
 	if configure == nil {
-		return c.forwardSession(ctx, device, active.link, inbound, outbound)
+		return c.forwardSession(ctx, device, active, inbound, outbound)
 	}
 	info, ok := controlInfo(active)
 	if !ok {
@@ -134,7 +134,7 @@ func (c *Client) forwardGeneration(ctx context.Context, device tunnel.PacketConn
 	// Loss cancels the configurator and its DNS sockets immediately.
 	// Packet forwarding observes the session's own error so a canceled
 	// device read cannot hide a reconnectable transport loss.
-	return c.forwardSession(ctx, device, active.link, inbound, outbound)
+	return c.forwardSession(ctx, device, active, inbound, outbound)
 }
 
 func (c *Client) endSession(ctx context.Context, active *connection, result forwardingError) (forwardingError, error) {
@@ -180,15 +180,15 @@ type forwardingError struct {
 	sameEndpoint bool
 }
 
-func (c *Client) forwardSession(ctx context.Context, device, link tunnel.PacketConn, inbound, outbound []byte) forwardingError {
+func (c *Client) forwardSession(ctx context.Context, device tunnel.PacketConn, active *connection, inbound, outbound []byte) forwardingError {
 	ctx, cancel := context.WithCancel(ctx)
 	results := make(chan forwardingError, 2)
 	var workers sync.WaitGroup
 	workers.Go(func() {
-		results <- forward(ctx, device, link, inbound, true, &c.recv)
+		results <- forward(ctx, device, active.link, inbound, true, &c.recv, &active.recv)
 	})
 	workers.Go(func() {
-		results <- forward(ctx, link, device, outbound, false, &c.sent)
+		results <- forward(ctx, active.link, device, outbound, false, &c.sent, &active.sent)
 	})
 	result := <-results
 	cancel()
@@ -201,7 +201,7 @@ func (c *Client) forwardSession(ctx context.Context, device, link tunnel.PacketC
 	return result
 }
 
-func forward(ctx context.Context, dst, src tunnel.PacketConn, packet []byte, readsSession bool, traffic *observability.Traffic) forwardingError {
+func forward(ctx context.Context, dst, src tunnel.PacketConn, packet []byte, readsSession bool, total, generation *observability.Traffic) forwardingError {
 	defer clear(packet)
 	for ctx.Err() == nil {
 		n, err := src.ReadPacket(ctx, packet)
@@ -220,7 +220,8 @@ func forward(ctx context.Context, dst, src tunnel.PacketConn, packet []byte, rea
 			}
 			return forwardError("write packet", err, !readsSession)
 		}
-		traffic.Add(n)
+		total.Add(n)
+		generation.Add(n)
 	}
 	return forwardError("forward", ctx.Err(), readsSession)
 }

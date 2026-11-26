@@ -113,6 +113,7 @@ interface connects to the local packet source and sink.
 - internal/: protocol, control/data channels, cryptography, sessions and failover.
 - integrations/xray/: Linux egress adapter and 3x-ui configuration example.
 - integrations/netstack/: [optional unprivileged TCP, UDP and DNS adapter](integrations/netstack/README.md) in a separate Go module.
+- integrations/: [TCP proxies, session leases, host network policy and platform bridge](docs/INTEGRATIONS.md).
 - tests/interop/: real OpenVPN interoperability scenarios.
 - docs/: requirements, architecture, security, clean-room process and roadmap.
 
@@ -147,8 +148,9 @@ application configures its own tunnel interface and routes.
 
 `Client.Connect` tries the configured candidates under `Config.Retry`.
 `Client.Run` reconnects after transport loss while forwarding. Use
-`Client.Stats` and `Client.Events` for redacted lifecycle and traffic
-information. [Retry policy and custom transports](docs/LIFECYCLE.md)
+`Client.Stats`, `Client.Events`, `Client.AttemptReports` and
+`Client.GenerationReports` for redacted lifecycle and traffic
+information. [Retry policy and custom transports](docs/LIFECYCLE.md) · [Report fields](docs/INTEGRATIONS.md#session-leases-and-reports)
 
 Use `profile.Parse` to load an OVPN profile into `client.Config`. References
 require an explicitly authorized filesystem root or resolver. Inspect a
@@ -174,3 +176,5 @@ make audit
 ## Project documents
 
 Start with docs/PROJECT_PLAN.md, then docs/REQUIREMENTS.md, docs/ARCHITECTURE.md, docs/CLEAN_ROOM.md and docs/MILESTONES.md.
+
+[Protocol feature ledger](docs/FEATURE_LEDGER.md) · [Stress and comparative resource evidence](docs/RESOURCE_EVIDENCE.md)

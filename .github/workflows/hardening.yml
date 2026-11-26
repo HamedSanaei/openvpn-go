@@ -57,6 +57,15 @@ jobs:
           if sudo test -f "$report"; then
             sudo cat "$report" > evidence/openvpn3-comparison.json
           fi
+      - name: Measure the same userspace workload on all three clients
+        run: |
+          set -o pipefail
+          go build -o "$RUNNER_TEMP/ovpn-go-bench" ./cmd/ovpn-xray
+          sudo env PATH="$PATH" GOTOOLCHAIN=local GOMODCACHE="$(go env GOMODCACHE)" GOPROXY=off \
+            OPENVPN_INTEROP_BIN="$OPENVPN_INTEROP_BIN" OPENVPN3_INTEROP_BIN="$OPENVPN3_INTEROP_BIN" \
+            OPENVPN3_INTEROP_SHA256="$OPENVPN3_INTEROP_SHA256" OPENVPN_GO_BENCH_BIN="$RUNNER_TEMP/ovpn-go-bench" \
+            unshare --net --mount sh -c 'ip link set lo up && exec go test -count=1 -v -timeout 3m -run "^TestComparativeBenchmark$" ./tests/interop' \
+            | tee evidence/comparative-benchmark.txt
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:

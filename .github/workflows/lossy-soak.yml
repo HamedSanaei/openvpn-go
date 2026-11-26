@@ -1,0 +1,48 @@
+name: Lossy protocol soak
+
+on:
+  schedule:
+    - cron: '30 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  soak:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: [34, 2131, 59341]
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: go.mod
+      - name: Build the signed Linux reference peer
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libssl-dev libcap-ng-dev liblz4-dev liblzo2-dev
+          peer="$(bash tests/interop/build-peer.sh 2.6.23 "$RUNNER_TEMP/peer")"
+          echo "OPENVPN_INTEROP_BIN=$peer" >> "$GITHUB_ENV"
+          go mod download
+      - name: Run isolated soak
+        env:
+          OPENVPN_SOAK_SEED: ${{ matrix.seed }}
+        run: |
+          set -o pipefail
+          sudo env PATH="$PATH" GOTOOLCHAIN=local GOMODCACHE="$(go env GOMODCACHE)" GOPROXY=off \
+            OPENVPN_INTEROP_BIN="$OPENVPN_INTEROP_BIN" OPENVPN_SOAK_LONG=1 OPENVPN_SOAK_SEED="$OPENVPN_SOAK_SEED" \
+            unshare --net sh -c 'ip link set lo up && exec go test -race -count=1 -timeout 3m -v -run "^TestLossySessionSoak$" ./tests/interop' \
+            | tee soak.log
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: soak-${{ matrix.seed }}
+          path: soak.log
