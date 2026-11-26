@@ -54,6 +54,7 @@ type operation struct {
 type connection struct {
 	link            tunnel.PacketConn
 	index, position int
+	generation      uint64
 }
 
 // A handshake returns an authenticated IP packet session. A returned session

@@ -37,7 +37,7 @@ func validKeyString(s string) bool {
 }
 
 // ClientConfig loads a client key pair and explicitly provisioned trust.
-func ClientConfig(ca, certificate, key []byte, systemRoots bool) (*tls.Config, error) {
+func ClientConfig(ca, certificate, key []byte, systemRoots, allowPasswordOnly bool) (*tls.Config, error) {
 	if (len(ca) == 0 && !systemRoots) || len(ca)+len(certificate)+len(key) > 1<<20 {
 		return nil, ErrConfig
 	}
@@ -54,15 +54,19 @@ func ClientConfig(ca, certificate, key []byte, systemRoots bool) (*tls.Config, e
 	if len(ca) != 0 && !roots.AppendCertsFromPEM(ca) {
 		return nil, ErrConfig
 	}
+	cfg := &tls.Config{
+		RootCAs:                roots,
+		MinVersion:             tls.VersionTLS12,
+		MaxVersion:             tls.VersionTLS13,
+		SessionTicketsDisabled: true,
+	}
+	if len(certificate) == 0 && len(key) == 0 && allowPasswordOnly {
+		return cfg, nil
+	}
 	pair, err := tls.X509KeyPair(certificate, key)
 	if err != nil {
 		return nil, ErrConfig
 	}
-	return &tls.Config{
-		RootCAs:                roots,
-		Certificates:           []tls.Certificate{pair},
-		MinVersion:             tls.VersionTLS12,
-		MaxVersion:             tls.VersionTLS13,
-		SessionTicketsDisabled: true,
-	}, nil
+	cfg.Certificates = []tls.Certificate{pair}
+	return cfg, nil
 }

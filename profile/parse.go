@@ -25,6 +25,9 @@ type Options struct {
 	Resolver Resolver
 	// Credentials supplies the pair for auth-user-pass without an argument.
 	Credentials *client.Credentials
+	// AllowPasswordOnly authorizes a verified TLS profile with auth-user-pass
+	// and no client certificate or key.
+	AllowPasswordOnly bool
 }
 
 // Parse reads a bounded profile and returns a validated configuration in
@@ -49,7 +52,7 @@ func Parse(r io.Reader, opts Options) (client.Config, []Diagnostic, error) {
 		opts: opts, cfg: client.Config{TLS: &client.TLSConfig{}},
 		filesLeft: maxFileBytes, loaded: make(map[*material][]byte),
 	}
-	if err := p.read(bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))); err != nil {
+	if err := p.read(bytes.TrimPrefix(data, []byte("\xef\xbb\xbf")), nil); err != nil {
 		return client.Config{}, p.warnings, err
 	}
 	if err := p.finish(); err != nil {
@@ -82,101 +85,129 @@ type parser struct {
 	filesLeft           int
 }
 
-func (p *parser) read(remaining []byte) error {
+func (p *parser) read(remaining []byte, report *Report) error {
 	var inline *material
 	var body []byte
+	var skipTag string
 	for number := 1; len(remaining) != 0; number++ {
 		previous := remaining
 		line, rest, _ := bytes.Cut(remaining, []byte{'\n'})
 		remaining = rest
 		line = bytes.TrimSuffix(line, []byte{'\r'})
+		loc := location{line: number}
 		if len(line) > maxLine {
-			return (location{line: number}).diagnostic(CodeLimit)
+			if err := report.record(loc, loc.diagnostic(CodeLimit), false); err != nil {
+				return err
+			}
+			continue
 		}
 		if !utf8.Valid(line) || bytes.ContainsFunc(line, func(r rune) bool {
 			return r != '\t' && unicode.IsControl(r)
 		}) {
-			return (location{line: number}).diagnostic(CodeSyntax)
+			if err := report.record(loc, loc.diagnostic(CodeSyntax), false); err != nil {
+				return err
+			}
+			continue
 		}
 		trimmed := bytes.Trim(line, " \t")
+		if skipTag != "" {
+			if string(trimmed) == skipTag {
+				skipTag = ""
+			}
+			continue
+		}
 		if inline != nil {
 			if bytes.Equal(trimmed, []byte("</"+inline.loc.name+">")) {
 				inline.body = body[:len(body)-len(previous)]
-				if err := p.setMaterial(inline); err != nil {
+				if err := report.record(inline.loc, p.setMaterial(inline), false); err != nil {
 					return err
 				}
 				inline, body = nil, nil
 			} else if bytes.HasPrefix(trimmed, []byte("</")) ||
 				(inline.loc.name != "auth-user-pass" && bytes.HasPrefix(trimmed, []byte("<"))) {
-				return (location{line: number, name: inline.loc.name}).diagnostic(CodeSyntax)
+				loc.name = inline.loc.name
+				if err := report.record(loc, loc.diagnostic(CodeSyntax), false); err != nil {
+					return err
+				}
 			}
 			continue
 		}
 		if bytes.HasPrefix(trimmed, []byte("<")) {
 			name, ok := strings.CutSuffix(string(trimmed[1:]), ">")
 			loc := knownLocation(name, number)
+			var rejected error
 			switch {
 			case !ok:
-				return loc.diagnostic(CodeSyntax)
+				rejected = loc.diagnostic(CodeSyntax)
 			case name == "connection":
-				if err := p.openConnection(loc); err != nil {
-					return err
-				}
+				rejected = p.openConnection(loc)
 			case name == "/connection":
-				if err := p.closeConnection(number); err != nil {
-					return err
-				}
+				loc.name = "connection"
+				rejected = p.closeConnection(number)
 			case strings.HasPrefix(name, "/"):
-				return loc.diagnostic(CodeSyntax)
+				rejected = loc.diagnostic(CodeSyntax)
 			default:
 				rule, supported := directives[name]
 				if !supported || !rule.inline {
-					return loc.diagnostic(CodeUnsupported)
+					rejected = loc.diagnostic(CodeUnsupported)
+				} else if p.block != nil && !rule.connection {
+					rejected = loc.diagnostic(CodeScope)
+				} else {
+					inline, body = &material{loc: loc, inline: true}, remaining
+					continue
 				}
-				if p.block != nil && !rule.connection {
-					return loc.diagnostic(CodeScope)
-				}
-				inline, body = &material{loc: loc, inline: true}, remaining
+				// An unsupported inline section can still contain secrets.
+				skipTag = "</" + name + ">"
+			}
+			if err := report.record(loc, rejected, false); err != nil {
+				return err
 			}
 			continue
 		}
-		if err := p.readDirective(string(trimmed), number); err != nil {
+		before := len(p.warnings)
+		loc, rejected := p.readDirective(string(trimmed), number)
+		if loc.line == 0 {
+			continue
+		}
+		if err := report.record(loc, rejected, len(p.warnings) != before); err != nil {
 			return err
 		}
 	}
 	if inline != nil {
-		return inline.loc.diagnostic(CodeSyntax)
+		if err := report.record(inline.loc, inline.loc.diagnostic(CodeSyntax), false); err != nil {
+			return err
+		}
 	}
 	if p.block != nil {
-		return p.blockLoc.diagnostic(CodeSyntax)
+		return report.record(p.blockLoc, p.blockLoc.diagnostic(CodeSyntax), false)
 	}
 	return nil
 }
 
-func (p *parser) readDirective(line string, number int) error {
+func (p *parser) readDirective(line string, number int) (location, error) {
 	fields, ok := words(line)
 	loc := location{line: number}
 	if len(fields) != 0 {
 		loc = knownLocation(strings.TrimPrefix(fields[0], "--"), number)
 	}
 	if !ok {
-		return loc.diagnostic(CodeSyntax)
+		return loc, loc.diagnostic(CodeSyntax)
 	}
 	if len(fields) == 0 {
-		return nil
+		return location{}, nil
 	}
 	rule, supported := directives[loc.name]
 	if !supported {
-		return loc.diagnostic(CodeUnsupported)
+		return loc, loc.diagnostic(CodeUnsupported)
 	}
 	args := fields[1:]
 	if len(args) < rule.min || len(args) > rule.max || loc.name == "connection" {
-		return loc.diagnostic(CodeSyntax)
+		return loc, loc.diagnostic(CodeSyntax)
 	}
 	if p.block != nil && !rule.connection {
-		return loc.diagnostic(CodeScope)
+		return loc, loc.diagnostic(CodeScope)
 	}
-	return p.apply(loc, args)
+	return loc, p.apply(loc, args)
 }
 
 func (p *parser) finish() error {

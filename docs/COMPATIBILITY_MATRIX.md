@@ -29,12 +29,20 @@ digests and symmetric key-direction mode with focused cases. For the two
 non-cookie path with an independent wire fixture if the 2.6.23 server still
 chooses a cookie under `allow-noncookie`.
 
-The approved 2.6.23 scope excludes password-only servers, MFA/SSO and deferred interactive auth,
+The 2.6.23 baseline excludes MFA/SSO and deferred interactive auth,
 static-key mode, key method 1, legacy PRF fallback, compression, legacy data
 ciphers, TAP, DCO, address floating, dynamic control wrapping, epoch data
 formats, and Access Server or other OpenVPN releases without recorded results.
 IPv6 transport and IPv6 tunnel traffic are focused tests, independent of the
 IPv4 matrix. [Project scope](REQUIREMENTS.md)
+
+Focused TCP tests cover password-only authentication, server-side optional
+client certificates with and without a client identity, and required
+client certificates. Failure cases cover a wrong password and invalid
+server identity. Password-only operation requires an explicit client
+policy. The DNS integration suite exercises authenticated resolver
+changes and rejects stale and pending configurations during reconnect.
+[Password-authentication tests](../tests/interop/password_test.go) · [DNS reconnect test](../tests/interop/dns_test.go)
 
 ## OpenVPN 3 Core differential reference
 

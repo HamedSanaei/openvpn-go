@@ -31,8 +31,9 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 	v4 := flags.String("ipv4", "", "expected IPv4 address")
 	v6 := flags.String("ipv6", "", "expected IPv6 address and prefix")
 	attempts := flags.Int("attempts", 0, "maximum dial attempts per sequence")
+	passwordOnly := flags.Bool("allow-password-only", false, "allow verified profiles without a client certificate")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *path == "" || *tun == "" || (*v4 == "" && *v6 == "") {
-		fmt.Fprintln(stderr, "Usage: ovpn-xray -profile client.ovpn -tun ovpn0 [-root directory] [-ipv4 addr] [-ipv6 prefix] [-attempts n]")
+		fmt.Fprintln(stderr, "Usage: ovpn-xray -profile client.ovpn -tun ovpn0 [-root directory] [-ipv4 addr] [-ipv6 prefix] [-attempts n] [-allow-password-only]")
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
@@ -54,7 +55,7 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 			return 2
 		}
 	}
-	var opts profile.Options
+	opts := profile.Options{AllowPasswordOnly: *passwordOnly}
 	if *rootPath != "" {
 		opts.Root, err = os.OpenRoot(*rootPath)
 		if err != nil {

@@ -53,6 +53,11 @@ application owns the device and its addresses and routes. Read `ControlInfo`
 after a connection event to obtain the newly negotiated tunnel settings.
 Between forwarding runs, `Connect` starts a new attempt sequence.
 
+Adapters using `RunConfigured` acknowledge each authenticated generation
+before forwarding starts. A rejected change is rolled back and stops the
+session. On recovery the old rollback completes before the next
+configuration callback runs. [Tunnel callback contract](TUNNEL.md#transactional-reconnect)
+
 Cancel `Connect` or `Run` to stop the corresponding operation. `Close`
 permanently stops the client, interrupts waits and joins active operations.
 The embedding application closes the borrowed device.
