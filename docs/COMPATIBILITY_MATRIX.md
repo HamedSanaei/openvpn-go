@@ -69,7 +69,7 @@ for each new behavior before expanding compatibility claims.
 
 ## Candidate coverage for older servers and MikroTik
 
-The historical Community rows record isolated AEAD negotiation probes. The RouterOS row describes a future test. The 2.6.23 baseline
+The historical Community rows record isolated AEAD negotiation probes. The RouterOS row records an isolated CHR evaluation, with hardware validation pending. The 2.6.23 baseline
 remains the release reference. Exercise older server builds only in isolated
 test environments. OpenVPN Community has ended upstream support for 2.4 and
 2.5. [OpenVPN release support](https://community.openvpn.net/Pages/Supported%20versions)
@@ -78,7 +78,7 @@ test environments. OpenVPN Community has ended upstream support for 2.4 and
 |---|---|---|
 | OpenVPN Community 2.5.11, commit `6fb2a2560845e15da8918c114fe020b4a06b3cef` | Verified TLS 1.2 over TCP, TUN, AES-256-GCM and AES-128-GCM configured, OpenSSL 3.0.13 | The server pushed `peer-id` and `cipher AES-256-GCM` and omitted `tls-ekm`. The Go client returned a protocol error before activating the session. |
 | OpenVPN Community 2.4.12, commit `058407a89cb812115b383570b12f4c2fde500d39` | Verified TLS 1.2 over TCP, TUN, AES-256-GCM and AES-128-GCM configured, private OpenSSL 1.1.1w | The server pushed `peer-id` and omitted both the negotiated cipher and `tls-ekm`. The Go client returned a protocol error before activating the session. |
-| MikroTik RouterOS 7.x as an OpenVPN server | IP mode, TLS 1.2, TCP and UDP where the chosen build offers them, explicit AES-256-GCM or AES-128-GCM, server CA validation, client certificate and PPP credentials | Pin the exact RouterOS build and capture its profile export. Determine the key derivation, peer ID and data packet format from observed negotiation. The vendor documents that cipher autonegotiation is unavailable and that the client profile must specify a cipher. |
+| MikroTik CHR 7.25.2 x86_64 | TLS 1.2, certificate and PPP password, TCP/UDP, fixed AES-256-GCM and AES-128-GCM | The Community reference verified identity, packet traffic and reconnect. Go timed out during initial setup in all four cases; the repeat returned UDP timeouts and TCP network failures. The reference push included a peer ID and omitted cipher and exporter negotiation. Hardware target `RB5009UG+S+IN`, arm64, 7.25.2, is pending. [Lab results](EXTERNAL_INTEROP.md#mikrotik-routeros) |
 
 [OpenVPN 2.5.11](https://github.com/OpenVPN/openvpn/releases/tag/v2.5.11) · [OpenVPN 2.4.12](https://github.com/OpenVPN/openvpn/releases/tag/v2.4.12) · [OpenVPN 2.5 manual](https://openvpn.net/community-docs/community-articles/openvpn-2-5-manual/) · [OpenVPN 2.6 changes](https://github.com/OpenVPN/openvpn/blob/v2.6.23/Changes.rst#overview-of-changes-in-26) · [MikroTik OpenVPN documentation](https://help.mikrotik.com/docs/spaces/ROS/pages/2031655/OpenVPN)
 
@@ -115,9 +115,10 @@ that requires a fixed cipher without negotiation falls outside that
 policy. M6 evidence must show a verified handshake, bidirectional IP
 traffic, and rekey or a controlled reconnect on the specified build. Verify
 that a required-but-unconfigured mode, wrong server identity or mismatched
-cipher fails. Use a pinned Cloud Hosted Router image for reproducible
-functional tests and add a run on the target hardware where its exact
-build or behavior matters. [MikroTik CHR documentation](https://manual.mikrotik.com/docs/getting-started/installation-and-upgrade/install/chr-installation/)
+cipher fails. [Pinned CHR lab and hardware target](EXTERNAL_INTEROP.md#mikrotik-routeros)
+
+The external profile record tracks Access Server exports and the pending
+authorized provider cases. [Provider and Access Server results](EXTERNAL_INTEROP.md#provider-and-access-server-profiles)
 
 ## OpenVPN Community 2.7.9
 
