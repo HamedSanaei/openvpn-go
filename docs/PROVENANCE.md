@@ -11,6 +11,9 @@ references beside the affected requirement or behavior.
 | Protocol references | OpenVPN's public wire draft, 2.6 manual and official generated protocol documentation | Technical references for wire facts | [Wire draft](https://openvpn.github.io/openvpn-rfc/openvpn-wire-protocol.html) · [Manual](https://openvpn.net/community-docs/community-articles/openvpn-2-6-manual/) · [Protocol documentation](https://build.openvpn.net/doxygen/network_protocol.html) |
 | OpenVPN 2.6.23 | Official tag `v2.6.23`, commit `49620843c487a7fee58e3030b7c88681c115e24e` | External reference peer. Tagged materials corroborate protocol facts where the draft is incomplete. | [Exact release](https://github.com/OpenVPN/openvpn/releases/tag/v2.6.23) · [Compatibility matrix](COMPATIBILITY_MATRIX.md) |
 | OpenVPN 2.6.22 | Signed release `v2.6.22`, commit `c9b790f5b9e8ebca5da38c22f479c31bb8d33686` | Isolated interoperability peer. Source archive SHA-256 is pinned in the build script. | [Exact release](https://github.com/OpenVPN/openvpn/releases/tag/v2.6.22) · [Build script](../tests/interop/build-peer.sh) |
+| OpenVPN 2.7.9 | Signed stable release at `7b60c2aa34992639691e3a2d651fe27301e2e9d5` | External classic data and epoch negotiation reference. | [Exact release](https://github.com/OpenVPN/openvpn/releases/tag/v2.7.9) · [Signature and digest verification](../tests/interop/build-peer.sh) |
+| OpenVPN 2.4.12 and 2.5.11 | Signed historical Community releases pinned in the matrix | External test peers for the default AEAD negotiation policy. | [Observations](COMPATIBILITY_MATRIX.md#candidate-coverage-for-older-servers-and-mikrotik) · [Signature and digest verification](../tests/interop/build-peer.sh) |
+| OpenSSL 1.1.1w | Official source SHA-256 `cf3098950cb4d853ad95c0841f1f9c6d3dc102dccfcacd521d93925208b76ac8` | OpenSSL and original SSLeay licenses. Test-only static dependency of the 2.4.12 peer. | [Official release](https://github.com/openssl/openssl/releases/tag/OpenSSL_1_1_1w) |
 | OpenVPN 3 Core 3.11.8 | Release commit `4f3bdef73245d4ee9e8216c5d65baccc9568f6ef`, source archive SHA-256 `522faf3f7485117423a9c398606062105c4453c11d4d5ebab45e7c209cc3a9ef` | AGPL-3.0-only or MPL-2.0 upstream. The upstream executable runs as an external test client. Source and binary stay in the lab, and only normalized results and binary digests appear in test evidence. | [Upstream terms](https://github.com/OpenVPN/openvpn3/blob/4f3bdef73245d4ee9e8216c5d65baccc9568f6ef/LICENSE.md) · [Build script](../tests/interop/build-openvpn3.sh) |
 | Xray-core 26.10.21 | Official Linux amd64 release, commit `1b1647cd9ddf0abc34b981d4611fc03bcac1ca74` | External interoperability peer. Its binary and assets stay outside the Go release archive. | [Exact release](https://github.com/XTLS/Xray-core/releases/tag/v26.10.21) · [Digest and setup](../tests/interop/build-xray-peer.sh) |
 | 3x-ui target | Checkout revision `e50f949a04174e26de247b40baa2e260415174e9` | Configuration boundary reference. The adapter consumes its stock Xray outbound shape. | [Integration ADR](adr/0007-xray-linux-egress.md) |
@@ -80,6 +83,26 @@ before merging.
 4. Contributions containing generated output or third-party fragments
    record the generator/source version, input origin, license and rights
    review. Maintainers verify DCO sign-off on external commits. [Contribution process](../CONTRIBUTING.md)
+
+## Optional userspace module
+
+The userspace adapter needs a pure-Go TCP/IP stack with an IP packet
+boundary. It uses the official gVisor Go branch, verified through Go
+module checksums. Its Go 1.27.4 requirement and dependencies are
+confined to the optional module. The core SPDX inventory and release
+artifacts cover the core module.
+[Upstream Go module](https://github.com/google/gvisor#go) · [Adapter module](../integrations/netstack/go.mod)
+
+| Module | Version | SPDX license | Scope |
+|---|---|---|---|
+| `gvisor.dev/gvisor` | `v0.0.0-20261126070802-b1c44a434dad` | Apache-2.0 | Direct, userspace TCP/IP. [License](https://github.com/google/gvisor/blob/b1c44a434dada9e9eb802ab97a0d3d515b48ace5/LICENSE) |
+| `github.com/google/btree` | `v1.1.2` | Apache-2.0 | Transitive. [License](https://github.com/google/btree/blob/v1.1.2/LICENSE) |
+| `golang.org/x/exp` | `v0.0.0-20250711185948-6ae5c78190dc` | BSD-3-Clause | Transitive. [License](https://github.com/golang/exp/blob/6ae5c78190dc/LICENSE) |
+| `golang.org/x/sys` | `v0.48.0` | BSD-3-Clause | Transitive. [License](https://github.com/golang/sys/blob/v0.48.0/LICENSE) |
+| `golang.org/x/time` | `v0.15.0` | BSD-3-Clause | Transitive. [License](https://github.com/golang/time/blob/v0.15.0/LICENSE) |
+
+Include the applicable upstream notices when distributing a binary that
+embeds this adapter. Review the nested graph on dependency updates.
 
 ## Test fixture inventory
 

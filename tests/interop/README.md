@@ -1,7 +1,7 @@
 # OpenVPN interoperability tests
 
 The suites test TLS control, data traffic, rekey and generated client
-profiles against disposable OpenVPN Community 2.6.22 and 2.6.23 servers.
+profiles against disposable OpenVPN Community 2.6.22, 2.6.23 and 2.7.9 servers.
 
 ## Rules
 
@@ -17,7 +17,7 @@ profiles against disposable OpenVPN Community 2.6.22 and 2.6.23 servers.
 
 ## Run the interoperability suite
 
-Use a Linux test host with a TUN device and a pinned OpenVPN 2.6 test binary
+Use a Linux test host with a TUN device and a pinned OpenVPN Community test binary
 built against OpenSSL. Install the OpenSSL CLI for the independent TLS
 exporter comparison. The tests generate disposable certificates, keys and
 credentials in a temporary directory. The peer binds to loopback. The data
@@ -35,6 +35,11 @@ sudo OPENVPN_INTEROP_BIN="$OPENVPN_INTEROP_BIN" OPENVPN_INTEROP_VERSION="$OPENVP
   GOMODCACHE="$(go env GOMODCACHE)" PATH="$PATH" \
   unshare --net sh -c 'ip link set lo up && go test -v -count=1 ./tests/interop'
 ```
+
+Build a peer with `bash tests/interop/build-peer.sh VERSION BUILD_DIRECTORY`.
+The script verifies the release archive's SHA-256 and detached signature.
+Use `OPENVPN_INTEROP_VERSION=2.7.9` and its matching executable to include
+the epoch negotiation policy cases.
 
 The build and observed results are in the
 [compatibility matrix](../../docs/COMPATIBILITY_MATRIX.md#evidence-records).
@@ -96,7 +101,27 @@ pass its executable path in `XRAY_INTEROP_BIN`. Inside the same
 isolated Linux environment, run
 `go test -race -v -run '^TestXrayEgressOpenVPN26$' ./tests/interop`.
 The test provisions a temporary veth pair and a nested network
-namespace. It needs Linux TUN and network namespace permissions.
+namespace. It needs Linux TUN and network and mount namespace permissions.
+Use `unshare --net --mount` when running it.
+
+## Historical AEAD policy
+
+Run the separately pinned 2.4.12 and 2.5.11 probes on a disposable Linux
+test host. Install the normal peer build tools and `iproute2`. The 2.4.12
+builder compiles a private OpenSSL 1.1.1w for that executable.
+
+~~~sh
+version=2.4.12  # repeat with 2.5.11
+lab="$(mktemp -d)"
+peer="$(bash tests/interop/build-peer.sh "$version" "$lab")"
+go mod download
+sudo env PATH="$PATH" GOTOOLCHAIN=local GOMODCACHE="$(go env GOMODCACHE)" GOPROXY=off \
+  OPENVPN_LEGACY_BIN="$peer" OPENVPN_LEGACY_VERSION="$version" \
+  unshare --net sh -c 'ip link set lo up && exec go test -race -v -count=1 -run "^TestLegacyCommunityAEADPolicy$" ./tests/interop'
+~~~
+
+The legacy test expects verified TLS 1.2, then rejects the unsupported
+data-channel negotiation before publishing a session.
 
 The matrix also records [candidate coverage for older servers and MikroTik](../../docs/COMPATIBILITY_MATRIX.md#candidate-coverage-for-older-servers-and-mikrotik).
 Test each legacy or RouterOS build in an isolated environment. For RouterOS,

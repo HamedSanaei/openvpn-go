@@ -69,18 +69,33 @@ for each new behavior before expanding compatibility claims.
 
 ## Candidate coverage for older servers and MikroTik
 
-These candidates extend the compatibility investigation. The 2.6.23 baseline
+The historical Community rows record isolated AEAD negotiation probes. The RouterOS row describes a future test. The 2.6.23 baseline
 remains the release reference. Exercise older server builds only in isolated
 test environments. OpenVPN Community has ended upstream support for 2.4 and
 2.5. [OpenVPN release support](https://community.openvpn.net/Pages/Supported%20versions)
 
-| Candidate | First profiles to test | Protocol questions |
+| Peer | Profile | Observation or open question |
 |---|---|---|
-| OpenVPN Community 2.5.11, commit `6fb2a2560845e15da8918c114fe020b4a06b3cef` | TLS 1.2, TUN, UDP and TCP, AES-256-GCM and AES-128-GCM | Verify cipher negotiation and key method 2 with the OpenVPN PRF used before data-channel TLS exporter negotiation. |
-| OpenVPN Community 2.4.12, commit `058407a89cb812115b383570b12f4c2fde500d39` | TLS 1.2, TUN, UDP and TCP, AES-256-GCM and AES-128-GCM | Verify the same key derivation and the 2.4 NCP behavior with `IV_NCP=2` only when both AES-GCM ciphers are offered. |
+| OpenVPN Community 2.5.11, commit `6fb2a2560845e15da8918c114fe020b4a06b3cef` | Verified TLS 1.2 over TCP, TUN, AES-256-GCM and AES-128-GCM configured, OpenSSL 3.0.13 | The server pushed `peer-id` and `cipher AES-256-GCM` and omitted `tls-ekm`. The Go client returned a protocol error before activating the session. |
+| OpenVPN Community 2.4.12, commit `058407a89cb812115b383570b12f4c2fde500d39` | Verified TLS 1.2 over TCP, TUN, AES-256-GCM and AES-128-GCM configured, private OpenSSL 1.1.1w | The server pushed `peer-id` and omitted both the negotiated cipher and `tls-ekm`. The Go client returned a protocol error before activating the session. |
 | MikroTik RouterOS 7.x as an OpenVPN server | IP mode, TLS 1.2, TCP and UDP where the chosen build offers them, explicit AES-256-GCM or AES-128-GCM, server CA validation, client certificate and PPP credentials | Pin the exact RouterOS build and capture its profile export. Determine the key derivation, peer ID and data packet format from observed negotiation. The vendor documents that cipher autonegotiation is unavailable and that the client profile must specify a cipher. |
 
 [OpenVPN 2.5.11](https://github.com/OpenVPN/openvpn/releases/tag/v2.5.11) · [OpenVPN 2.4.12](https://github.com/OpenVPN/openvpn/releases/tag/v2.4.12) · [OpenVPN 2.5 manual](https://openvpn.net/community-docs/community-articles/openvpn-2-5-manual/) · [OpenVPN 2.6 changes](https://github.com/OpenVPN/openvpn/blob/v2.6.23/Changes.rst#overview-of-changes-in-26) · [MikroTik OpenVPN documentation](https://help.mikrotik.com/docs/spaces/ROS/pages/2031655/OpenVPN)
+
+Both historical probes used generated certificates on an isolated Linux
+amd64 host with compression and plugins omitted from the reference build.
+The test captures the authenticated push and checks the rejection before
+the client publishes control information or an active endpoint.
+[Legacy probe](../tests/interop/version_policy_test.go) · [Signed reference builds](../tests/interop/build-peer.sh)
+
+Any future legacy policy must be an explicit, per-endpoint opt-in for
+`AES-256-GCM` or `AES-128-GCM`, verified server identity and TLS 1.2 or
+later. Confine legacy derivation to that mode. Require an independently
+verified key method 2 transcript and vectors before adding it. Require
+explicit AEAD selection and a reviewed 2.4 NCP policy before advertising
+`IV_NCP=2`. Review any `DATA_V1` framing separately. Compression, CBC
+and older TLS stay outside this policy. Verify packet exchange and rekey
+for every permitted combination before enabling the mode.
 
 Review protocol differences in M2 and M3 before adding any compatibility
 mode. A mode that permits the older data key derivation, a fixed cipher,
@@ -103,6 +118,24 @@ that a required-but-unconfigured mode, wrong server identity or mismatched
 cipher fails. Use a pinned Cloud Hosted Router image for reproducible
 functional tests and add a run on the target hardware where its exact
 build or behavior matters. [MikroTik CHR documentation](https://manual.mikrotik.com/docs/getting-started/installation-and-upgrade/install/chr-installation/)
+
+## OpenVPN Community 2.7.9
+
+The signed stable reference is tag `v2.7.9` at
+`7b60c2aa34992639691e3a2d651fe27301e2e9d5`. The local Linux amd64
+peer used OpenSSL 3.0.13 with DCO disabled. CI records the exact TLS
+backend of each build and retains both 2.6 peers.
+[Official 2.7.9 release](https://github.com/OpenVPN/openvpn/releases/tag/v2.7.9) · [Hardening workflow](../.github/workflows/hardening.yml)
+
+| Scenario | Observed result |
+|---|---|
+| UDP and TCP, TLS 1.2 and 1.3, certificate and optional password, plain TLS, tls-auth, tls-crypt, or tls-crypt-v2 with and without cookies | All 120 IPv4 traffic cases negotiated exporter derivation and the expected AES-128-GCM, AES-256-GCM or ChaCha20-Poly1305 cipher over classic `DATA_V2`. |
+| IPv6 and classic rekey | IPv6 traffic passed over IPv6 UDP. Server-initiated rekey and client-initiated key-ID rollover retained packet traffic. |
+| Control and failure cases | Wrong identity, CA and password, cipher mismatch and compression were rejected. Failover and reconnect cases passed. |
+| Epoch | Two 2.7.9 reference processes selected `aead-epoch`. The project client passed classic sessions and rejected a forced authenticated epoch push. |
+
+Epoch framing and DCO remain outside the supported profile.
+[Epoch evaluation](EPOCH_DATA.md) · [Live tests](../tests/interop/data_test.go)
 
 ## Evidence records
 
@@ -156,8 +189,7 @@ cases and focused IPv6, rekey, profile, failover and negative cases.
 The additional tests passed four HMAC digests on both transports,
 including bidirectional and reversed key directions. Both builds also
 rejected a compression push and cipher mismatch and honored `ping-exit`.
-OpenVPN 2.4/2.5, RouterOS and Access Server remain outside the verified
-matrix. [OpenVPN 2.6.22 release](https://github.com/OpenVPN/openvpn/releases/tag/v2.6.22) · [New cases](../tests/interop/hardening_test.go)
+The M6 traffic matrix covers the listed 2.6 peers. [OpenVPN 2.6.22 release](https://github.com/OpenVPN/openvpn/releases/tag/v2.6.22) · [New cases](../tests/interop/hardening_test.go)
 
 The Linux M7 adapter passed an IPv4 TCP/UDP echo through stock Xray
 26.10.21 and the authenticated OpenVPN TCP tunnel before and after

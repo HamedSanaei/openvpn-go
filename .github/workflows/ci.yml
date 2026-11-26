@@ -67,3 +67,28 @@ jobs:
         run: python3 -m unittest discover -s tools -p test_release_approvals.py
       - name: Decoder fuzz smoke tests
         run: make fuzz-smoke
+
+  userspace:
+    name: Optional userspace adapter
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GOTOOLCHAIN: local
+    defaults:
+      run:
+        working-directory: integrations/netstack
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: integrations/netstack/go.mod
+          cache-dependency-path: integrations/netstack/go.sum
+      - name: Verify isolated module
+        run: |
+          go mod verify
+          test -z "$(gofmt -l .)"
+          CGO_ENABLED=0 go test -timeout 1m ./...
+          go test -race -timeout 1m ./...
+          go vet ./...
