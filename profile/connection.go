@@ -26,6 +26,7 @@ type connection struct {
 	localBindSet   bool
 	localSourceSet bool
 	timeout        time.Duration
+	pollTimeout    time.Duration
 	mtu            int
 	exit           bool
 	fixedAEAD      string
@@ -126,6 +127,12 @@ func (p *parser) applyConnection(loc location, args []string) error {
 			return loc.diagnostic(CodeValue)
 		}
 		c.timeout = timeout
+	case "server-poll-timeout":
+		timeout, ok := seconds(args[0], 1, 300)
+		if !ok {
+			return loc.diagnostic(CodeValue)
+		}
+		c.pollTimeout = timeout
 	case "tun-mtu":
 		n, ok := uintValue(args[0], 16)
 		if !ok || n == 0 || !tunnel.ValidMTU(int(n)) {
@@ -243,9 +250,16 @@ func (p *parser) appendEndpoint(e client.Endpoint, loc location, c connection) e
 		return c.fixedLoc.diagnostic(CodeConflict)
 	}
 	e.FixedAEAD = c.fixedAEAD
+	if p.opts.ProtonVPNVerifyIP {
+		ip, err := netip.ParseAddr(e.Host)
+		if err != nil || ip.Zone() != "" || ip.Is4In6() {
+			return loc.diagnostic(CodeValue)
+		}
+	}
 	e.VerifyX509Name = p.identity
 	e.LocalAddress, e.LocalPort = c.localAddress, c.localPort
 	e.ConnectTimeout, e.TunnelMTU, e.ExplicitExitNotify = c.timeout, c.mtu, c.exit
+	e.ServerPollTimeout = c.pollTimeout
 	if c.bindMode == "bind" && e.LocalPort == 0 {
 		e.LocalPort = c.portLocal
 		if e.LocalPort == 0 {

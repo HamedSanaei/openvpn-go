@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hamedsanaei/openvpn-go/client"
 	"github.com/hamedsanaei/openvpn-go/internal/testkit"
@@ -87,5 +88,49 @@ func TestProtonHintInspection(t *testing.T) {
 		if entry.Line != i+1 || entry.Capability != want {
 			t.Fatalf("line %d: expected %s, got %+v", i+1, want, entry)
 		}
+	}
+}
+
+func TestProtonVPNNumericRemoteImport(t *testing.T) {
+	pki := testkit.NewPKI(t)
+	const policy = "client\ndev tun\nproto tcp\nremote-random\nserver-poll-timeout 20\nremote-cert-tls server\nauth-user-pass\nsetenv CLIENT_CERT 0\nmssfix 0\n"
+	ca := "<ca>\n" + string(pki.CA) + "</ca>\n"
+	remotes := strings.Repeat("remote 192.0.2.1 443\nremote 192.0.2.2 80\nremote 192.0.2.3 8443\n", 21)
+	opts := Options{
+		ProtonVPNVerifyIP: true, AllowPasswordOnly: true,
+		Credentials: &client.Credentials{Username: "fixture", Password: "generated-only"},
+	}
+	cfg, _, err := Parse(strings.NewReader(policy+remotes+ca), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.RemoteRandom || !cfg.TLS.RequireServerUsage || !cfg.TLS.AllowPasswordOnly || len(cfg.Endpoints) != 63 {
+		t.Fatal("import lost remotes or changed the trust policy")
+	}
+	for i, endpoint := range cfg.Endpoints {
+		addresses := [...]string{"192.0.2.1", "192.0.2.2", "192.0.2.3"}
+		if endpoint.Host != addresses[i%3] || endpoint.ServerName != endpoint.Host ||
+			endpoint.VerifyX509Name.Mode != "" || endpoint.ServerPollTimeout != 20*time.Second {
+			t.Fatalf("incorrect address or poll policy for candidate %d", i)
+		}
+	}
+	for _, tc := range []struct {
+		directive string
+		code      Code
+	}{
+		{"remote unverified.example.test 443\n", CodeValue},
+		{"verify-x509-name alternate.example.test name\n", CodeConflict},
+	} {
+		_, _, err := Parse(strings.NewReader(policy+tc.directive+"remote 192.0.2.1\n"+ca), opts)
+		var diag *Diagnostic
+		if !errors.As(err, &diag) || diag.Code != tc.code {
+			t.Fatalf("expected redacted %s, got %v", tc.code, err)
+		}
+	}
+	opts.ProtonVPNServerName = testkit.TestServerName
+	_, _, err = Parse(strings.NewReader(policy+remotes+ca), opts)
+	var diag *Diagnostic
+	if !errors.As(err, &diag) || diag.Code != CodeConflict || diag.Directive != "verify-x509-name" {
+		t.Fatalf("expected conflicting identity policies, got %v", err)
 	}
 }

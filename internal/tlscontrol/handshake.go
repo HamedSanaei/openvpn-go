@@ -29,22 +29,30 @@ type Link struct {
 }
 
 type Options struct {
-	TLS         *tls.Config
-	Network     string
-	Digest      string
-	Ciphers     []string
-	Auth        *Authentication
-	PushPolicy  tunnel.PushPolicy
-	Interaction Interaction
-	ExitNotify  bool
-	TunnelMTU   int
-	FixedAEAD   string
+	TLS               *tls.Config
+	Network           string
+	Digest            string
+	Ciphers           []string
+	Auth              *Authentication
+	PushPolicy        tunnel.PushPolicy
+	Interaction       Interaction
+	ExitNotify        bool
+	TunnelMTU         int
+	FixedAEAD         string
+	ServerPollTimeout time.Duration
 }
 
 func Establish(ctx context.Context, stream *control.Stream, opts Options, previous *Negotiation) (_ *Link, failure error) {
 	defer func() { failure = streamError(stream, failure) }()
 	observability.Enter(ctx, observability.PhaseResetACK)
-	if err := stream.WaitReady(ctx); err != nil {
+	pollCtx := ctx
+	stopPoll := func() {}
+	if previous == nil && opts.ServerPollTimeout != 0 {
+		pollCtx, stopPoll = context.WithTimeout(ctx, opts.ServerPollTimeout)
+	}
+	err := stream.WaitReady(pollCtx)
+	stopPoll()
+	if err != nil {
 		return nil, err
 	}
 	observability.Enter(ctx, observability.PhaseTLS)

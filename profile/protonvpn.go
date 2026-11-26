@@ -72,20 +72,38 @@ func (p *parser) checkProtonDNSHooks(report *Report) error {
 	return first.diagnostic(CodeConflict)
 }
 
+func (o Options) protonImportEnabled() bool {
+	return o.ProtonVPNServerName != "" || o.ProtonVPNVerifyIP
+}
+
+func validProtonName(name string) bool {
+	if _, err := (client.Endpoint{Host: name}).Validated(); err != nil || !strings.ContainsRune(name, '.') ||
+		strings.HasSuffix(name, ".") {
+		return false
+	}
+	_, ipErr := netip.ParseAddr(name)
+	return ipErr != nil
+}
+
 func (p *parser) setProtonServerIdentity() error {
-	name := p.opts.ProtonVPNServerName
-	if name == "" {
+	if !p.opts.protonImportEnabled() {
 		return nil
 	}
-	if _, err := (client.Endpoint{Host: name}).Validated(); err != nil || !strings.ContainsRune(name, '.') {
-		return (location{name: "verify-x509-name"}).diagnostic(CodeValue)
-	}
-	if _, err := netip.ParseAddr(name); err == nil || strings.HasSuffix(name, ".") {
-		return (location{name: "verify-x509-name"}).diagnostic(CodeValue)
-	}
-	expected := client.X509Name{Mode: client.X509CommonName, Value: name}
-	if p.identity.Mode != "" && p.identity != expected {
-		return (location{name: "verify-x509-name"}).diagnostic(CodeConflict)
+	name := p.opts.ProtonVPNServerName
+	loc := location{name: "verify-x509-name"}
+	if p.opts.ProtonVPNVerifyIP {
+		if name != "" || p.identity.Mode != "" {
+			return loc.diagnostic(CodeConflict)
+		}
+	} else {
+		if !validProtonName(name) {
+			return loc.diagnostic(CodeValue)
+		}
+		expected := client.X509Name{Mode: client.X509CommonName, Value: name}
+		if p.identity.Mode != "" && p.identity != expected {
+			return loc.diagnostic(CodeConflict)
+		}
+		p.identity = expected
 	}
 	if !p.cfg.TLS.RequireServerUsage {
 		return (location{name: "remote-cert-tls"}).diagnostic(CodeRequired)
@@ -99,6 +117,5 @@ func (p *parser) setProtonServerIdentity() error {
 	if p.cert != nil || p.key != nil || p.opts.Identity.Signer != nil || p.opts.Identity.Provider != nil {
 		return (location{name: "cert"}).diagnostic(CodeConflict)
 	}
-	p.identity = expected
 	return nil
 }

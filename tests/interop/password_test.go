@@ -3,6 +3,8 @@
 package interop_test
 
 import (
+	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"os"
@@ -91,6 +93,65 @@ func TestOptionalClientIdentityOpenVPN26(t *testing.T) {
 			_, observed := os.Stat(filepath.Join(f.dir, "auth-attempted"))
 			if tc.wrongName && !errors.Is(observed, os.ErrNotExist) || !tc.wrongName && observed != nil {
 				t.Fatalf("unexpected credential verifier result: %v", observed)
+			}
+		})
+	}
+}
+
+func TestProtonVPNIPIdentityOpenVPN26(t *testing.T) {
+	binary := interopPeer(t)
+	for _, tc := range []struct {
+		name string
+		edit func(*x509.Certificate)
+		want client.ErrorCode
+	}{
+		{"matching_ip_san", nil, ""},
+		{"missing_ip_san", func(cert *x509.Certificate) { cert.IPAddresses = nil }, client.CodeCertificate},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pki := testkit.NewPKIWithServer(t, tc.edit)
+			f := makeFixture(t, binary, pki)
+			if err := os.WriteFile(filepath.Join(f.dir, "observe-user"),
+				[]byte("#!/bin/sh\n: > auth-attempted\nexec ./verify-user \"$@\"\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			port := f.start(t, "tcp", "tls", true, "--verify-client-cert", "none",
+				"--username-as-common-name", "--auth-user-pass-verify", "./observe-user", "via-file")
+			text := fmt.Sprintf("client\ndev tun\nremote 127.0.0.1 %d tcp4\nremote-cert-tls server\nauth-user-pass\nsetenv CLIENT_CERT 0\nserver-poll-timeout 2\n", port)
+			cfg, _, err := profile.Parse(strings.NewReader(text+profileSection("ca", pki.CA)), profile.Options{
+				AllowPasswordOnly: true, ProtonVPNVerifyIP: true,
+				Authentication: client.Authentication{Credentials: func(ctx context.Context) (client.Credentials, error) {
+					// The credentials callback occurs after the peer's first response
+					// and can outlive the initial server poll deadline.
+					timer := time.NewTimer(2100 * time.Millisecond)
+					defer timer.Stop()
+					select {
+					case <-ctx.Done():
+						return client.Credentials{}, ctx.Err()
+					case <-timer.C:
+						return client.Credentials{Username: username, Password: password}, nil
+					}
+				}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			c, err := client.New(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			err = c.Connect(t.Context())
+			_, attempted := os.Stat(filepath.Join(f.dir, "auth-attempted"))
+			if tc.want == "" {
+				if err != nil || attempted != nil {
+					t.Fatalf("initial poll deadline ended a verified handshake: %v, verifier %v", err, attempted)
+				}
+				return
+			}
+			var failure *client.Error
+			if !errors.As(err, &failure) || failure.Code != tc.want || !errors.Is(attempted, os.ErrNotExist) {
+				t.Fatalf("missing IP SAN did not stop authentication: %v, verifier %v", err, attempted)
 			}
 		})
 	}

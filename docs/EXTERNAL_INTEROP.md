@@ -239,3 +239,42 @@ go test -race -v -count=1 -timeout 1m -run '^TestExternalProfile$' ./tests/inter
 `OVPN_EXTERNAL_REMOTE` selects a one-based candidate. Use
 `OVPN_EXTERNAL_REKEY=1` and `OVPN_EXTERNAL_EXPECT=rekey_verified` for the
 separate forced-rekey probe. [Synthetic negative tests](../tests/interop/password_test.go)
+
+#### Country and Secure Core exports
+
+The later private batch contained 13 Country exports and 12 Secure Core
+exports. The original files list multiple numeric IPv4 remotes and use a
+20-second server poll timeout. The IP-SAN import verified the exact
+address of each selected remote against its leaf certificate, using the
+exported CA and server certificate purpose. The importer kept the remote
+list and random selection policy.
+
+| Export group | Verified profiles | Distinct address and transport pairs exercised |
+|---|---:|---:|
+| Country | 13 of 13 | 13 |
+| Secure Core | 12 of 12 | 10 |
+
+Every profile established TLS 1.3, AES-256-GCM, TLS exporter derivation and
+`DATA_V2` with the authorized account. The live probe passed an IPv4 echo
+with the tunnel gateway before and after reconnect. The certificate
+preflight found a matching IP SAN for all nine distinct configured IPv4
+addresses. The pair counts above include overlap between the groups.
+
+A separate TUN lab verified a UDP DNS exchange with the negotiated
+resolver and IPv4 HTTPS through a network namespace with no ordinary
+egress interface. It passed for a representative TCP export and UDP
+export in each group. The lab kept host routes and DNS settings outside
+the test scope. The results cover sampled remote ports and the client-facing tunnel. The
+provider's internal routing is outside the scope of the probe.
+
+~~~sh
+OVPN_EXTERNAL_PROFILE="$VPN_PROFILE" \
+OVPN_EXTERNAL_PASSWORD_ONLY=1 \
+OVPN_EXTERNAL_PROTON_VERIFY_IP=1 \
+OVPN_EXTERNAL_AUTH_FILE="$VPN_AUTH_FILE" \
+OVPN_EXTERNAL_ECHO=gateway OVPN_EXTERNAL_EXPECT=verified \
+go test -race -v -count=1 -timeout 1m -run '^TestExternalProfile$' ./tests/interop
+~~~
+
+[Proton export types](https://protonvpn.com/support/vpn-config-download) ·
+[Secure Core documentation](https://protonvpn.com/support/secure-core-vpn)

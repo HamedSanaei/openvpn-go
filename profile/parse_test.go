@@ -115,6 +115,7 @@ func TestDirectiveRegistry(t *testing.T) {
 		{"local", "local 127.0.0.1", "local not-a-literal", false},
 		{"lport", "lport 1195", "lport 0", false},
 		{"connect-timeout", "connect-timeout 5", "connect-timeout 121", false},
+		{"server-poll-timeout", "server-poll-timeout 20", "server-poll-timeout 301", false},
 		{"connect-retry", "connect-retry 1 30", "connect-retry 30 1", false},
 		{"connect-retry-max", "connect-retry-max 3", "connect-retry-max 1025", false},
 		{"hand-window", "hand-window 90", "hand-window 301", false},

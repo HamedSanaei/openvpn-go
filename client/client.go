@@ -184,7 +184,15 @@ func (c *Client) dial(ctx context.Context, index, visit int) (tunnel.PacketConn,
 	if timeout == 0 {
 		timeout = c.config.ConnectTimeout
 	}
-	dialCtx, cancelDial := context.WithTimeout(ctx, timeout)
+	var pollDeadline time.Time
+	if endpoint.ServerPollTimeout != 0 {
+		pollDeadline = time.Now().Add(endpoint.ServerPollTimeout)
+	}
+	dialDeadline := time.Now().Add(timeout)
+	if !pollDeadline.IsZero() && pollDeadline.Before(dialDeadline) {
+		dialDeadline = pollDeadline
+	}
+	dialCtx, cancelDial := context.WithDeadline(ctx, dialDeadline)
 	conn, network, err := c.connectSocket(dialCtx, endpoint, visit)
 	stage := StageDial
 	if errors.Is(err, errResolution) {
@@ -219,6 +227,13 @@ func (c *Client) dial(ctx context.Context, index, visit int) (tunnel.PacketConn,
 	c.record(EventHandshaking, index, "", 0)
 	c.mu.Unlock()
 
+	if !pollDeadline.IsZero() {
+		endpoint.ServerPollTimeout = time.Until(pollDeadline)
+		if endpoint.ServerPollTimeout <= 0 {
+			conn.Close()
+			return nil, StageControl, &Error{Op: "handshake", Code: CodeTimeout}
+		}
+	}
 	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, c.config.HandshakeTimeout)
 	endpoint.Network = network
 	session, err := c.handshakes[index](handshakeCtx, endpoint, conn)
