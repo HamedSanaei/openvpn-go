@@ -1,0 +1,32 @@
+# Go
+/bin/
+/dist/
+/build/
+*.test
+*.out
+coverage.out
+coverage.html
+*.prof
+
+# Local configuration and credentials
+.env
+.env.*
+*.ovpn
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+!tests/interop/fixtures/*.example
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Generated artifacts
+/vendor/
+*.tmp
+*.log
