@@ -3,6 +3,7 @@ package tlscontrol
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
@@ -11,15 +12,16 @@ import (
 	"strings"
 
 	"github.com/hamedsanaei/openvpn-go/internal/crypt"
+	"github.com/hamedsanaei/openvpn-go/internal/observability"
 )
 
 const keyMethod = 2
 
 func writeKeyMethod(w io.Writer, network, digest string, ciphers []string, user Credentials) error {
-	return writeKeyMethodOptions(w, network, digest, ciphers, user, Options{})
+	return writeKeyMethodOptions(w, network, digest, ciphers, user, Options{}, nil)
 }
 
-func writeKeyMethodOptions(w io.Writer, network, digest string, ciphers []string, user Credentials, cfg Options) error {
+func writeKeyMethodOptions(w io.Writer, network, digest string, ciphers []string, user Credentials, cfg Options, classic *crypt.ClassicMaterial) error {
 	// Key method 2 includes legacy entropy fields even when both peers
 	// negotiate data-channel keying material via the TLS exporter.
 	message := make([]byte, 5+48+32+32, 5+48+32+32+4*maxKeyString)
@@ -27,6 +29,11 @@ func writeKeyMethodOptions(w io.Writer, network, digest string, ciphers []string
 	message[4] = keyMethod
 	if _, err := rand.Read(message[5:]); err != nil {
 		return ErrNegotiation
+	}
+	if classic != nil {
+		copy(classic.Premaster[:], message[5:53])
+		copy(classic.ClientRandom1[:], message[53:85])
+		copy(classic.ClientRandom2[:], message[85:117])
 	}
 
 	proto := "UDPv4"
@@ -54,6 +61,9 @@ func writeKeyMethodOptions(w io.Writer, network, digest string, ciphers []string
 	// Bit 1 advertises DATA_V2. Bit 3 selects the TLS exporter when both
 	// peers support it. Address floating and dynamic wrapping are omitted.
 	flags := 10
+	if cfg.FixedAEAD != "" {
+		flags = 2
+	}
 	extra := cfg.Interaction.peerInfo()
 	if extra != "" {
 		flags |= 1 << 4
@@ -79,6 +89,10 @@ func writeKeyMethodOptions(w io.Writer, network, digest string, ciphers []string
 }
 
 func readKeyMethod(r *bufio.Reader) error {
+	return readPeerKeyMethod(context.Background(), r, "", nil)
+}
+
+func readPeerKeyMethod(ctx context.Context, r *bufio.Reader, fixed string, classic *crypt.ClassicMaterial) error {
 	first, err := r.Peek(1)
 	if err != nil {
 		return err
@@ -101,9 +115,18 @@ func readKeyMethod(r *bufio.Reader) error {
 	if !bytes.Equal(header[:5], []byte{0, 0, 0, 0, keyMethod}) {
 		return ErrNegotiation
 	}
+	if classic != nil {
+		copy(classic.ServerRandom1[:], header[5:37])
+		copy(classic.ServerRandom2[:], header[37:69])
+	}
+	observability.Enter(ctx, observability.PhaseKeyMethodFields)
 	var field [maxKeyString]byte
 	defer clear(field[:])
-	for i := range 4 {
+	fields := 4
+	if fixed != "" {
+		fields = 1
+	}
+	for i := range fields {
 		var length [2]byte
 		if _, err := io.ReadFull(r, length[:]); err != nil {
 			return err
@@ -113,6 +136,10 @@ func readKeyMethod(r *bufio.Reader) error {
 			return ErrNegotiation
 		}
 		if n == 0 {
+			if fixed != "" {
+				return ErrNegotiation
+			}
+			observability.Step(ctx)
 			continue
 		}
 		if _, err := io.ReadFull(r, field[:n]); err != nil {
@@ -121,8 +148,27 @@ func readKeyMethod(r *bufio.Reader) error {
 		if field[n-1] != 0 || bytes.IndexByte(field[:n-1], 0) != -1 {
 			return ErrNegotiation
 		}
+		observability.Step(ctx)
+		if fixed != "" && !matchFixedOptions(field[:n-1], fixed) {
+			return ErrNegotiation
+		}
 	}
 	return nil
+}
+
+func matchFixedOptions(options []byte, fixed string) bool {
+	var found bool
+	for option := range bytes.SplitSeq(options, []byte{','}) {
+		fields := bytes.Fields(option)
+		if len(fields) == 0 || string(fields[0]) != "cipher" {
+			continue
+		}
+		if found || string(option) != "cipher "+fixed {
+			return false
+		}
+		found = true
+	}
+	return found
 }
 
 const maxCommand = 16 * 1024

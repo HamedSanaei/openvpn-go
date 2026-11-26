@@ -124,6 +124,69 @@ func TestReceiveOrderAndACKBinding(t *testing.T) {
 	}
 }
 
+func TestInitialSplitResetACK(t *testing.T) {
+	for _, ackFirst := range []bool{false, true} {
+		self, remote := testkit.PacketPipe(8, 512)
+		d := newDriver(self, &frameProtection{codec: newCodec(Protection{}, 0)}, true)
+		d.local = wire.SessionID{1}
+		ctx := t.Context()
+		if err := d.enqueue(ctx, wire.ClientReset, nil); err != nil {
+			t.Fatal(err)
+		}
+		readTestPacket(t, remote)
+		peer := wire.SessionID{2}
+		codec := newCodec(Protection{}, 0)
+		reset := wire.ControlPacket{Header: wire.Header{Opcode: wire.ServerReset}, Sender: peer}
+		ack := wire.ControlPacket{Header: wire.Header{Opcode: wire.ACK}, Sender: peer, ACKCount: 1, ACKTarget: d.local}
+		deliver := func(p wire.ControlPacket) {
+			t.Helper()
+			raw, err := codec.seal(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := d.receive(ctx, raw); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if ackFirst {
+			deliver(ack)
+			wrong := reset
+			wrong.Sender = wire.SessionID{3}
+			deliver(wrong)
+		} else {
+			deliver(reset)
+			wrong := ack
+			wrong.ACKTarget = wire.SessionID{3}
+			deliver(wrong)
+			wrong.ACKTarget, wrong.Sender = d.local, wire.SessionID{3}
+			deliver(wrong)
+		}
+		if d.bound || len(d.tx) != 1 {
+			t.Fatal("uncorrelated reset and ACK activated the stream")
+		}
+		if ackFirst {
+			deliver(reset)
+		} else {
+			deliver(ack)
+		}
+		if !d.bound || d.peer != peer || d.recvID != 1 || len(d.tx) != 0 {
+			t.Fatal("valid split reset did not initialize the control state")
+		}
+		for i := range 2 {
+			if i != 0 {
+				d.splitEcho = time.Now().Add(-ackDelay)
+				deliver(reset)
+			}
+			raw := readTestPacket(t, remote)
+			reply, _, _, err := codec.open(raw)
+			if err != nil || reply.Opcode != wire.ClientReset || reply.ID != 0 ||
+				reply.ACKTarget != peer || reply.ACKCount != 1 || reply.ACKs[0] != 0 {
+				t.Fatal("client did not acknowledge reset zero in the matching reset frame")
+			}
+		}
+	}
+}
+
 func TestRetransmitAndReplayWindow(t *testing.T) {
 	self, remote := testkit.PacketPipe(4, 512)
 	d := newDriver(self, &frameProtection{codec: newCodec(Protection{}, 0)}, true)

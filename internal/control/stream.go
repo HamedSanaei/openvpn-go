@@ -45,6 +45,12 @@ func startStream(d *driver, limit, chunkSize int) *Stream {
 
 func (s *Stream) Conn() net.Conn { return s.conn }
 
+// KeyContext is read after WaitReady succeeds and TLS authenticates the
+// peer. The control session IDs become immutable when ready is closed.
+func (s *Stream) KeyContext() (wire.SessionID, wire.SessionID) {
+	return s.local, s.peer
+}
+
 // Err returns the driver cause once it has stopped, including before the
 // bridge reports EOF to TLS.
 func (s *Stream) Err() error {

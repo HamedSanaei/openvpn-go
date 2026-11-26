@@ -39,12 +39,18 @@ through the packet API, closes the first peer transport and checks another
 round trip through the new session. It installs no host routes or DNS
 settings. To reproduce a known rejection, set the expected outcome to its
 reported `stage:code`, for example `parse:unsupported_directive`.
-An unexpected outcome makes the test fail.
+An unexpected outcome makes the test fail. `OVPN_EXTERNAL_REKEY=1` with
+`OVPN_EXTERNAL_EXPECT=rekey_verified` keeps one connection and verifies a
+second round trip after a key change in that connection. A redacted last
+attempt phase and completed phase count distinguish setup failures that
+share a public error code.
 
 ## MikroTik RouterOS
 
-The virtual reference is **CHR 7.25.2 stable, x86_64** on QEMU, with a
-single isolated Ethernet interface. The official ZIP
+The virtual reference is **CHR 7.25.2 stable, x86_64** on QEMU 10.2.1
+under Linux amd64 WSL2 (`6.18.33.2-microsoft-standard-WSL2`). A single
+TAP link in a dedicated network namespace connects the host and the
+snapshot guest. The namespace has no uplink or default route. The official ZIP
 `chr-7.25.2.img.zip` had SHA-256
 `b0df0acb3f2070fb94d9e30bd8a8566bb622034786bb4f759f837cf2aa05bacb`.
 The physical target is **RB5009UG+S+IN, arm64, RouterOS 7.25.2**.
@@ -53,55 +59,92 @@ That target is pending a run on authorized hardware.
 [Pinned CHR archive](https://download.mikrotik.com/routeros/7.25.2/chr-7.25.2.img.zip) ·
 [RB5009 board](https://mikrotik.com/product/rb5009ug_s_in)
 
-On the disposable router, provision a lab CA, a server certificate and
-private key with a dedicated test identity, a client certificate from the
-same CA, and a disposable PPP account called `ovpnlab`. The lab values
-below assume the imported server certificate is called `labserver`. Repeat
-the listener command with the other transport, port and cipher combinations.
+Run from the checkout root on Linux with TUN/TAP, QEMU, OpenSSL, Python 3,
+iproute2, curl, unzip, sudo and the Go toolchain declared in `go.mod`.
+Use private directories outside the checkout. The lab creates disposable
+PKI and PPP credentials, then configures each IP-mode listener to require
+the client certificate, PPP credentials and TLS 1.2. The PPP address pool
+allows separate leases. The matrix clears the disposable principal's
+active sessions between probe processes, waits for the previous reference
+process to exit, and tests the same listener twice before and twice after
+each pair of Go probes.
 
-~~~text
-/ppp/profile/add name=ovpnlab local-address=10.61.0.1 remote-address=10.61.0.2
-/interface/ovpn-server/server/add name=tcp256 port=1194 protocol=tcp mode=ip default-profile=ovpnlab certificate=labserver tls-version=only-1.2 cipher=aes256-gcm auth=null require-client-certificate=yes disabled=no
+~~~sh
+scratch=$(mktemp -d)
+peer=$(bash tests/interop/build-peer.sh 2.6.23 "$scratch/community")
+bash tests/interop/routeros-lab.sh start "$scratch/chr"
+bash tests/interop/routeros-matrix.sh "$scratch/chr" "$peer"
+bash tests/interop/routeros-lab.sh stop "$scratch/chr"
 ~~~
 
-Assign the PPP account that profile. The Go probe uses a project-authored
-profile with `dev tun`, a lab remote, certificate and password
-authentication, `remote-cert-tls server`, an exact
-`verify-x509-name ... name`, TLS 1.2 and `data-ciphers` restricted to
-the selected AES-GCM cipher. Use the PPP local address as the echo target.
-The pinned Community reference used the same identity and TLS settings and
-explicit fixed AEAD in both `--data-ciphers` and
-`--data-ciphers-fallback` to exercise the RouterOS configuration.
+The matrix first runs `TestExternalProfileHarness` against the signed
+Community 2.6.23 build (`49620843c487a7fee58e3030b7c88681c115e24e`). The
+generated profiles verify the server role and exact test hostname using
+the lab CA. The Go profiles specify `compat-fixed-aead` for the selected
+cipher. Community uses matching `--data-ciphers` and
+`--data-ciphers-fallback`. The PPP interface serves the IPv4 echo target.
+The probe prints only normalized results. Keep profiles, console output,
+captures and raw peer logs under the private directories.
 [RouterOS OpenVPN](https://help.mikrotik.com/docs/spaces/ROS/pages/2031655/OpenVPN) ·
 [Server settings](https://manual.mikrotik.com/docs/cli-reference/interface/ovpn-server/server/)
 
-| CHR profile | OpenVPN Community 2.6.23 reference | OpenVPN Go default policy |
+| CHR profile | Community 2.6.23 before and after | Go fixed-AEAD policy |
 |---|---|---|
-| TCP 1194, AES-256-GCM | Verified TLS 1.2 identity and ICMP echo | Control negotiation timed out |
-| UDP 1195, AES-256-GCM | Verified TLS 1.2 identity and ICMP echo | Control negotiation timed out |
-| TCP 1196, AES-128-GCM | Verified TLS 1.2 identity and ICMP echo | Control negotiation timed out |
-| UDP 1197, AES-128-GCM | Verified TLS 1.2 identity and ICMP echo | Control negotiation timed out |
+| TCP 1194, AES-256-GCM | Verified TLS 1.2 identity and ICMP in four independent sessions | Verified TLS 1.2, `classic_km2`, `data_v2`, traffic after reconnect and rekey |
+| UDP 1195, AES-256-GCM | Verified TLS 1.2 identity and ICMP in four independent sessions | Verified TLS 1.2, `classic_km2`, `data_v2`, traffic after reconnect and rekey |
+| TCP 1196, AES-128-GCM | Verified TLS 1.2 identity and ICMP in four independent sessions | Verified TLS 1.2, `classic_km2`, `data_v2`, traffic after reconnect and rekey |
+| UDP 1197, AES-128-GCM | Verified TLS 1.2 identity and ICMP in four independent sessions | Verified TLS 1.2, `classic_km2`, `data_v2`, traffic after reconnect and rekey |
 
-The reference received an authenticated peer ID and IPv4 assignment. Its
-push omitted the cipher selection and TLS exporter signal. The reference
-used the configured fixed cipher. OpenVPN Go published no negotiated
-session in these cases. The reference push establishes a difference from
-the client's required negotiation. The client timeout alone does not
-identify which control exchange stalled. Data and reconnect support for
-the Go client, RouterOS 6, and the physical target remain unverified.
+Each Go row used a verified server identity, the listed cipher, and two
+successful synthetic round trips across two connection generations. A
+separate run completed two round trips in one generation, one before
+key change and one after. Community received a peer ID and IPv4 assignment
+in an authenticated push with neither `cipher` nor `tls-ekm`.
 
-A repeat with the finalized race-enabled probe reproduced
-`connect:operation_timed_out` for both UDP cases, while both TCP cases
-returned `connect:network_failure`. No session was activated. These are
-observed negative outcomes, not a diagnosis of the wire-level cause or
-successful interoperability certification. Keep the existing fail-closed
-policy until the missing negotiation and transport behavior are understood.
+The earlier runs recorded timeouts on all four listeners, then UDP
+timeouts and TCP network failures on a repeat. The rebuilt baseline
+reproduced `connect:operation_timed_out` at `reset_ack` on all four.
+A private packet capture showed CHR sending a server reset with no
+acknowledgement, then acknowledging the client reset separately. The Go
+client had required both in the reset packet. Handling the split proof
+reached verified TLS and exposed a second difference. The authenticated
+CHR key-method response carried the OCC options field without the modern
+trailing fields. The fixed policy validates the cipher in this response.
+CHR's authenticated push supplied `peer-id` without exporter selection.
+The data-channel capture confirmed `P_DATA_V2` framing.
+[Design and regression rationale](adr/0009-fixed-aead-compatibility.md)
 
-The probe itself passed a separate positive control against OpenVPN
-Community 2.6.23: authenticated TLS 1.2/AES-256-GCM, synthetic IP traffic
-and a second round trip after reconnect. Regression tests also cover
-redaction, rejection of a legacy CBC profile before dialing and bounded
-credential-file parsing.
+The additional OpenVPN 3 Core 3.11.8 reference used the same four listener
+profiles with the fixed cipher specified as `cipher`. Core connected with
+TLS 1.2 and the expected AES-GCM cipher, and IPv4 ICMP echo bound to its
+tunnel interface passed on all four listeners. The Core reference ran
+one session per listener. [Core pin and build](../tests/interop/README.md#compare-openvpn-3-core-with-openvpn-go)
+
+Wrong CA, hostname and pin returned `connect:certificate_verification_failure`
+during `tls_verification`. CHR closed the mismatched fixed-cipher connection
+during `key_method_read`, reported as `connect:network_failure`. A synthetic
+test independently checks that the client rejects a contradictory cipher
+in a complete authenticated reply. A wrong PPP password returned
+`connect:authentication_failure` during `authenticated_push`. The TCP
+AES-256-GCM default-policy probe still returned `connect:operation_timed_out`
+during `key_method_fields`. All six checks reported zero traffic and no
+verified generations.
+
+On Linux with Go 1.26.11 and OpenSSL 3.5.5, race-enabled suites ran with
+Community 2.6.22, 2.6.23 and 2.7.9, including the loss/rekey and
+Xray 26.10.21 fixtures. Core 3.11.8 ran in the
+Community differential harness. Signed Community 2.4.12 and 2.5.11
+retained the default-policy rejection. The package, race, vet, module
+verification and fuzz checks are separate from the CHR matrix. The
+hosted jobs were run against implementation commit `ae771e2`.
+[Interop commands](../tests/interop/README.md) · [CI logs](https://github.com/HamedSanaei/openvpn-go/actions/runs/45897905931) · [Hardening logs](https://github.com/HamedSanaei/openvpn-go/actions/runs/45897902334) · [Lossy soak logs](https://github.com/HamedSanaei/openvpn-go/actions/runs/45898243377)
+
+Qualification is limited to these four virtual IPv4, IP-mode cases with
+plain outer control and TLS 1.2. Physical RB5009 qualification awaits
+authorized hardware. RouterOS 6.x, other hardware/releases, fixed-AEAD
+IPv6 and protected control wrappers have no qualification here.
+`DATA_V1`, CBC, compression, TAP and static-key mode are unsupported.
+An independent security review of the compatibility path is pending.
 
 ## Provider and Access Server profiles
 

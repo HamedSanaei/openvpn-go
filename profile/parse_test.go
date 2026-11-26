@@ -120,6 +120,7 @@ func TestDirectiveRegistry(t *testing.T) {
 		{"hand-window", "hand-window 90", "hand-window 301", false},
 		{"reneg-sec", "reneg-sec 0", "reneg-sec 86401", false},
 		{"explicit-exit-notify", "explicit-exit-notify 2", "explicit-exit-notify -1", false},
+		{"compat-fixed-aead", "compat-fixed-aead AES-256-GCM", "compat-fixed-aead AES-256-CBC", false},
 		{"tun-mtu", "tun-mtu 1400", "tun-mtu 67", false},
 		{"auth-nocache", "auth-nocache", "auth-nocache\nauth-user-pass", false},
 		{"peer-fingerprint", "peer-fingerprint " + pki.ServerFingerprint(), "peer-fingerprint ff:ff", false},
@@ -167,6 +168,31 @@ func TestDirectiveRegistry(t *testing.T) {
 		if !covered[name] {
 			t.Errorf("directive %s needs valid and invalid fixtures", name)
 		}
+	}
+}
+
+func TestFixedAEADIsExplicitAndEndpointScoped(t *testing.T) {
+	pki := inlinePKI(testkit.NewPKI(t))
+	text := "client\ndev tun\n<connection>\nremote modern.example.test\n</connection>\n" +
+		"<connection>\nremote fixed.example.test\ncompat-fixed-aead AES-128-GCM\n</connection>\n" + pki
+	cfg, _, err := Parse(strings.NewReader(text), Options{})
+	if err != nil || len(cfg.Endpoints) != 2 || cfg.Endpoints[0].FixedAEAD != "" ||
+		cfg.Endpoints[1].FixedAEAD != "AES-128-GCM" {
+		t.Fatalf("incorrect endpoint scope: %v", err)
+	}
+	for _, invalid := range []string{
+		"remote another.example.test\ncompat-fixed-aead AES-128-GCM\n",
+		"compat-fixed-aead AES-128-GCM\ncompat-fixed-aead AES-128-GCM\n",
+		"compat-fixed-aead AES-128-GCM\ndata-ciphers AES-256-GCM\n",
+		"compat-fixed-aead AES-128-GCM\ndata-ciphers AES-128-GCM:AES-256-GCM\n",
+	} {
+		if _, _, err := Parse(strings.NewReader(testProfile+invalid+pki), Options{}); err == nil {
+			t.Fatal("ambiguous fixed AEAD policy was accepted")
+		}
+	}
+	cfg, _, err = Parse(strings.NewReader(testProfile+"cipher AES-128-GCM\n"+pki), Options{})
+	if err != nil || cfg.Endpoints[0].FixedAEAD != "" {
+		t.Fatal("legacy cipher directive implicitly enabled fixed compatibility")
 	}
 }
 

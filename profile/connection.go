@@ -6,6 +6,7 @@ import (
 
 	"github.com/hamedsanaei/openvpn-go/client"
 	"github.com/hamedsanaei/openvpn-go/internal/control"
+	"github.com/hamedsanaei/openvpn-go/internal/crypt"
 	"github.com/hamedsanaei/openvpn-go/tunnel"
 )
 
@@ -27,6 +28,8 @@ type connection struct {
 	timeout        time.Duration
 	mtu            int
 	exit           bool
+	fixedAEAD      string
+	fixedLoc       location
 
 	protection      *material
 	direction       client.KeyDirection
@@ -138,6 +141,14 @@ func (p *parser) applyConnection(loc location, args []string) error {
 			}
 			c.exit = n != 0
 		}
+	case "compat-fixed-aead":
+		if c.fixedAEAD != "" {
+			return loc.diagnostic(CodeConflict)
+		}
+		if args[0] != crypt.AES128GCM && args[0] != crypt.AES256GCM {
+			return loc.diagnostic(CodeUnsupported)
+		}
+		c.fixedAEAD, c.fixedLoc = args[0], loc
 	case "key-direction":
 		direction, ok := keyDirection(args[0])
 		if !ok {
@@ -190,6 +201,9 @@ func (p *parser) addRemote(loc location, args []string, c *connection) error {
 }
 
 func (p *parser) endpoints() error {
+	if p.defaults.fixedAEAD != "" && (len(p.remotes) != 1 || len(p.blocks) != 0) {
+		return p.defaults.fixedLoc.diagnostic(CodeScope)
+	}
 	if len(p.remotes) != 0 {
 		for _, r := range p.remotes {
 			e := r.endpoint
@@ -224,6 +238,11 @@ func (p *parser) endpoints() error {
 }
 
 func (p *parser) appendEndpoint(e client.Endpoint, loc location, c connection) error {
+	if c.fixedAEAD != "" && (c.protection != nil ||
+		len(p.cfg.DataCiphers) != 0 && (len(p.cfg.DataCiphers) != 1 || p.cfg.DataCiphers[0] != c.fixedAEAD)) {
+		return c.fixedLoc.diagnostic(CodeConflict)
+	}
+	e.FixedAEAD = c.fixedAEAD
 	e.VerifyX509Name = p.identity
 	e.LocalAddress, e.LocalPort = c.localAddress, c.localPort
 	e.ConnectTimeout, e.TunnelMTU, e.ExplicitExitNotify = c.timeout, c.mtu, c.exit

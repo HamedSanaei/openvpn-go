@@ -7,8 +7,16 @@ import (
 	"github.com/hamedsanaei/openvpn-go/internal/crypt"
 )
 
-// DataKeys exports per-generation keys from this verified control TLS session.
+// DataKeys hands per-generation keys to the authenticated data session.
 func (l *Link) DataKeys() (crypt.DataKeys, error) {
+	if l.Info.Derivation == crypt.ClassicKM2 {
+		keys := l.classicKeys
+		l.classicKeys = crypt.DataKeys{}
+		if keys.Send.AEAD == nil || keys.Receive.AEAD == nil {
+			return crypt.DataKeys{}, crypt.ErrDataKeys
+		}
+		return keys, nil
+	}
 	state := l.conn.ConnectionState()
 	return crypt.ExportDataKeys(state.ExportKeyingMaterial, l.Info.Cipher)
 }

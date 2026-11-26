@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"crypto"
+	"crypto/fips140"
 	"crypto/tls"
 	"net/netip"
 	"strings"
@@ -94,15 +95,25 @@ type ControlProtection struct {
 	Direction KeyDirection
 }
 
+type KeyDerivation = crypt.Derivation
+
+const (
+	KeyDerivationTLSExporter = crypt.TLSExporter
+	KeyDerivationClassicKM2  = crypt.ClassicKM2
+	DataFormatV2             = "data_v2"
+)
+
 // ControlInfo describes the authenticated control negotiation.
 type ControlInfo struct {
-	TLSVersion uint16
-	DataCipher string
-	PeerID     uint32
-	KeyID      uint8
-	TunnelIP   netip.Addr
-	TunnelIPv6 netip.Prefix
-	Tunnel     tunnel.Configuration
+	TLSVersion    uint16
+	DataCipher    string
+	KeyDerivation KeyDerivation
+	DataFormat    string
+	PeerID        uint32
+	KeyID         uint8
+	TunnelIP      netip.Addr
+	TunnelIPv6    netip.Prefix
+	Tunnel        tunnel.Configuration
 	// MaxTunnelPacketSize is the active ceiling for a complete inner IP packet.
 	MaxTunnelPacketSize int
 }
@@ -128,6 +139,7 @@ func controlInfo(active *connection) (ControlInfo, bool) {
 	info, keyID := link.Info()
 	return ControlInfo{
 		TLSVersion: info.TLSVersion, DataCipher: info.Cipher, PeerID: info.PeerID,
+		KeyDerivation: info.Derivation, DataFormat: DataFormatV2,
 		KeyID: keyID, TunnelIP: info.Tunnel.IPv4.Addr(), TunnelIPv6: info.Tunnel.IPv6, Tunnel: info.Tunnel,
 		MaxTunnelPacketSize: info.PacketMTU,
 	}, true
@@ -207,11 +219,21 @@ func prepareHandshakes(cfg Config) ([]handshakeFunc, error) {
 	}
 	for i, endpoint := range cfg.Endpoints {
 		protection, wireDigest := common, digest
+		mode := cfg.Control.Mode
 		if len(cfg.EndpointControls) != 0 {
+			mode = cfg.EndpointControls[i].Mode
 			protection, wireDigest, err = cfg.EndpointControls[i].prepare(authDigest)
 			if err != nil {
 				return nil, err
 			}
+		}
+		offer := ciphers
+		if fixed := endpoint.FixedAEAD; fixed != "" {
+			if settings == nil || len(cfg.TLS.Certificate) == 0 || mode != ControlPlain || fips140.Enabled() ||
+				len(cfg.DataCiphers) != 0 && (len(ciphers) != 1 || ciphers[0] != fixed) {
+				return nil, configError("fixed AEAD policy")
+			}
+			offer = []string{fixed}
 		}
 		if settings == nil {
 			continue
@@ -228,9 +250,9 @@ func prepareHandshakes(cfg Config) ([]handshakeFunc, error) {
 				return nil, configError("tunnel MTU")
 			}
 		}
-		opts.TLS = tlscontrol.Options{TLS: peer, Digest: wireDigest, Ciphers: ciphers, PushPolicy: cfg.PushPolicy,
+		opts.TLS = tlscontrol.Options{TLS: peer, Digest: wireDigest, Ciphers: offer, PushPolicy: cfg.PushPolicy,
 			Interaction: auth, ExitNotify: (cfg.ExplicitExitNotify || endpoint.ExplicitExitNotify) && strings.HasPrefix(endpoint.Network, "udp"),
-			TunnelMTU: opts.TunnelMTU}
+			TunnelMTU: opts.TunnelMTU, FixedAEAD: endpoint.FixedAEAD}
 		opts.Protection = protection
 		handshakes[i] = openHandshake(opts, user)
 	}

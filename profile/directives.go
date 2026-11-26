@@ -43,6 +43,7 @@ var directives = map[string]directive{
 	"bind": {connection: true}, "local": {1, 1, true, false}, "lport": {1, 1, true, false},
 	"connect-timeout": {1, 1, true, false}, "tun-mtu": {1, 1, true, false},
 	"explicit-exit-notify": {0, 1, true, false},
+	"compat-fixed-aead":    {1, 1, true, false},
 	"connect-retry":        {min: 1, max: 2}, "connect-retry-max": {min: 1, max: 1},
 	"hand-window": {min: 1, max: 1}, "reneg-sec": {min: 1, max: 1},
 	"auth-nocache": {},
@@ -95,7 +96,7 @@ func (p *parser) apply(loc location, args []string) error {
 	case "remote-random":
 		p.cfg.RemoteRandom = true
 	case "remote", "proto", "port", "rport", "key-direction", "bind", "nobind", "local", "lport",
-		"connect-timeout", "tun-mtu", "explicit-exit-notify":
+		"connect-timeout", "tun-mtu", "explicit-exit-notify", "compat-fixed-aead":
 		return p.applyConnection(loc, args)
 	case "auth-user-pass":
 		if len(args) == 0 {

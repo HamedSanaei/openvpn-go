@@ -123,7 +123,10 @@ sudo env PATH="$PATH" GOTOOLCHAIN=local GOMODCACHE="$(go env GOMODCACHE)" GOPROX
 The legacy test expects verified TLS 1.2, then rejects the unsupported
 data-channel negotiation before publishing a session.
 
-The matrix also records [candidate coverage for older servers and MikroTik](../../docs/COMPATIBILITY_MATRIX.md#candidate-coverage-for-older-servers-and-mikrotik).
+The matrix also records [historical Community peers and MikroTik CHR](../../docs/COMPATIBILITY_MATRIX.md#historical-community-peers-and-mikrotik-chr).
+The [isolated CHR recipe](../../docs/EXTERNAL_INTEROP.md#mikrotik-routeros)
+starts a pinned disposable guest and verifies fixed-AEAD traffic across
+reconnect and rekey on each listener.
 Test each legacy or RouterOS build in an isolated environment. For RouterOS,
 record the exact build, platform and exported profile fixture. Capture whether
 the connection used a fixed cipher and which data format and key derivation

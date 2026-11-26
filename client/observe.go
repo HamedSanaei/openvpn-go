@@ -109,12 +109,31 @@ const (
 	StageConnected      AttemptStage = "connected"
 )
 
+// AttemptPhase identifies the last protocol milestone reached by an attempt.
+type AttemptPhase = observability.Phase
+
+const (
+	PhaseTransport       = observability.PhaseTransport
+	PhaseResetACK        = observability.PhaseResetACK
+	PhaseTLS             = observability.PhaseTLS
+	PhaseCredentials     = observability.PhaseCredentials
+	PhaseKeyMethodWrite  = observability.PhaseKeyMethodWrite
+	PhaseKeyMethodRead   = observability.PhaseKeyMethodRead
+	PhaseKeyMethodFields = observability.PhaseKeyMethodFields
+	PhasePush            = observability.PhasePush
+	PhaseKeyDerivation   = observability.PhaseKeyDerivation
+	PhaseDataSetup       = observability.PhaseDataSetup
+)
+
 // AttemptReport uses ordinal endpoints, durations and stable codes. It is
 // safe to serialize without exposing endpoint or credential configuration.
 type AttemptReport struct {
 	Sequence      uint64        `json:"sequence"`
 	EndpointIndex int           `json:"endpoint_index"`
 	Stage         AttemptStage  `json:"stage"`
+	Phase         AttemptPhase  `json:"phase,omitempty"`
+	PhaseDuration time.Duration `json:"phase_duration_ns,omitempty"`
+	PhaseSteps    uint8         `json:"phase_steps,omitempty"`
 	Code          ErrorCode     `json:"code,omitempty"`
 	Started       time.Time     `json:"started"`
 	Duration      time.Duration `json:"duration_ns"`

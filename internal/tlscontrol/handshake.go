@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/hamedsanaei/openvpn-go/internal/control"
+	"github.com/hamedsanaei/openvpn-go/internal/crypt"
+	"github.com/hamedsanaei/openvpn-go/internal/observability"
 	"github.com/hamedsanaei/openvpn-go/tunnel"
 )
 
@@ -18,11 +20,12 @@ const pushRetry = 3 * time.Second
 // Link owns the authenticated TLS application stream over an established
 // reliable control channel and provides its negotiated data keys.
 type Link struct {
-	Info   Negotiation
-	stream *control.Stream
-	reader *bufio.Reader
-	conn   *tls.Conn
-	auth   *Authentication
+	Info        Negotiation
+	stream      *control.Stream
+	reader      *bufio.Reader
+	conn        *tls.Conn
+	auth        *Authentication
+	classicKeys crypt.DataKeys
 }
 
 type Options struct {
@@ -35,13 +38,16 @@ type Options struct {
 	Interaction Interaction
 	ExitNotify  bool
 	TunnelMTU   int
+	FixedAEAD   string
 }
 
 func Establish(ctx context.Context, stream *control.Stream, opts Options, previous *Negotiation) (_ *Link, failure error) {
 	defer func() { failure = streamError(stream, failure) }()
+	observability.Enter(ctx, observability.PhaseResetACK)
 	if err := stream.WaitReady(ctx); err != nil {
 		return nil, err
 	}
+	observability.Enter(ctx, observability.PhaseTLS)
 	conn := tls.Client(stream.Conn(), opts.TLS.Clone())
 	if err := conn.HandshakeContext(ctx); err != nil {
 		if ctx.Err() != nil {
@@ -73,14 +79,22 @@ func Establish(ctx context.Context, stream *control.Stream, opts Options, previo
 	}
 
 	reader := bufio.NewReaderSize(conn, 4096)
+	var classic *crypt.ClassicMaterial
+	if opts.FixedAEAD != "" {
+		classic = new(crypt.ClassicMaterial)
+		defer classic.Clear()
+	}
+	observability.Enter(ctx, observability.PhaseCredentials)
 	user, err := opts.Auth.forHandshake(ctx, opts.Interaction.Credentials)
 	if err != nil {
 		return nil, err
 	}
-	if err := writeKeyMethodOptions(conn, opts.Network, opts.Digest, opts.Ciphers, user, opts); err != nil {
+	observability.Enter(ctx, observability.PhaseKeyMethodWrite)
+	if err := writeKeyMethodOptions(conn, opts.Network, opts.Digest, opts.Ciphers, user, opts, classic); err != nil {
 		return nil, ctxError(ctx, err)
 	}
-	if err := readKeyMethod(reader); err != nil {
+	observability.Enter(ctx, observability.PhaseKeyMethodRead)
+	if err := readPeerKeyMethod(ctx, reader, opts.FixedAEAD, classic); err != nil {
 		return nil, ctxError(ctx, err)
 	}
 
@@ -92,10 +106,19 @@ func Establish(ctx context.Context, stream *control.Stream, opts Options, previo
 		}
 		info = *previous
 	} else {
-		push := pushState{allowed: opts.Ciphers, policy: opts.PushPolicy, allowExit: opts.ExitNotify}
+		observability.Enter(ctx, observability.PhasePush)
+		push := pushState{allowed: opts.Ciphers, policy: opts.PushPolicy, allowExit: opts.ExitNotify, fixedAEAD: opts.FixedAEAD}
 		if err := readPushInteractive(ctx, conn, reader, &push, opts.Interaction); err != nil {
 			clear(push.token)
 			return nil, ctxError(ctx, err)
+		}
+		if classic != nil {
+			// The concise peer starts handling tunnel traffic only after
+			// its PUSH_REPLY has been acknowledged on the control channel.
+			if err := stream.Drain(ctx); err != nil {
+				clear(push.token)
+				return nil, ctxError(ctx, err)
+			}
 		}
 		if push.token != nil {
 			opts.Auth.set(push.token, push.tokenUser)
@@ -103,7 +126,16 @@ func Establish(ctx context.Context, stream *control.Stream, opts Options, previo
 		info = push.Negotiation
 	}
 	info.TLSVersion = conn.ConnectionState().Version
-	return &Link{Info: info, stream: stream, reader: reader, conn: conn, auth: opts.Auth}, nil
+	link := &Link{Info: info, stream: stream, reader: reader, conn: conn, auth: opts.Auth}
+	if classic != nil {
+		observability.Enter(ctx, observability.PhaseKeyDerivation)
+		local, peer := stream.KeyContext()
+		link.classicKeys, err = crypt.ClassicDataKeys(info.Cipher, classic, local, peer)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return link, nil
 }
 
 func streamError(stream *control.Stream, err error) error {

@@ -16,12 +16,13 @@ and independently authored fixtures. [Provenance ledger](PROVENANCE.md) · [Revi
 | TCP proxies | [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html#name-connect) · [RFC 1928](https://www.rfc-editor.org/rfc/rfc1928) · [RFC 1929](https://www.rfc-editor.org/rfc/rfc1929) | Local controlled proxies verify CONNECT and SOCKS5 framing, credentials, and refusal handling. | Opt-in adapter. `TestProxyTCPAdapters`, `TestProxyFailureAndCancellationAreRedacted`. |
 | Community 2.7 epoch negotiation | [Community 2.7.9](https://github.com/OpenVPN/openvpn/releases/tag/v2.7.9) · [Wire draft](https://openvpn.github.io/openvpn-rfc/openvpn-wire-protocol.html) | Community negotiates epoch between compatible peers. Its classic path is independently exercised against Go. | Classic path supported. Unadvertised epoch is rejected. `TestCommunity27EpochPolicy`. |
 | Historical 2.4.12 and 2.5.11 peers | [Community release support](https://community.openvpn.net/Pages/Supported%20versions) · [2.6 transition notes](https://github.com/OpenVPN/openvpn/blob/v2.6.23/Changes.rst) | The tested older peers omit the exporter and may omit cipher negotiation. | Deliberately fail closed. `TestLegacyCommunityAEADPolicy`. |
-| RouterOS CHR 7.25.2 and Access Server 3.2.4 | [RouterOS OpenVPN documentation](https://help.mikrotik.com/docs/spaces/ROS/pages/2031655/OpenVPN) · [Access Server client profiles](https://openvpn.net/as-docs/v3/using-the-client-web-ui/) | Controlled profiles documented negotiation or parser incompatibilities. Provider and hardware support requires separate evidence. | No compatibility claim. `TestExternalProfile` and [recorded evidence](EXTERNAL_INTEROP.md). |
+| RouterOS CHR 7.25.2 x86_64 fixed AEAD | [RouterOS OpenVPN documentation](https://help.mikrotik.com/docs/spaces/ROS/pages/2031655/OpenVPN) · [Fixed-AEAD ADR](adr/0009-fixed-aead-compatibility.md) | TCP and UDP with AES-128-GCM and AES-256-GCM verify TLS 1.2 identity, packet traffic, reconnect and rekey. | Explicit endpoint policy, classic key method 2 and `DATA_V2`. Physical validation is pending. [CHR matrix](EXTERNAL_INTEROP.md#mikrotik-routeros). |
+| Access Server 3.2.4 and provider profiles | [Access Server client profiles](https://openvpn.net/as-docs/v3/using-the-client-web-ui/) | Tested Access Server exports request a policy-disabled cipher. Authorized provider profiles remain pending. | No compatibility claim. [External profile results](EXTERNAL_INTEROP.md#provider-and-access-server-profiles). |
 | Linux offload | [Linux ovpn netlink ABI](https://docs.kernel.org/netlink/specs/ovpn.html) · [Community 2.7.9 DCO](https://github.com/OpenVPN/openvpn/blob/v2.7.9/README.dco.md) | The comparison uses userspace exclusively and records no kernel measurements. | Evaluated in [ADR 0008](adr/0008-linux-data-offload.md). `TestComparativeBenchmark` tags userspace in its output. |
 
-Server operation, TAP, insecure data ciphers, compression, legacy
-key derivation, native platform packaging and implicit downgrade
-remain outside the supported core. Use the separate compatibility
+Server operation, TAP, insecure data ciphers, compression, native platform
+packaging and implicit downgrade remain outside the supported core.
+Use the separate compatibility
 matrix for mode and platform detail. [Compatibility matrix](COMPATIBILITY_MATRIX.md)
 
 ## Review cadence

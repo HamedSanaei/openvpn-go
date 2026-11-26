@@ -48,6 +48,13 @@ type DataKeys struct {
 	PacketLimit   uint32
 }
 
+type Derivation string
+
+const (
+	TLSExporter Derivation = "tls_exporter"
+	ClassicKM2  Derivation = "classic_km2"
+)
+
 // ExportDataKeys derives the two directional AEAD keys and nonce suffixes
 // from the verified control TLS connection's key material exporter.
 func ExportDataKeys(export func(string, []byte, int) ([]byte, error), name string) (DataKeys, error) {
@@ -56,6 +63,10 @@ func ExportDataKeys(export func(string, []byte, int) ([]byte, error), name strin
 	if err != nil || len(material) != ExporterSize {
 		return DataKeys{}, ErrDataKeys
 	}
+	return fromMaterial(name, material)
+}
+
+func fromMaterial(name string, material []byte) (DataKeys, error) {
 	tx, err := direction(name, material[:128])
 	if err != nil {
 		return DataKeys{}, err

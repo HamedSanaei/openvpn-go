@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/hamedsanaei/openvpn-go/internal/failover"
+	"github.com/hamedsanaei/openvpn-go/internal/observability"
 )
 
 // RetryPolicy controls each Connect or recovery sequence. A successful
@@ -76,12 +77,15 @@ func (c *Client) establish(ctx context.Context, start int, recovery bool, lost E
 		c.record(EventDialing, index, "", 0)
 		c.mu.Unlock()
 
-		link, stage, err := c.dial(ctx, index, visits[index])
+		progress := observability.Progress{Phase: observability.PhaseTransport, Started: started}
+		link, stage, err := c.dial(observability.WithProgress(ctx, &progress), index, visits[index])
 		visits[index]++
 		c.mu.Lock()
 		stopped := c.operationError(ctx, "connect")
 		report := AttemptReport{Sequence: c.stats.Attempts, EndpointIndex: index, Stage: stage,
 			Started: started, Duration: time.Since(started), RetryReason: lost, RetryAfter: delay}
+		report.Phase, report.PhaseDuration = progress.Phase, time.Since(progress.Started)
+		report.PhaseSteps = progress.Steps
 		if err == nil && stopped == nil {
 			c.stats.Connections++
 			active := &connection{link: link, index: index, position: position, generation: c.stats.Connections, started: time.Now()}
