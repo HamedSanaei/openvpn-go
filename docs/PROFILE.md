@@ -89,6 +89,7 @@ their own lines.
 | `persist-key`, `persist-tun` | Accepted with an `ignored_directive` warning. The library owns session keys and the caller manages the tunnel. |
 | `resolv-retry` | DNS retry budget of 0–120 seconds. Each dial has its own deadline. `infinite` retries DNS until that deadline or cancellation. |
 | `connect-timeout` | Dial deadline in seconds, 1–120. |
+| `server-poll-timeout` | Per-remote deadline in seconds, 1–300, covering dialing and the initial OpenVPN control response. The handshake and authentication use their existing deadlines after that response. |
 | `connect-retry` | Initial and optional maximum retry delay ceilings in seconds, 1–300. Uses the client retry policy's jitter. |
 | `connect-retry-max` | Number of visits per remote in rotating order. The total per sequence must be at most 1024. |
 | `hand-window` | Initial TLS/control deadline and rekey deadline in seconds, 1–300. |
@@ -120,7 +121,7 @@ blocks, each block inherits the defaults at its opening, including control
 protection. Inside the block, process `remote`, `proto`, `port` and `rport`
 in order. Later settings override earlier settings for the same field.
 The supported block directives are `remote`, `proto`, `port`, `rport`,
-`bind`, `nobind`, `local`, `lport`, `connect-timeout`, `tun-mtu`,
+`bind`, `nobind`, `local`, `lport`, `connect-timeout`, `server-poll-timeout`, `tun-mtu`,
 `explicit-exit-notify`, `key-direction`, `tls-auth`, `tls-crypt` and
 `tls-crypt-v2`. A `compat-fixed-aead` entry may be declared once inside
 each applicable connection block. At top level it requires exactly one
@@ -184,16 +185,21 @@ warnings omit raw tokens, paths, credentials and key material.
 ## Proton VPN manual exports
 
 Pass the original export to the application's profile parser with
-`Options.ProtonVPNServerName` and `Options.AllowPasswordOnly` set.
-Provision the exact certificate common name from independently trusted
-provider information, such as a provider-owned DNS name whose A records
-include the configured IPv4 remote. The client checks that exact name,
-the exported CA and the server certificate purpose. Supply the separate
-OpenVPN credentials through `Options.Credentials` or the application
-credential callback. The profile must have a bare `auth-user-pass` line.
+`Options.AllowPasswordOnly` set and choose one identity policy.
+`Options.ProtonVPNVerifyIP` verifies each numeric remote against the
+server certificate's IP subject alternative name (IP SAN). It preserves
+remote order and `remote-random`, and it rejects profile name overrides.
+Use it for Country and Secure Core exports whose certificates cover
+their numeric remotes.
+
+`Options.ProtonVPNServerName` remains available for an independently
+provisioned exact certificate common name. Both policies require the
+exported CA, the server certificate purpose and a bare `auth-user-pass`
+line. Supply the separate OpenVPN credentials through
+`Options.Credentials` or the application credential callback.
 
 ~~~sh
-ovpn-inspect -protonvpn-server-name "$VPN_SERVER_NAME" \
+ovpn-inspect -protonvpn-verify-ip \
   -allow-password-only -auth-file "$VPN_AUTH_FILE" "$VPN_PROFILE"
 ~~~
 
@@ -214,7 +220,8 @@ username on the first line and a password on the second.
 | `script-security 2` and the exact `up` and `down` invocations of `/etc/openvpn/update-resolv-conf` | Records the complete three-line group as ignored hints. Other scripts, arguments, paths or incomplete groups are rejected. Use the authenticated VPN DNS settings with a tunnel-bound resolver. |
 | `cipher AES-256-GCM` | Remains an advisory directive. The peer negotiates an allowed AEAD cipher with TLS exporter derivation. Fixed AEAD compatibility is unavailable in this import mode. |
 
-Use `ovpn-inspect -capabilities -protonvpn-server-name "$VPN_SERVER_NAME"`
-to see classifications for this import mode. The default inspector and
+Use `ovpn-inspect -capabilities -protonvpn-verify-ip` to see
+classifications for numeric-remote import. Use `-protonvpn-server-name`
+instead when provisioning an exact certificate common name. The default inspector and
 parser retain their strict policy for these options.
 [Live results](EXTERNAL_INTEROP.md#proton-vpn) · [Proton manual OpenVPN setup](https://protonvpn.com/support/linux-openvpn)

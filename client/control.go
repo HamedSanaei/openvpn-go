@@ -278,6 +278,7 @@ func openHandshake(config session.Options, user tlscontrol.Credentials) handshak
 	return func(ctx context.Context, endpoint Endpoint, packets transport.PacketConn) (tunnel.PacketConn, error) {
 		opts := config
 		opts.TLS.Network = endpoint.Network
+		opts.TLS.ServerPollTimeout = endpoint.ServerPollTimeout
 		opts.TLS.Auth = tlscontrol.NewAuthentication(user)
 		link, err := session.Open(ctx, packets, opts)
 		if err != nil {

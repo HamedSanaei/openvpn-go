@@ -42,6 +42,7 @@ var directives = map[string]directive{
 	"nobind":            {connection: true}, "disable-dco": {},
 	"bind": {connection: true}, "local": {1, 1, true, false}, "lport": {1, 1, true, false},
 	"connect-timeout": {1, 1, true, false}, "tun-mtu": {1, 1, true, false},
+	"server-poll-timeout":  {1, 1, true, false},
 	"explicit-exit-notify": {0, 1, true, false},
 	"compat-fixed-aead":    {1, 1, true, false},
 	"connect-retry":        {min: 1, max: 2}, "connect-retry-max": {min: 1, max: 1},
@@ -100,12 +101,12 @@ func (p *parser) apply(loc location, args []string) error {
 	case "setenv", "mssfix", "script-security", "up", "down", "block-outside-dns":
 		return p.applyProtonHint(loc, args)
 	case "compat-fixed-aead":
-		if p.opts.ProtonVPNServerName != "" {
+		if p.opts.protonImportEnabled() {
 			return loc.diagnostic(CodeUnsupported)
 		}
 		return p.applyConnection(loc, args)
 	case "remote", "proto", "port", "rport", "key-direction", "bind", "nobind", "local", "lport",
-		"connect-timeout", "tun-mtu", "explicit-exit-notify":
+		"connect-timeout", "server-poll-timeout", "tun-mtu", "explicit-exit-notify":
 		return p.applyConnection(loc, args)
 	case "auth-user-pass":
 		if len(args) == 0 {

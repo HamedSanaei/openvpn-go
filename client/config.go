@@ -36,6 +36,9 @@ type Endpoint struct {
 	ConnectTimeout     time.Duration
 	TunnelMTU          int
 	ExplicitExitNotify bool
+	// ServerPollTimeout bounds dialing and waiting for the first control
+	// reset acknowledgement. Zero keeps the ordinary dial and TLS budgets.
+	ServerPollTimeout time.Duration
 	// FixedAEAD explicitly selects the fixed AES-GCM compatibility policy
 	// for this endpoint. An empty string requires modern negotiation.
 	FixedAEAD string
@@ -180,7 +183,8 @@ func (e *Endpoint) normalize() error {
 	if e.Network == "" {
 		e.Network = "udp"
 	}
-	if e.ConnectTimeout < 0 || e.ConnectTimeout > 2*time.Minute || !tunnel.ValidMTU(e.TunnelMTU) {
+	if e.ConnectTimeout < 0 || e.ConnectTimeout > 2*time.Minute ||
+		e.ServerPollTimeout < 0 || e.ServerPollTimeout > 5*time.Minute || !tunnel.ValidMTU(e.TunnelMTU) {
 		return configError("endpoint timeout or MTU")
 	}
 	switch e.Network {

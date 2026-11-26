@@ -135,6 +135,11 @@ passed on every exported candidate. An isolated TUN passed UDP DNS and
 HTTPS on both transports. The evidence covers one IPv4 server
 and the explicitly provisioned identity. [Import and test details](EXTERNAL_INTEROP.md#proton-vpn)
 
+A separate batch of 13 Country and 12 Secure Core exports passed live
+traffic and reconnect using numeric IP SAN verification. UDP DNS and
+HTTPS passed in a TUN namespace on both transports in each group.
+[Country and Secure Core evidence](EXTERNAL_INTEROP.md#country-and-secure-core-exports)
+
 ## Evidence records
 
 M2 passed all 20 baseline control scenarios over TLS 1.2, with

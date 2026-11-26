@@ -32,6 +32,10 @@ type Options struct {
 	// Supply the exact certificate common name from a trusted provider
 	// source. The profile cannot set or override this value.
 	ProtonVPNServerName string
+	// ProtonVPNVerifyIP enables Proton VPN manual import and verifies
+	// each numeric remote against the server certificate's IP SAN.
+	// This mode excludes ProtonVPNServerName and profile name overrides.
+	ProtonVPNVerifyIP bool
 	// Authentication authorizes caller-managed credentials and interaction.
 	Authentication client.Authentication
 	// Identity supplies a matching key for a profile with cert and no key.
@@ -210,7 +214,7 @@ func (p *parser) readDirective(line string, number int) (location, error) {
 		return location{}, nil
 	}
 	rule, supported := directives[loc.name]
-	if !supported && p.opts.ProtonVPNServerName != "" {
+	if !supported && p.opts.protonImportEnabled() {
 		rule, supported = protonDirectives[loc.name]
 	}
 	if !supported {

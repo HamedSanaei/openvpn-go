@@ -326,3 +326,38 @@ func dialWith(conn transport.PacketConn) transport.Dialer {
 func acceptTestSession(_ context.Context, _ Endpoint, raw transport.PacketConn) (tunnel.PacketConn, error) {
 	return raw, nil
 }
+
+func TestServerPollTimeoutIncludesDialAndFailsOver(t *testing.T) {
+	pki := testkit.NewPKI(t)
+	synctest.Test(t, func(t *testing.T) {
+		const poll = 40 * time.Millisecond
+		silent, _ := testkit.PacketPipe(8, 4096)
+		working, _ := testkit.PacketPipe(8, 4096)
+		first := Endpoint{Host: "192.0.2.1", ServerPollTimeout: poll}
+		second := Endpoint{Host: "192.0.2.2"}
+		c, err := New(Config{
+			Endpoints: []Endpoint{first, second},
+			TLS:       &TLSConfig{CA: pki.CA, Certificate: pki.Client.Certificate, PrivateKey: pki.Client.PrivateKey},
+			Dialer: testkit.DialerFunc(func(ctx context.Context, _, address string) (transport.PacketConn, error) {
+				if address == "192.0.2.1:1194" {
+					time.Sleep(15 * time.Millisecond)
+					return silent, nil
+				}
+				return working, nil
+			}),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		c.handshakes[1] = acceptTestSession
+		if err := c.Connect(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		reports := c.AttemptReports(0)
+		if len(reports) != 2 || reports[0].Code != CodeTimeout || reports[0].Duration != poll ||
+			reports[0].Phase != PhaseResetACK || reports[1].Stage != StageConnected {
+			t.Fatalf("poll deadline did not isolate the first candidate: %+v", reports)
+		}
+	})
+}
