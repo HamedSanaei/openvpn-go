@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -88,7 +89,13 @@ func TestSocketDialerUDP(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := server.WriteToUDP(tc.packet, remote); err != nil {
+			_, err := server.WriteToUDP(tc.packet, remote)
+			if len(tc.packet) > 4096 && errors.Is(err, syscall.EMSGSIZE) {
+				// Some kernels cap outbound datagrams below the UDP wire limit.
+				// This packet still exercises rejection well above the receive cap.
+				_, err = server.WriteToUDP(tc.packet[:4096], remote)
+			}
+			if err != nil {
 				t.Fatal(err)
 			}
 			if n, err := conn.ReadPacket(ctx, tc.dst); n != 0 || !errors.Is(err, tc.want) {
