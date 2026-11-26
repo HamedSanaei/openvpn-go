@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -171,7 +170,7 @@ func TestExternalCredentialsBounds(t *testing.T) {
 			if err := os.WriteFile(path, []byte(tc.raw), 0600); err != nil {
 				t.Fatal("could not write generated credentials")
 			}
-			credentials, err := readExternalCredentials(path)
+			credentials, err := profile.ReadCredentialsFile(path)
 			if (err == nil) != tc.valid {
 				t.Fatal("unexpected credential-file validation result")
 			}
@@ -190,15 +189,18 @@ func probeExternalProfile(ctx context.Context, name string) (result externalResu
 		return result
 	}
 	defer file.Close()
-	report, _ := profile.Inspect(file)
+	options := profile.Options{
+		AllowPasswordOnly:   os.Getenv("OVPN_EXTERNAL_PASSWORD_ONLY") == "1",
+		ProtonVPNServerName: os.Getenv("OVPN_EXTERNAL_PROTON_SERVER_NAME"),
+	}
+	report, _ := profile.InspectWithOptions(file, options)
 	result.Profile = report.Entries
 	if _, err := file.Seek(0, 0); err != nil {
 		result.Code = "profile_unavailable"
 		return result
 	}
-	options := profile.Options{AllowPasswordOnly: os.Getenv("OVPN_EXTERNAL_PASSWORD_ONLY") == "1"}
 	if path := os.Getenv("OVPN_EXTERNAL_AUTH_FILE"); path != "" {
-		options.Credentials, err = readExternalCredentials(path)
+		options.Credentials, err = profile.ReadCredentialsFile(path)
 		if err != nil {
 			result.Code = "credential_file_unusable"
 			return result
@@ -246,11 +248,13 @@ func probeExternalProfile(ctx context.Context, name string) (result externalResu
 	cfg.Retry = client.RetryPolicy{MaxAttempts: 1}
 	rekey := os.Getenv("OVPN_EXTERNAL_REKEY") == "1"
 	if rekey {
-		cfg.RekeyInterval = 2 * time.Second
+		cfg.DisableTimedRekey, cfg.RekeyInterval = false, 2*time.Second
 	}
 
 	peer := netip.Addr{}
-	if value := os.Getenv("OVPN_EXTERNAL_ECHO"); value != "" {
+	echoTarget := os.Getenv("OVPN_EXTERNAL_ECHO")
+	if echoTarget != "" && echoTarget != "gateway" {
+		value := echoTarget
 		peer, err = netip.ParseAddr(value)
 		if err != nil || !peer.Is4() || !peer.IsGlobalUnicast() {
 			result.Code = "invalid_echo_address"
@@ -300,6 +304,13 @@ func probeExternalProfile(ctx context.Context, name string) (result externalResu
 	}
 	result.Stage, result.TLS, result.AEAD = "connected", tls.VersionName(info.TLSVersion), info.DataCipher
 	result.Derivation, result.DataFormat = info.KeyDerivation, info.DataFormat
+	if echoTarget == "gateway" {
+		peer = info.Tunnel.GatewayIPv4
+		if !peer.Is4() {
+			result.Stage, result.Code = "traffic", "missing_ipv4_gateway"
+			return result
+		}
+	}
 	if peer.IsValid() {
 		result.Stage, result.Code, result.RoundTrips = probeExternalData(ctx, c, first, peer, rekey)
 		if result.Stage == "rekey_verified" {
@@ -321,26 +332,6 @@ func openExternalFile(path string) (*os.File, error) {
 		return nil, errors.New("expected a regular file")
 	}
 	return f, nil
-}
-
-func readExternalCredentials(path string) (*client.Credentials, error) {
-	const maxCredentials = 4096
-	f, err := openExternalFile(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	raw, err := io.ReadAll(io.LimitReader(f, maxCredentials+1))
-	defer clear(raw)
-	user, rest, ok := bytes.Cut(raw, []byte{'\n'})
-	pass, trailing, _ := bytes.Cut(rest, []byte{'\n'})
-	if err != nil || len(raw) > maxCredentials || !ok || len(trailing) != 0 {
-		return nil, errors.New("expected two bounded credential lines")
-	}
-	return &client.Credentials{
-		Username: string(bytes.TrimSuffix(user, []byte{'\r'})),
-		Password: string(bytes.TrimSuffix(pass, []byte{'\r'})),
-	}, nil
 }
 
 func externalControlMode(mode client.ControlMode) string {

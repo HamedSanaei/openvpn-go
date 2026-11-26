@@ -177,10 +177,65 @@ profiles. [Access Server image](https://hub.docker.com/r/openvpn/openvpn-as)
 
 | Provider | Export to test | Status |
 |---|---|---|
-| Proton VPN | Current manual OpenVPN profile and separate OpenVPN credentials | Pending authorized account and export |
+| Proton VPN | Authorized manual exports with explicitly provisioned identity | Twelve original exports verified under the opt-in import. See the [redacted results](#proton-vpn). |
 | Windscribe | Authorized manual OpenVPN configuration from the Config Generator | Pending authorized account and export |
 | ExpressVPN | OpenVPN configuration and credentials from Manual Configuration | Pending authorized account and export |
 
 [Proton VPN manual setup](https://protonvpn.com/support/vpn-login) ·
 [Windscribe Config Generator](https://windscribe.com/getconfig/openvpn) ·
 [ExpressVPN manual setup](https://www.expressvpn.com/support/vpn-setup/manual-config-for-windows-with-openvpn/)
+
+### Proton VPN
+
+The authorized lab covered twelve unchanged manual exports for one IPv4
+server, six TCP and six UDP. The strict importer rejected all twelve
+at `setenv`. The opt-in import accepted all twelve with the original
+inline CA, tls-crypt and password authentication. The expected certificate
+name was corroborated independently by querying Cloudflare and Google
+HTTPS DNS resolvers for the provider-owned name and matching the A record
+to the configured remote. The probe then required the exact name and
+server certificate purpose alongside the exported CA. No endpoint names,
+addresses, account material or profiles are published.
+
+| Live case | Outcome |
+|---|---|
+| OpenVPN Community 2.6.23 reference, one export per transport | TLS 1.3, AES-256-GCM and authenticated session initialization. The reference disabled OS interface/route effects and omitted the known DNS hooks in its temporary input. |
+| OpenVPN Go, six original TCP exports and all three distinct TCP candidates | All established TLS 1.3 and AES-256-GCM with a TLS exporter and `DATA_V2`. Each passed an IPv4 gateway echo before and after intentionally interrupting the transport. |
+| OpenVPN Go, six original UDP exports and all five distinct UDP candidates | All established the same security parameters and passed the gateway echo and reconnect checks. |
+| Authenticated transport hints | The server sent legacy exit notification and `TCP_NODELAY` hints, plus socket buffer counts over UDP. Go validates their syntax and keeps transport configuration caller-owned. |
+
+The application traffic test attached a Linux TUN in a disposable network
+namespace with no ordinary egress interface. A UDP DNS query to the
+authenticated VPN resolver and an IPv4 HTTPS request through that TUN
+passed on a representative TCP profile and a representative UDP profile.
+The outer OpenVPN socket remained outside the namespace. The test
+installed no host routes or host DNS configuration.
+
+An optional two-second client rekey passed over UDP. Forced TCP rekey
+lost the echo in one run and replaced the session in three serial runs.
+The supplied exports specify `reneg-sec 0`. The normal importer preserves
+that setting, and the probe overrides it only when explicitly asked to
+test a forced rekey. This evidence does not certify forced TCP rekey
+against the provider.
+
+The provider's server build is undisclosed. These observations cover the
+uploaded profiles, one authorized account and one IPv4 endpoint. The
+import deliberately recognizes only the tested Linux DNS-hook group and
+Windows DNS hint. It does not execute hooks or install a DNS leak policy.
+[Import policy](PROFILE.md#proton-vpn-manual-exports) · [Proton OpenVPN configuration](https://protonvpn.com/support/vpn-config-download)
+
+To reproduce the authenticated gateway and reconnect checks, select an
+export and pass the independently verified name and credential file.
+
+~~~sh
+OVPN_EXTERNAL_PROFILE="$VPN_PROFILE" \
+OVPN_EXTERNAL_PASSWORD_ONLY=1 \
+OVPN_EXTERNAL_PROTON_SERVER_NAME="$VPN_SERVER_NAME" \
+OVPN_EXTERNAL_AUTH_FILE="$VPN_AUTH_FILE" \
+OVPN_EXTERNAL_ECHO=gateway OVPN_EXTERNAL_EXPECT=verified \
+go test -race -v -count=1 -timeout 1m -run '^TestExternalProfile$' ./tests/interop
+~~~
+
+`OVPN_EXTERNAL_REMOTE` selects a one-based candidate. Use
+`OVPN_EXTERNAL_REKEY=1` and `OVPN_EXTERNAL_EXPECT=rekey_verified` for the
+separate forced-rekey probe. [Synthetic negative tests](../tests/interop/password_test.go)

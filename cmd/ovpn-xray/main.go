@@ -32,9 +32,11 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 	v6 := flags.String("ipv6", "", "expected IPv6 address and prefix")
 	attempts := flags.Int("attempts", 0, "maximum dial attempts per sequence")
 	mssMTU := flags.Int("mss-mtu", 0, "inner MTU ceiling for optional TCP MSS clamping")
+	authPath := flags.String("auth-file", "", "two-line OpenVPN credential file")
+	protonName := flags.String("protonvpn-server-name", "", "trusted exact Proton VPN certificate name")
 	passwordOnly := flags.Bool("allow-password-only", false, "allow verified profiles without a client certificate")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *path == "" || *tun == "" || (*v4 == "" && *v6 == "") {
-		fmt.Fprintln(stderr, "Usage: ovpn-xray -profile client.ovpn -tun ovpn0 [-root directory] [-ipv4 addr] [-ipv6 prefix] [-attempts n] [-mss-mtu n] [-allow-password-only]")
+		fmt.Fprintln(stderr, "Usage: ovpn-xray -profile client.ovpn -tun ovpn0 [-root directory] [-ipv4 addr] [-ipv6 prefix] [-attempts n] [-mss-mtu n] [-allow-password-only] [-auth-file path] [-protonvpn-server-name name]")
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
@@ -56,7 +58,14 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 			return 2
 		}
 	}
-	opts := profile.Options{AllowPasswordOnly: *passwordOnly}
+	opts := profile.Options{AllowPasswordOnly: *passwordOnly, ProtonVPNServerName: *protonName}
+	if *authPath != "" {
+		opts.Credentials, err = profile.ReadCredentialsFile(*authPath)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+	}
 	if *rootPath != "" {
 		opts.Root, err = os.OpenRoot(*rootPath)
 		if err != nil {

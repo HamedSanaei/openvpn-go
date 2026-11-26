@@ -57,20 +57,22 @@ var unsupported = map[string]bool{
 	"auth-retry": true, "auth-token": true, "auth-user-pass-verify": true,
 	"capath": true, "cd": true, "compat-mode": true, "comp-lzo": true, "compress": true,
 	"config": true, "data-ciphers-fallback": true, "dh": true,
-	"down": true, "engine": true, "extra-certs": true, "float": true, "fragment": true,
+	"engine": true, "extra-certs": true, "float": true, "fragment": true,
 	"http-proxy": true, "ignore-unknown-option": true, "key-method": true,
 	"management": true, "mode": true, "ncp-ciphers": true, "ncp-disable": true,
 	"no-replay": true, "ns-cert-type": true, "pkcs12": true,
 	"plugin": true, "proto-force": true, "pull-filter": true, "remote-cert-eku": true,
 	"remote-cert-ku": true, "remote-random-hostname": true, "route-up": true,
-	"script-security": true, "secret": true, "server": true, "server-bridge": true,
-	"setenv": true, "setenv-safe": true, "socks-proxy": true, "tls-cert-profile": true,
+	"secret": true, "server": true, "server-bridge": true,
+	"setenv-safe": true, "socks-proxy": true, "tls-cert-profile": true,
 	"tls-cipher": true, "tls-ciphersuites": true, "tls-server": true, "tls-verify": true,
-	"up": true, "verify-client-cert": true, "verify-hash": true, "x509-username-field": true,
+	"verify-client-cert": true, "verify-hash": true, "x509-username-field": true,
 }
 
 func knownLocation(name string, line int) location {
-	if _, ok := directives[name]; !ok && !unsupported[name] {
+	_, standard := directives[name]
+	_, proton := protonDirectives[name]
+	if !standard && !proton && !unsupported[name] {
 		name = ""
 	}
 	return location{line: line, name: name}
@@ -95,8 +97,15 @@ func (p *parser) apply(loc location, args []string) error {
 		}
 	case "remote-random":
 		p.cfg.RemoteRandom = true
+	case "setenv", "mssfix", "script-security", "up", "down", "block-outside-dns":
+		return p.applyProtonHint(loc, args)
+	case "compat-fixed-aead":
+		if p.opts.ProtonVPNServerName != "" {
+			return loc.diagnostic(CodeUnsupported)
+		}
+		return p.applyConnection(loc, args)
 	case "remote", "proto", "port", "rport", "key-direction", "bind", "nobind", "local", "lport",
-		"connect-timeout", "tun-mtu", "explicit-exit-notify", "compat-fixed-aead":
+		"connect-timeout", "tun-mtu", "explicit-exit-notify":
 		return p.applyConnection(loc, args)
 	case "auth-user-pass":
 		if len(args) == 0 {

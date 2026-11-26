@@ -180,3 +180,41 @@ profile-wide error. Fatal failures return a zero configuration. Errors and
 warnings omit raw tokens, paths, credentials and key material.
 
 [OpenVPN 2.6 manual](https://openvpn.net/community-docs/community-articles/openvpn-2-6-manual/) · [Security requirements](SECURITY_MODEL.md) · [Parser tests](../profile/parse_test.go)
+
+## Proton VPN manual exports
+
+Pass the original export to the application's profile parser with
+`Options.ProtonVPNServerName` and `Options.AllowPasswordOnly` set.
+Provision the exact certificate common name from independently trusted
+provider information, such as a provider-owned DNS name whose A records
+include the configured IPv4 remote. The client checks that exact name,
+the exported CA and the server certificate purpose. Supply the separate
+OpenVPN credentials through `Options.Credentials` or the application
+credential callback. The profile must have a bare `auth-user-pass` line.
+
+~~~sh
+ovpn-inspect -protonvpn-server-name "$VPN_SERVER_NAME" \
+  -allow-password-only -auth-file "$VPN_AUTH_FILE" "$VPN_PROFILE"
+~~~
+
+For a service with a provisioned tunnel address, pass the same three
+options to `ovpn-xray` alongside the profile and its ordinary TUN
+arguments. Applications that configure a fresh TUN address per session
+can use the authenticated generation's tunnel configuration.
+Keep the credentials file outside version control. The file has a
+username on the first line and a password on the second.
+
+| Option in the export | Proton VPN import policy |
+|---|---|
+| `setenv CLIENT_CERT 0` | Records an ignored hint. The application must still enable password-only authentication explicitly. |
+| `mssfix 0` | Records an ignored request to leave MSS adjustment disabled. Nonzero values are rejected. |
+| `tun-mtu` | Uses the existing validated per-endpoint MTU policy. |
+| `reneg-sec 0` | Uses the existing policy for explicitly disabling timer-driven client rekeys. Peer rekeys and key-usage limits stay active. |
+| `block-outside-dns` | Records an ignored Windows-specific hint. The application owns DNS routing and leak prevention. |
+| `script-security 2` and the exact `up` and `down` invocations of `/etc/openvpn/update-resolv-conf` | Records the complete three-line group as ignored hints. Other scripts, arguments, paths or incomplete groups are rejected. Use the authenticated VPN DNS settings with a tunnel-bound resolver. |
+| `cipher AES-256-GCM` | Remains an advisory directive. The peer negotiates an allowed AEAD cipher with TLS exporter derivation. Fixed AEAD compatibility is unavailable in this import mode. |
+
+Use `ovpn-inspect -capabilities -protonvpn-server-name "$VPN_SERVER_NAME"`
+to see classifications for this import mode. The default inspector and
+parser retain their strict policy for these options.
+[Live results](EXTERNAL_INTEROP.md#proton-vpn) · [Proton manual OpenVPN setup](https://protonvpn.com/support/linux-openvpn)

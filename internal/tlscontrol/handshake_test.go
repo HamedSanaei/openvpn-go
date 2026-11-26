@@ -122,3 +122,28 @@ func TestPushRequiresCompleteAndAllowedNegotiation(t *testing.T) {
 		t.Fatalf("final push continuation = %v, %v, id %d", done, err, p.PeerID)
 	}
 }
+
+func TestAuthenticatedTransportHints(t *testing.T) {
+	const base = "PUSH_REPLY,peer-id 13,key-derivation tls-ekm,cipher AES-256-GCM,"
+	for _, tc := range []struct {
+		value string
+		want  error
+	}{
+		{"explicit-exit-notify,socket-flags TCP_NODELAY,sndbuf 524288,rcvbuf 524288", nil},
+		{"explicit-exit-notify 2,sndbuf 0", nil},
+		{"explicit-exit-notify 256", ErrNegotiation},
+		{"explicit-exit-notify -1", ErrNegotiation},
+		{"socket-flags TCP_NODELAY OTHER", ErrNegotiation},
+		{"sndbuf -1", ErrNegotiation},
+		{"rcvbuf 2147483648", ErrNegotiation},
+		{"rcvbuf", ErrNegotiation},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			p := pushState{allowed: []string{"AES-256-GCM"}, allowExit: true}
+			ok, err := p.add([]byte(base + tc.value))
+			if ok != (tc.want == nil) || !errors.Is(err, tc.want) || p.ExitNotify {
+				t.Fatalf("push completion = %v, %v, exit notification = %v", ok, err, p.ExitNotify)
+			}
+		})
+	}
+}

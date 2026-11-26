@@ -9,6 +9,7 @@ coverage.html
 *.prof
 
 # Local configuration and credentials
+/testdata/
 .env
 .env.*
 *.ovpn

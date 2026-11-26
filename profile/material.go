@@ -190,18 +190,13 @@ func (p *parser) loadCredentials() error {
 			return err
 		}
 		defer clear(raw)
-		user, rest, ok := bytes.Cut(raw, []byte{'\n'})
-		pass, trailing, _ := bytes.Cut(rest, []byte{'\n'})
-		if !ok || len(trailing) != 0 {
+		parsed, ok := splitCredentials(raw)
+		if !ok {
 			return m.loc.diagnostic(CodeMaterial)
 		}
-		credentials.Username = string(bytes.TrimSuffix(user, []byte{'\r'}))
-		credentials.Password = string(bytes.TrimSuffix(pass, []byte{'\r'}))
+		credentials = parsed
 	}
-	if user := tlscontrol.Credentials(credentials); user.Validate() != nil {
-		return m.loc.diagnostic(CodeMaterial)
-	}
-	if strings.ContainsAny(credentials.Username, "\r\n") || strings.ContainsAny(credentials.Password, "\r\n") {
+	if !validCredentials(credentials) {
 		return m.loc.diagnostic(CodeMaterial)
 	}
 	p.cfg.Credentials = &credentials

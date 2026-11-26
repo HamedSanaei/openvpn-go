@@ -20,16 +20,19 @@ func TestOptionalClientIdentityOpenVPN26(t *testing.T) {
 	binary := interopPeer(t)
 	pki := testkit.NewPKI(t)
 	for _, tc := range []struct {
-		name, verify                             string
-		keypair, allow, wrongName, wrongPassword bool
-		want                                     client.ErrorCode
+		name, verify                                     string
+		keypair, allow, wrongName, wrongPassword, proton bool
+		want                                             client.ErrorCode
 	}{
-		{"password_only", "none", false, true, false, false, ""},
-		{"optional_without_certificate", "optional", false, true, false, false, ""},
-		{"optional_with_certificate", "optional", true, true, false, false, ""},
-		{"required_certificate", "require", true, false, false, false, ""},
-		{"wrong_password", "none", false, true, false, true, client.CodeAuthentication},
-		{"invalid_server_identity", "none", false, true, true, false, client.CodeCertificate},
+		{"password_only", "none", false, true, false, false, false, ""},
+		{"optional_without_certificate", "optional", false, true, false, false, false, ""},
+		{"optional_with_certificate", "optional", true, true, false, false, false, ""},
+		{"required_certificate", "require", true, false, false, false, false, ""},
+		{"wrong_password", "none", false, true, false, true, false, client.CodeAuthentication},
+		{"invalid_server_identity", "none", false, true, true, false, false, client.CodeCertificate},
+		{"proton_import", "none", false, true, false, false, true, ""},
+		{"proton_wrong_password", "none", false, true, false, true, true, client.CodeAuthentication},
+		{"proton_wrong_identity", "none", false, true, true, false, true, client.CodeCertificate},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := makeFixture(t, binary, pki)
@@ -47,16 +50,23 @@ func TestOptionalClientIdentityOpenVPN26(t *testing.T) {
 			if tc.wrongPassword {
 				pass = "wrong-synthetic-password"
 			}
-			text := fmt.Sprintf("client\ndev tun\nremote 127.0.0.1 %d tcp4\nremote-cert-tls server\nverify-x509-name %s name\nauth-user-pass\n", port, name)
+			text := fmt.Sprintf("client\ndev tun\nremote 127.0.0.1 %d tcp4\nremote-cert-tls server\nauth-user-pass\n", port)
+			opts := profile.Options{
+				AllowPasswordOnly: tc.allow,
+				Credentials:       &client.Credentials{Username: username, Password: pass},
+			}
+			if tc.proton {
+				opts.ProtonVPNServerName = name
+				text += "setenv CLIENT_CERT 0\nmssfix 0\n"
+			} else {
+				text += "verify-x509-name " + name + " name\n"
+			}
 			if tc.keypair {
 				text += profilePKI(pki)
 			} else {
 				text += profileSection("ca", pki.CA)
 			}
-			cfg, _, err := profile.Parse(strings.NewReader(text), profile.Options{
-				AllowPasswordOnly: tc.allow,
-				Credentials:       &client.Credentials{Username: username, Password: pass},
-			})
+			cfg, _, err := profile.Parse(strings.NewReader(text), opts)
 			if err != nil {
 				t.Fatal(err)
 			}

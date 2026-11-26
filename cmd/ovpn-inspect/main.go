@@ -17,14 +17,16 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	flags.SetOutput(io.Discard)
 	rootPath := flags.String("root", "", "authorized directory for referenced material")
 	capabilities := flags.Bool("capabilities", false, "print a redacted directive report")
+	authPath := flags.String("auth-file", "", "two-line OpenVPN credential file")
+	protonName := flags.String("protonvpn-server-name", "", "trusted exact Proton VPN certificate name")
 	passwordOnly := flags.Bool("allow-password-only", false, "allow verified profiles without a client certificate")
 	err := flags.Parse(args)
 	if err != nil || flags.NArg() != 1 {
 		if err == flag.ErrHelp {
-			fmt.Fprintln(stdout, "Usage: ovpn-inspect [-capabilities] [-root directory] [-allow-password-only] profile.ovpn|-")
+			fmt.Fprintln(stdout, "Usage: ovpn-inspect [-capabilities] [-root directory] [-allow-password-only] [-auth-file path] [-protonvpn-server-name name] profile.ovpn|-")
 			return 0
 		}
-		fmt.Fprintln(stderr, "Usage: ovpn-inspect [-capabilities] [-root directory] [-allow-password-only] profile.ovpn|-")
+		fmt.Fprintln(stderr, "Usage: ovpn-inspect [-capabilities] [-root directory] [-allow-password-only] [-auth-file path] [-protonvpn-server-name name] profile.ovpn|-")
 		return 2
 	}
 
@@ -38,8 +40,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		defer file.Close()
 		r = file
 	}
+	opts := profile.Options{AllowPasswordOnly: *passwordOnly, ProtonVPNServerName: *protonName}
 	if *capabilities {
-		report, err := profile.Inspect(r)
+		report, err := profile.InspectWithOptions(r, opts)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -54,7 +57,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	opts := profile.Options{AllowPasswordOnly: *passwordOnly}
+	if *authPath != "" {
+		opts.Credentials, err = profile.ReadCredentialsFile(*authPath)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+	}
 	if *rootPath != "" {
 		root, err := os.OpenRoot(*rootPath)
 		if err != nil {
