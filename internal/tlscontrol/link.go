@@ -20,7 +20,7 @@ func (l *Link) ReadUntilClosed() error {
 	for {
 		message, err := commands.read(l.reader)
 		if err != nil {
-			return err
+			return streamError(l.stream, err)
 		}
 		command, options, _ := bytes.Cut(message, []byte{','})
 		switch string(command) {

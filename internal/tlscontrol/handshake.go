@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"io"
 	"net"
 	"time"
 
@@ -31,14 +32,15 @@ type Options struct {
 	Auth    *Authentication
 }
 
-func Establish(ctx context.Context, stream *control.Stream, opts Options, previous *Negotiation) (*Link, error) {
+func Establish(ctx context.Context, stream *control.Stream, opts Options, previous *Negotiation) (_ *Link, failure error) {
+	defer func() { failure = streamError(stream, failure) }()
 	if err := stream.WaitReady(ctx); err != nil {
 		return nil, err
 	}
 	conn := tls.Client(stream.Conn(), opts.TLS.Clone())
 	if err := conn.HandshakeContext(ctx); err != nil {
 		var verify *tls.CertificateVerificationError
-		if errors.As(err, &verify) {
+		if errors.As(err, &verify) || errors.Is(err, ErrCertificate) {
 			return nil, ErrCertificate
 		}
 		return nil, err
@@ -90,6 +92,30 @@ func Establish(ctx context.Context, stream *control.Stream, opts Options, previo
 	}
 	info.TLSVersion = conn.ConnectionState().Version
 	return &Link{Info: info, stream: stream, reader: reader, conn: conn, auth: opts.Auth}, nil
+}
+
+func streamError(stream *control.Stream, err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, io.ErrClosedPipe),
+		errors.Is(err, io.ErrShortWrite), errors.Is(err, net.ErrClosed):
+		if cause := stream.Err(); cause != nil {
+			return cause
+		}
+		return control.ErrTransport
+	case errors.Is(err, ErrCertificate), errors.Is(err, ErrAuth), errors.Is(err, ErrNegotiation),
+		errors.Is(err, ErrPeerRestart), errors.Is(err, ErrPeerRestartSame), errors.Is(err, ErrPeerStopped),
+		errors.Is(err, control.ErrTransport), errors.Is(err, control.ErrReliable),
+		errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return err
+	default:
+		var timeout net.Error
+		if errors.As(err, &timeout) && timeout.Timeout() {
+			return err
+		}
+		return ErrNegotiation
+	}
 }
 
 func readPush(ctx context.Context, conn net.Conn, reader *bufio.Reader, push *pushState) error {

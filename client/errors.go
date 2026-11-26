@@ -22,6 +22,8 @@ const (
 	CodeCanceled       ErrorCode = "operation canceled"
 	CodeTimeout        ErrorCode = "operation timed out"
 	CodeTunnel         ErrorCode = "tunnel failure"
+	CodePeerRestart    ErrorCode = "peer requested a restart"
+	CodePeerStopped    ErrorCode = "peer stopped the session"
 )
 
 // Error is a redacted error returned by the client. Code supports programmatic
@@ -54,6 +56,14 @@ func (e *Error) Is(target error) bool {
 
 func configError(field string) *Error {
 	return &Error{Op: "configure", Code: CodeConfig, Field: field}
+}
+
+func errorCode(err error) ErrorCode {
+	var failure *Error
+	if errors.As(err, &failure) {
+		return failure.Code
+	}
+	return contextCode(err, CodeNetwork)
 }
 
 func contextCode(err error, fallback ErrorCode) ErrorCode {

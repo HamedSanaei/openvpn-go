@@ -1,10 +1,10 @@
 # Product plan: OpenVPN Go
 
-- **Project status** · M3 complete
+- **Project status** · M6 and M7 engineering work verified, independent review pending
 - **Project name** · OpenVPN Go
 - **Module** · `github.com/hamedsanaei/openvpn-go`
 - **Target** · An independently implemented, modular OpenVPN client library in Go
-- **Primary integration** · A future 3x-ui/Xray outbound adapter
+- **Primary integration** · A Linux 3x-ui/Xray egress adapter
 - **License** · [MIT](../LICENSE)
 - **Release target** · v0.1.0-beta after interoperability and security gates pass
 
@@ -119,10 +119,14 @@ A release cannot be called production-ready until:
 - Every external dependency has a license and maintenance review.
 - The confirmed GitHub origin is `HamedSanaei/openvpn-go`. The legacy reference is frozen in the provenance ledger and stays outside this repository.
 
-## 10. M4 entry
+## 10. Beta candidate
 
 The Go client authenticates the OpenVPN control session, derives keys and
-exchanges IP traffic with the pinned peer. M4 converts OVPN profiles to the
-public configuration and validates directives and file references. Copyright
-ownership and contributor rights are reviewed before publishing a release.
+exchanges IP traffic with the pinned peer. M4 validates OVPN profiles and
+their file references and preserves each remote's connection settings.
+M5 adds cancellable fallback and reconnect with redacted lifecycle
+statistics. M6 records platform, interoperability and security evidence.
+M7 connects the Linux host tunnel to the stock Xray outbound. The beta
+release requires the independent security, provenance and license reviews.
+[Hardening evidence](HARDENING.md) · [Release policy](RELEASE.md)
 [Delivery gates](MILESTONES.md) · [Engineering work](TASKS.md)

@@ -168,7 +168,7 @@ func decodeHex(t *testing.T, value string) []byte {
 	return b
 }
 
-func testKeys(t *testing.T, cipher string, seed byte) crypt.DataKeys {
+func testKeys(t testing.TB, cipher string, seed byte) crypt.DataKeys {
 	t.Helper()
 	keys, err := crypt.ExportDataKeys(func(_ string, _ []byte, n int) ([]byte, error) {
 		b := make([]byte, n)

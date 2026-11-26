@@ -61,9 +61,12 @@ RouterOS 6.x or existing CBC-only profiles if those are required. Such
 cases need their own approved security policy and interoperability
 evidence before implementation.
 
-M4 should import a generated RouterOS `.ovpn` fixture with the tested
-server settings, or report exactly which directive or security policy
-prevents use. M6 evidence must show a verified handshake, bidirectional IP
+The M4 parser rejects an unapproved `cipher` and any `data-ciphers-fallback`
+directive with a line-numbered diagnostic. A supported AEAD in `cipher`
+produces an explicit warning because the client requires negotiated
+AEAD, TLS exporter derivation and a peer ID. A RouterOS configuration
+that requires a fixed cipher without negotiation falls outside that
+policy. M6 evidence must show a verified handshake, bidirectional IP
 traffic, and rekey or a controlled reconnect on the specified build. Verify
 that a required-but-unconfigured mode, wrong server identity or mismatched
 cipher fails. Use a pinned Cloud Hosted Router image for reproducible
@@ -92,6 +95,45 @@ authentication tokens. The same signed reference build was used.
 
 The Go TLS exporter matched all 256 bytes from OpenSSL 3.0.13 in
 verified TLS 1.2 and 1.3 sessions. [Exporter test](../tests/interop/exporter_test.go)
+
+M4 passed ten generated profile cases with OpenVPN Community 2.6.23 on
+Ubuntu 26.04 LTS amd64 using OpenSSL 3.5.5 and DCO disabled. The source
+archive matched the SHA-256 recorded for M2. Each of the five control
+scenarios negotiated `AES-256-GCM` with certificate-plus-password
+authentication. UDP used inline material and TLS 1.2. TCP used external
+material, connection blocks and TLS 1.3. The test server observed no
+password submission after rejection of an exact name or a SAN under
+name-prefix policy. An accepted prefix and SAN reached password
+verification and a wrong password produced a redacted terminal error.
+[Profile suite](../tests/interop/profile_test.go) · [Test instructions](../tests/interop/README.md)
+
+M5 used the same OpenVPN 2.6.23 Linux amd64 build as M4. A silent
+UDP endpoint timed out before the client connected to a TCP server.
+The test stopped that server, verified traffic through a UDP fallback
+with a different certificate identity, restarted the TCP server, and
+verified traffic after switching back. Each session negotiated TLS 1.2 and
+`AES-256-GCM`. The test captured the actual SNI in each ClientHello.
+The initial link rekeyed with server-issued token support. The UDP
+fallback accepted the original password through its independent verifier.
+Wrong identity, CA and password checks stopped after one attempt.
+[Failover and reconnect suite](../tests/interop/failover_test.go)
+
+M6 reran the full suite for 2.6.23 and added 2.6.22
+(`c9b790f5b9e8ebca5da38c22f479c31bb8d33686`) with the same isolated
+Linux amd64 harness and OpenSSL 3.5.5. Both passed the 120 IPv4 traffic
+cases and focused IPv6, rekey, profile, failover and negative cases.
+The additional tests passed four HMAC digests on both transports,
+including bidirectional and reversed key directions. Both builds also
+rejected a compression push and cipher mismatch and honored `ping-exit`.
+OpenVPN 2.4/2.5, RouterOS and Access Server remain outside the verified
+matrix. [OpenVPN 2.6.22 release](https://github.com/OpenVPN/openvpn/releases/tag/v2.6.22) · [New cases](../tests/interop/hardening_test.go)
+
+The Linux M7 adapter passed an IPv4 TCP/UDP echo through stock Xray
+26.10.21 and the authenticated OpenVPN TCP tunnel before and after
+restarting the peer. The test also checks canceled forwarding and
+failure of an Xray outbound bound to a missing interface. The target
+3x-ui checkout accepted the outbound JSON through its config validator.
+[Pinned integration](adr/0007-xray-linux-egress.md) · [Live test](../tests/interop/xray_test.go)
 
 Record the server release and commit, archive or image digest, OS and
 architecture, TLS backend and build, scenario, transport, identity policy,

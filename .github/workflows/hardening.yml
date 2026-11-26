@@ -1,0 +1,138 @@
+name: Hardening evidence
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  GOTOOLCHAIN: local
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  xray:
+    name: Xray 26.10.21 egress
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build reference and verify the pinned Xray binary
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libssl-dev libcap-ng-dev liblz4-dev liblzo2-dev
+          peer="$(bash tests/interop/build-peer.sh 2.6.23 "$RUNNER_TEMP/openvpn")"
+          xray="$(bash tests/interop/build-xray-peer.sh "$RUNNER_TEMP/xray")"
+          echo "OPENVPN_INTEROP_BIN=$peer" >> "$GITHUB_ENV"
+          echo "XRAY_INTEROP_BIN=$xray" >> "$GITHUB_ENV"
+      - name: Test routed traffic and reconnect
+        run: |
+          go mod download
+          mkdir -p evidence
+          "$XRAY_INTEROP_BIN" version > evidence/xray.txt
+          sudo env PATH="$PATH" GOTOOLCHAIN=local GOMODCACHE="$(go env GOMODCACHE)" GOPROXY=off \
+            OPENVPN_INTEROP_BIN="$OPENVPN_INTEROP_BIN" XRAY_INTEROP_BIN="$XRAY_INTEROP_BIN" \
+            unshare --net sh -c 'ip link set lo up && exec go test -race -json -count=1 -timeout 3m -run "^TestXrayEgressOpenVPN26$" ./tests/interop' \
+            | tee evidence/xray-interop.jsonl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xray-interop
+          path: evidence/
+
+  interop:
+    name: Interop OpenVPN ${{ matrix.version }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ["2.6.22", "2.6.23"]
+    env:
+      OPENVPN_INTEROP_VERSION: ${{ matrix.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build checksum-pinned test peer
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libssl-dev libcap-ng-dev liblz4-dev liblzo2-dev
+          peer="$(bash tests/interop/build-peer.sh "$OPENVPN_INTEROP_VERSION" "$RUNNER_TEMP/openvpn")"
+          echo "OPENVPN_INTEROP_BIN=$peer" >> "$GITHUB_ENV"
+      - name: Test in an isolated network namespace
+        run: |
+          go mod download
+          mkdir -p evidence
+          go version > evidence/toolchain.txt
+          "$OPENVPN_INTEROP_BIN" --version > evidence/openvpn.txt
+          sudo env PATH="$PATH" GOTOOLCHAIN=local GOMODCACHE="$(go env GOMODCACHE)" GOPROXY=off \
+            OPENVPN_INTEROP_BIN="$OPENVPN_INTEROP_BIN" OPENVPN_INTEROP_VERSION="$OPENVPN_INTEROP_VERSION" \
+            unshare --net sh -c 'ip link set lo up && exec go test -race -json -count=1 -timeout 5m ./tests/interop' \
+            | tee evidence/interop.jsonl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: interop-${{ matrix.version }}
+          path: evidence/
+
+  fuzz:
+    name: Campaign ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [FuzzProfile, FuzzTCPFrame, FuzzControlPacket, FuzzProtectedControl, FuzzDataPacket, FuzzControlPush]
+    env:
+      FUZZ_TIME: 2m
+      FUZZ_TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run fuzz target
+        run: sh tests/fuzz/run.sh "$FUZZ_TARGET" | tee fuzz.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fuzz-${{ matrix.target }}
+          path: fuzz.txt
+
+  audit:
+    name: Vulnerabilities, license and performance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify SPDX inventory and scan current vulnerabilities
+        run: |
+          mkdir -p evidence
+          python3 tools/release_audit.py --check docs/sbom.spdx.json
+          cp docs/sbom.spdx.json evidence/
+          go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 -show verbose ./... | tee evidence/govulncheck.txt
+      - name: Exercise cancellation and shutdown under race detection
+        run: go test -race -count=20 -timeout 5m ./client ./transport ./internal/session | tee evidence/race.txt
+      - name: Verify benchmark budgets
+        run: |
+          make bench | tee evidence/benchmarks.txt
+          python3 tools/check_benchmarks.py evidence/benchmarks.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-audit
+          path: evidence/

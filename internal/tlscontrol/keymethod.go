@@ -132,10 +132,34 @@ func (c *commandReader) read(r *bufio.Reader) ([]byte, error) {
 }
 
 func unexpectedCommand(message []byte) error {
-	command, _, _ := bytes.Cut(message, []byte{','})
+	command, detail, _ := bytes.Cut(message, []byte{','})
 	switch string(command) {
 	case "AUTH_FAILED", "AUTH_PENDING":
 		return ErrAuth
+	case "HALT", "EXIT":
+		return ErrPeerStopped
+	case "RESTART":
+		if len(detail) == 0 || detail[0] != '[' {
+			return ErrPeerRestart
+		}
+		flags, _, ok := bytes.Cut(detail[1:], []byte{']'})
+		if !ok {
+			return ErrNegotiation
+		}
+		for _, flag := range flags {
+			switch flag {
+			case 'P':
+				// A purge needs new credentials from the embedding application.
+				return ErrAuth
+			case 'N':
+			default:
+				return ErrNegotiation
+			}
+		}
+		if bytes.ContainsRune(flags, 'N') {
+			return ErrPeerRestartSame
+		}
+		return ErrPeerRestart
 	default:
 		return ErrNegotiation
 	}

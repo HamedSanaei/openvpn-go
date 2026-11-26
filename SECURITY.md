@@ -2,7 +2,9 @@
 
 ## Project status
 
-M3 delivers the verified TLS control handshake and protected tunnel data path. Independent security review and release hardening are scheduled for M6.
+Automated hardening checks cover the TLS client, data channel, profile
+loader, reconnect and Linux Xray adapter. The beta awaits an independent
+security review of the release revision. [Hardening evidence](docs/HARDENING.md)
 
 ## Reporting a vulnerability
 

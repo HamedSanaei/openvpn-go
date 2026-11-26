@@ -23,6 +23,8 @@ var (
 	ErrInvalidPacketLimit = errors.New("invalid transport packet limit")
 	// ErrUnsupportedNetwork indicates a network other than UDP or TCP.
 	ErrUnsupportedNetwork = errors.New("unsupported packet network")
+	// ErrInvalidConnection indicates a dialer returned success without a connection.
+	ErrInvalidConnection = errors.New("missing transport connection")
 )
 
 // PacketConn exchanges complete OpenVPN protocol packets.

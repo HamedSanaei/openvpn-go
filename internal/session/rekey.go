@@ -107,9 +107,6 @@ func (s *Session) run(active *tlscontrol.Link) {
 		select {
 		case <-s.ctx.Done():
 			return
-		case <-s.mux.Done():
-			s.terminal = control.ErrTransport
-			return
 		case packet := <-s.mux.Data():
 			s.receive(packet)
 		case reset := <-s.mux.Resets():
@@ -144,7 +141,7 @@ func (s *Session) run(active *tlscontrol.Link) {
 			watch(active)
 			nextRekey = time.Now().Add(s.opts.RekeyInterval)
 		case end := <-controlEnds:
-			if end.link == active && (pending == nil || errors.Is(end.err, tlscontrol.ErrAuth)) {
+			if end.link == active && (pending == nil || peerEndedSession(end.err)) {
 				s.terminal = end.err
 				return
 			}
@@ -163,6 +160,12 @@ func (s *Session) run(active *tlscontrol.Link) {
 	}
 }
 
+func peerEndedSession(err error) bool {
+	return errors.Is(err, tlscontrol.ErrAuth) || errors.Is(err, tlscontrol.ErrPeerStopped) ||
+		errors.Is(err, tlscontrol.ErrPeerRestart) || errors.Is(err, tlscontrol.ErrPeerRestartSame) ||
+		errors.Is(err, tlscontrol.ErrNegotiation)
+}
+
 func (s *Session) maintain(now time.Time) error {
 	s.mu.Lock()
 	s.channel.Retire(now)
@@ -171,6 +174,9 @@ func (s *Session) maintain(now time.Time) error {
 	info := s.info
 	s.mu.Unlock()
 	if info.PingTimeout > 0 && idle >= info.PingTimeout {
+		if info.PingExit {
+			return tlscontrol.ErrPeerStopped
+		}
 		return context.DeadlineExceeded
 	}
 	if info.PingInterval > 0 && silent >= info.PingInterval {

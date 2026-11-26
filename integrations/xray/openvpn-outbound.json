@@ -1,0 +1,9 @@
+{
+  "tag": "openvpn",
+  "protocol": "freedom",
+  "streamSettings": {
+    "sockopt": {
+      "interface": "ovpn0"
+    }
+  }
+}

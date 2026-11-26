@@ -2,13 +2,15 @@
 
 An independent, modular Go implementation of the OpenVPN client protocol.
 
-> **Status: M3 complete.** The client forwards authenticated IP traffic over UDP or TCP and rotates data keys during the session. M4 adds OVPN profile parsing.
+> **Status:** M6 engineering checks and the M7 Xray adapter passed. The beta candidate awaits independent review and release approval.
 
 ## Project intent
 
 Build a new implementation from public protocol documentation and independently written requirements. The project is not a continuation of the MPL-2.0 codebase in the legacy go-openvpn repository.
 
-Primary use case: a reusable OpenVPN client engine that can be embedded by applications, including a future 3x-ui/Xray outbound adapter, without coupling the protocol core to a particular panel or TUN implementation.
+Applications can embed the OpenVPN client engine. The Linux 3x-ui/Xray
+adapter attaches a host TUN through the public client API.
+[Integration guide](integrations/xray/README.md)
 
 ## Design principles
 
@@ -48,7 +50,7 @@ Primary use case: a reusable OpenVPN client engine that can be embedded by appli
 - transport/: public transport contracts and standard dialers.
 - tunnel/: packet-oriented tunnel interfaces.
 - internal/: protocol, control/data channels, cryptography, sessions and failover.
-- integrations/xray/: isolated integration design for 3x-ui/Xray.
+- integrations/xray/: Linux egress adapter and 3x-ui configuration example.
 - tests/interop/: real OpenVPN interoperability scenarios.
 - docs/: requirements, architecture, security, clean-room process and roadmap.
 
@@ -81,11 +83,21 @@ caller-owned `tunnel.PacketConn` to `Client.Run` to exchange IP packets.
 application configures its own tunnel interface and routes.
 [Architecture and lifecycle contract](docs/ARCHITECTURE.md#m1-public-api)
 
+`Client.Connect` tries the configured candidates under `Config.Retry`.
+`Client.Run` reconnects after transport loss while forwarding. Use
+`Client.Stats` and `Client.Events` for redacted lifecycle and traffic
+information. [Retry policy and custom transports](docs/LIFECYCLE.md)
+
+Use `profile.Parse` to load an OVPN profile into `client.Config`. References
+require an explicitly authorized filesystem root or resolver. Inspect a
+profile locally with `go run ./cmd/ovpn-inspect client.ovpn`.
+[Supported directives and examples](docs/PROFILE.md)
+
 ## Build checks
 
 Use Go 1.26.11, the version pinned in `go.mod`. Use a supported C compiler
-for the race detector. The control and data interoperability suites use the pinned
-OpenVPN Community 2.6.23 server in an isolated Linux test network.
+for the race detector. The interoperability suites use pinned OpenVPN
+Community 2.6.22 and 2.6.23 peers in isolated Linux test networks.
 [Go downloads](https://go.dev/dl/) · [Compatibility matrix](docs/COMPATIBILITY_MATRIX.md) · [Interop test instructions](tests/interop/README.md)
 
 ```sh
@@ -93,6 +105,8 @@ gofmt -l .
 go test ./...
 go test -race ./...
 go vet ./...
+make fuzz-smoke
+make audit
 ```
 
 ## Project documents

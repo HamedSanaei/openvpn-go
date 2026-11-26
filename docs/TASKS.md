@@ -62,53 +62,53 @@ Tasks are intentionally written before implementation. Mark an item complete onl
 
 ## M4 — Profile parser
 
-- [ ] M4-001 Define supported directive registry and precedence rules.
-- [ ] M4-002 Parse client mode, proto, port and remote directives.
-- [ ] M4-003 Parse connection blocks and inherited defaults.
-- [ ] M4-004 Parse remote-random and per-remote transport options.
-- [ ] M4-005 Parse inline CA/cert/key and external file references safely.
-- [ ] M4-006 Parse auth-user-pass and key-direction.
-- [ ] M4-007 Parse tls-auth, tls-crypt and tls-crypt-v2.
-- [ ] M4-008 Parse data-ciphers and TLS verification options.
-- [ ] M4-009 Reject or explicitly warn on unsupported security-sensitive directives.
-- [ ] M4-010 Add parser fuzzing and fixture coverage.
+- [x] M4-001 Define supported directive registry and precedence rules. [Profile contract](PROFILE.md)
+- [x] M4-002 Parse client mode, proto, port and remote directives. [Directive tests](../profile/parse_test.go)
+- [x] M4-003 Parse connection blocks and inherited defaults. [Precedence tests](../profile/parse_test.go)
+- [x] M4-004 Parse remote-random and per-remote transport options. [Candidate ordering test](../client/shuffle_test.go)
+- [x] M4-005 Parse inline CA/cert/key and external file references safely. [Material resolver](../profile/material.go)
+- [x] M4-006 Parse auth-user-pass and key-direction. [Material and protection tests](../profile/parse_test.go)
+- [x] M4-007 Parse tls-auth, tls-crypt and tls-crypt-v2. [Interop profiles](../tests/interop/profile_test.go)
+- [x] M4-008 Parse data-ciphers and TLS verification options. [TLS identity tests](../internal/tlscontrol/identity_test.go)
+- [x] M4-009 Reject unsupported security-sensitive directives and warn about explicitly allowed benign directives. [Diagnostic tests](../profile/parse_test.go)
+- [x] M4-010 Add parser fuzzing and fixture coverage. [Fuzz instructions](../tests/fuzz/README.md) · [Interop evidence](COMPATIBILITY_MATRIX.md#evidence-records)
 
 ## M5 — Failover and lifecycle
 
-- [ ] M5-001 Implement deterministic endpoint ordering.
-- [ ] M5-002 Implement remote-random without losing fallback candidates.
-- [ ] M5-003 Preserve per-endpoint SNI and verification settings.
-- [ ] M5-004 Implement retry classification (network vs terminal auth/security).
-- [ ] M5-005 Implement bounded connect/handshake timeout.
-- [ ] M5-006 Implement exponential backoff with jitter.
-- [ ] M5-007 Implement reconnect and active endpoint reporting.
-- [ ] M5-008 Implement custom dialer/proxy transport adapter contract.
-- [ ] M5-009 Implement graceful shutdown and goroutine leak tests.
-- [ ] M5-010 Add structured redacted events and stats.
+- [x] M5-001 Implement deterministic endpoint ordering. [Order and retry budget tests](../client/retry_test.go)
+- [x] M5-002 Exercise initial remote-random ordering across fallback attempts. [Shuffled failover test](../client/shuffle_test.go)
+- [x] M5-003 Preserve per-endpoint SNI and verification settings. [TLS failover tests](../tests/interop/failover_test.go)
+- [x] M5-004 Classify transport failure, peer restart and terminal security failures. [Retry tests](../client/retry_test.go)
+- [x] M5-005 Implement bounded connect and handshake timeouts. [Deadline tests](../client/client_test.go)
+- [x] M5-006 Implement exponential backoff with jitter. [Backoff tests](../internal/failover/retry_test.go)
+- [x] M5-007 Implement reconnect and active endpoint reporting. [Live reconnect test](../tests/interop/failover_test.go)
+- [x] M5-008 Implement custom dialer and proxy transport adapter contract. [Proxy adapter tests](../transport/proxy_test.go)
+- [x] M5-009 Join forwarding and retry workers on shutdown. [Shutdown and cancellation tests](../client/retry_test.go)
+- [x] M5-010 Add structured redacted events and stats. [Observability](LIFECYCLE.md#events-and-statistics)
 
 ## M6 — Hardening and release evidence
 
-- [ ] M6-001 Run Linux amd64/arm64 test matrix.
-- [ ] M6-002 Add Windows/macOS compile and test jobs.
-- [ ] M6-003 Add fuzz targets for profile, framing and packet decoders.
-- [ ] M6-004 Run sustained fuzz campaigns and triage findings.
-- [ ] M6-005 Run race detector and goroutine leak checks.
-- [ ] M6-006 Add benchmarks for throughput, allocations and reconnect.
-- [ ] M6-007 Add dependency vulnerability and license scans.
-- [ ] M6-008 Generate SPDX SBOM.
-- [ ] M6-009 Complete independent security review.
-- [ ] M6-010 Publish compatibility matrix and known limitations.
+- [x] M6-001 Run Linux amd64/arm64 test matrix. [Platform evidence](HARDENING.md)
+- [x] M6-002 Add Windows/macOS compile and test jobs. [CI jobs](../.github/workflows/ci.yml)
+- [x] M6-003 Add fuzz targets for profile, framing and packet decoders. [Fuzz runner](../tests/fuzz/run.sh)
+- [x] M6-004 Run sustained fuzz campaigns and triage findings. [Campaign results](HARDENING.md#fuzz-and-shutdown-coverage)
+- [x] M6-005 Run race detector and goroutine leak checks. [Shutdown coverage](HARDENING.md#fuzz-and-shutdown-coverage)
+- [x] M6-006 Add benchmarks for throughput, allocations and reconnect. [Performance budgets](HARDENING.md#performance-budgets)
+- [x] M6-007 Add dependency vulnerability and license scans. [Dependency audit](HARDENING.md#supply-chain-and-review)
+- [x] M6-008 Generate SPDX SBOM. [SPDX inventory](sbom.spdx.json)
+- [ ] M6-009 Complete independent security review. [Review scope and status](HARDENING.md#supply-chain-and-review)
+- [x] M6-010 Record compatibility results and known limitations. [Compatibility matrix](COMPATIBILITY_MATRIX.md)
 
 ## M7 — 3x-ui/Xray integration and beta
 
-- [ ] M7-001 Inspect the exact target 3x-ui/Xray extension points.
-- [ ] M7-002 Define adapter mapping from Xray outbound lifecycle to Client API.
-- [ ] M7-003 Implement adapter outside core packages.
-- [ ] M7-004 Test packet flow, cancellation, reconnect and shutdown end-to-end.
-- [ ] M7-005 Write integration example and deployment notes.
-- [ ] M7-006 Finalize license, provenance and contributor policy.
-- [ ] M7-007 Create changelog, release workflow and v0.1.0-beta.
-- [ ] M7-008 Document upgrade and compatibility policy.
+- [x] M7-001 Identify the pinned 3x-ui/Xray outbound extension point. [Integration decision](adr/0007-xray-linux-egress.md)
+- [x] M7-002 Define ownership, address validation and lifecycle mapping. [Integration decision](adr/0007-xray-linux-egress.md)
+- [x] M7-003 Implement the isolated adapter. [Adapter source](../integrations/xray/adapter.go)
+- [x] M7-004 Test TCP and UDP forwarding, server restart and shutdown end to end. [Xray interoperability](../tests/interop/xray_test.go)
+- [x] M7-005 Supply the outbound example and deployment instructions. [Integration guide](../integrations/xray/README.md)
+- [ ] M7-006 Record independent license and provenance sign-off for the release revision. [Release policy](RELEASE.md)
+- [ ] M7-007 Tag and publish v0.1.0-beta after approval. Candidate packaging, changelog and workflow are implemented. [Changelog](../CHANGELOG.md) · [Workflow](../.github/workflows/release.yml)
+- [x] M7-008 Document upgrade and compatibility policy. [Release policy](RELEASE.md#upgrades-and-scope)
 
 ## Requirement mapping
 

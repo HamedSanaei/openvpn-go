@@ -40,46 +40,50 @@ exporter material consumed by M3.
 - [x] Both endpoints initiate rekey successfully. Live traffic passes after rollover from key ID 7 to 1. Deterministic tests cover overlap, old-key expiry and rejection of a prior generation using a reused ID. [Rekey tests](../tests/interop/data_test.go) · [Generation tests](../internal/data/channel_test.go)
 
 ## M4 — Profile parser and configuration
-**Estimate:** 4–7 working days  
+**Status:** Complete on 2026-11-26.
+
 **Deliverable:** OVPN parser, inline/external material, connection blocks, per-remote settings and diagnostics.
 
 Exit gate:
-- [ ] Every supported directive has parser tests and docs.
-- [ ] Unsupported security-sensitive directives fail explicitly.
-- [ ] No path traversal or unsafe file access from referenced profile files.
-- [ ] Real profiles from generated fixtures parse and connect.
+- [x] Every supported directive has valid and malformed parser test cases and a documentation entry. [Registry](PROFILE.md#directive-registry) · [Parser tests](../profile/parse_test.go)
+- [x] Unsupported security-sensitive directives fail with redacted diagnostics. Unit tests cover profile and material limits, and the profile fuzz target passed a 30-second run on Linux amd64. [Security acceptance](SECURITY_MODEL.md) · [Fuzz target](../profile/parse_test.go)
+- [x] Root-based resolution stays confined and rejects traversal, device paths, symlink escapes and non-regular files. [Resolver](../profile/material.go) · [Filesystem tests](../profile/parse_test.go)
+- [x] Ten generated inline UDP and external TCP profiles parse and connect to OpenVPN Community 2.6.23. Negative tests verify certificate rejection before credentials and a redacted wrong-password failure. [Compatibility evidence](COMPATIBILITY_MATRIX.md#evidence-records)
 
 ## M5 — Failover, reconnect and observability
-**Estimate:** 3–6 working days  
+**Status:** Complete on 2026-11-26.
+
 **Deliverable:** endpoint selection, remote-random, retry/backoff, custom transport, reconnect and safe stats.
 
 Exit gate:
-- [ ] Mixed UDP/TCP remotes fail over correctly.
-- [ ] Endpoint-specific SNI/certificate validation survives every retry.
-- [ ] Cancellation stops retries promptly.
-- [ ] Metrics and logs are redacted and bounded.
+- [x] A silent UDP candidate falls back to TCP. A live tunnel switches to UDP after TCP loss and returns to the restarted TCP server. Packets pass in both directions after each transition. [Interop evidence](COMPATIBILITY_MATRIX.md#evidence-records)
+- [x] Mixed-endpoint tests capture SNI and verify separate TLS identities and session tokens. Wrong name, CA and password stop the attempt sequence. [Interop tests](../tests/interop/failover_test.go)
+- [x] Tests use virtual time to verify attempt bounds, jitter, cancellation and cleanup while waiting to reconnect. [Retry tests](../client/retry_test.go)
+- [x] The client exposes redacted, bounded events and aggregate statistics. Tests cover event overwrite and concurrent lifecycle snapshots. [Lifecycle contract](LIFECYCLE.md) · [Observability tests](../client/retry_test.go)
 
 ## M6 — Interoperability, security and performance hardening
-**Estimate:** 1–2 weeks  
+**Status:** Engineering checks passed on 2026-11-26. Independent review is pending.
+
 **Deliverable:** expanded server matrix, fuzz/race/performance evidence, dependency inventory and independent review.
 
 Exit gate:
-- [ ] All declared interoperability scenarios pass.
-- [ ] No unresolved critical/high security findings.
-- [ ] Fuzz and race gates pass.
-- [ ] Performance baseline and regression thresholds are documented.
-- [ ] SPDX/SBOM and dependency license checks pass.
+- [x] Full declared interop suites pass against OpenVPN 2.6.22 and 2.6.23. [Compatibility evidence](COMPATIBILITY_MATRIX.md#evidence-records)
+- [ ] Independent reviewer confirms no unresolved critical or high security findings. [Review status](HARDENING.md#supply-chain-and-review)
+- [x] Fuzz and race checks pass. [Campaign and shutdown evidence](HARDENING.md#fuzz-and-shutdown-coverage)
+- [x] Performance baselines and regression thresholds are recorded. [Performance budgets](HARDENING.md#performance-budgets)
+- [x] SPDX inventory and dependency license checks pass. [Supply-chain evidence](HARDENING.md#supply-chain-and-review)
 
 ## M7 — 3x-ui/Xray integration and beta release
-**Estimate:** 4–7 working days  
+**Status:** Adapter and beta candidate are ready. Independent sign-off, tagging and publication are pending.
+
 **Deliverable:** isolated integration adapter, examples, documentation, release workflow and v0.1.0-beta.
 
 Exit gate:
-- [ ] Adapter uses only public API.
-- [ ] End-to-end traffic and shutdown tests pass.
-- [ ] Release notes list supported modes and limitations.
-- [ ] License and provenance review is signed off.
-- [ ] No production-readiness claim until operational validation is complete.
+- [x] The adapter uses public core packages and the stock Xray outbound boundary. [Integration ADR](adr/0007-xray-linux-egress.md)
+- [x] TCP and UDP traffic pass before and after peer restart. Cancellation joins the adapter and a missing interface fails closed. [Live test](../tests/interop/xray_test.go)
+- [x] Candidate release notes record verified modes and limitations. [Changelog](../CHANGELOG.md) · [Release policy](RELEASE.md)
+- [ ] An independent reviewer signs off on the license and provenance of the exact tagged revision. [Release gate](CLEAN_ROOM.md#release-gate)
+- [x] The beta is scoped to integration and operational evaluation. [Release policy](RELEASE.md)
 
 ## Overall planning range
 

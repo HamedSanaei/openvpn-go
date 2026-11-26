@@ -11,10 +11,13 @@ import (
 const maxKeyString = 4096
 
 var (
-	ErrConfig      = errors.New("invalid OpenVPN TLS configuration")
-	ErrCertificate = errors.New("OpenVPN peer certificate verification failed")
-	ErrAuth        = errors.New("OpenVPN authentication failed")
-	ErrNegotiation = errors.New("OpenVPN control negotiation failed")
+	ErrConfig          = errors.New("invalid OpenVPN TLS configuration")
+	ErrCertificate     = errors.New("OpenVPN peer certificate verification failed")
+	ErrAuth            = errors.New("OpenVPN authentication failed")
+	ErrNegotiation     = errors.New("OpenVPN control negotiation failed")
+	ErrPeerRestart     = errors.New("OpenVPN peer requested a restart")
+	ErrPeerRestartSame = errors.New("OpenVPN peer requested a restart on the same endpoint")
+	ErrPeerStopped     = errors.New("OpenVPN peer stopped the session")
 )
 
 type Credentials struct {

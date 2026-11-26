@@ -2,7 +2,7 @@ package client
 
 import (
 	"context"
-	"errors"
+	"crypto/tls"
 	"net/netip"
 	"strings"
 
@@ -22,6 +22,11 @@ type TLSConfig struct {
 	Certificate    []byte
 	PrivateKey     []byte
 	UseSystemRoots bool
+	// MinVersion and MaxVersion use crypto/tls version constants.
+	// Zero selects TLS 1.2 for the minimum and TLS 1.3 for the maximum.
+	MinVersion, MaxVersion uint16
+	// RequireServerUsage requires explicit leaf KU and server-auth EKU.
+	RequireServerUsage bool
 }
 
 // Credentials enables username/password authentication in addition to the
@@ -74,9 +79,12 @@ type ControlInfo struct {
 func (c *Client) ControlInfo() (ControlInfo, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.observeSession()
-	link, ok := c.session.(*session.Session)
-	if !ok || c.state != StateConnected {
+	active := c.liveConnection()
+	if active == nil {
+		return ControlInfo{}, false
+	}
+	link, ok := active.link.(*session.Session)
+	if !ok {
 		return ControlInfo{}, false
 	}
 	info, keyID := link.Info()
@@ -86,16 +94,14 @@ func (c *Client) ControlInfo() (ControlInfo, bool) {
 	}, true
 }
 
-func prepareHandshake(cfg Config) (handshakeFunc, error) {
+func prepareHandshakes(cfg Config) ([]handshakeFunc, error) {
 	ciphers, err := crypt.DataCiphers(cfg.DataCiphers)
 	if err != nil {
 		return nil, configError("data ciphers")
 	}
-	digest := strings.ToUpper(cfg.Control.Digest)
-	protection, err := control.NewProtection(control.Mode(cfg.Control.Mode),
-		control.Direction(cfg.Control.Direction), digest, cfg.Control.Key)
-	if err != nil {
-		return nil, configError("control protection")
+	authDigest := strings.ToUpper(cfg.AuthDigest)
+	if !control.ValidAuthDigest(authDigest) {
+		return nil, configError("auth digest")
 	}
 	var user tlscontrol.Credentials
 	if cfg.Credentials != nil {
@@ -104,60 +110,78 @@ func prepareHandshake(cfg Config) (handshakeFunc, error) {
 			return nil, configError("credentials")
 		}
 	}
-	if cfg.TLS == nil {
-		return nil, nil
-	}
-	settings, err := tlscontrol.ClientConfig(cfg.TLS.CA, cfg.TLS.Certificate, cfg.TLS.PrivateKey, cfg.TLS.UseSystemRoots)
-	if err != nil {
-		return nil, configError("TLS")
+	var settings *tls.Config
+	if cfg.TLS != nil {
+		settings, err = tlscontrol.ClientConfig(cfg.TLS.CA, cfg.TLS.Certificate, cfg.TLS.PrivateKey, cfg.TLS.UseSystemRoots)
+		if err != nil || !tlscontrol.ValidVersions(cfg.TLS.MinVersion, cfg.TLS.MaxVersion) {
+			return nil, configError("TLS")
+		}
+		if cfg.TLS.MinVersion != 0 {
+			settings.MinVersion = cfg.TLS.MinVersion
+		}
+		if cfg.TLS.MaxVersion != 0 {
+			settings.MaxVersion = cfg.TLS.MaxVersion
+		}
 	}
 
-	limit, rekey, deadline := cfg.MaxPacketSize, cfg.RekeyInterval, cfg.HandshakeTimeout
-	return func(ctx context.Context, endpoint Endpoint, packets transport.PacketConn) (tunnel.PacketConn, error) {
-		peer := settings.Clone()
-		peer.ServerName = endpoint.ServerName
-		opts := session.Options{
-			TLS: tlscontrol.Options{
-				TLS: peer, Network: endpoint.Network, Digest: digest, Ciphers: ciphers,
-				Auth: tlscontrol.NewAuthentication(user),
-			},
-			Protection: protection, MaxPacketSize: limit, RekeyInterval: rekey, HandshakeLimit: deadline,
+	// Validate the common setting even when no TLS session is configured.
+	common, digest, err := cfg.Control.prepare(authDigest)
+	if err != nil {
+		return nil, err
+	}
+	handshakes := make([]handshakeFunc, len(cfg.Endpoints))
+	limits := session.Options{
+		MaxPacketSize: cfg.MaxPacketSize, RekeyInterval: cfg.RekeyInterval, HandshakeLimit: cfg.HandshakeTimeout,
+	}
+	for i, endpoint := range cfg.Endpoints {
+		protection, wireDigest := common, digest
+		if len(cfg.EndpointControls) != 0 {
+			protection, wireDigest, err = cfg.EndpointControls[i].prepare(authDigest)
+			if err != nil {
+				return nil, err
+			}
 		}
+		if settings == nil {
+			continue
+		}
+		peer := tlscontrol.PeerConfig(settings, endpoint.ServerName, string(endpoint.VerifyX509Name.Mode),
+			endpoint.VerifyX509Name.Value, cfg.TLS.RequireServerUsage)
+		opts := limits
+		opts.TLS = tlscontrol.Options{TLS: peer, Digest: wireDigest, Ciphers: ciphers}
+		opts.Protection = protection
+		handshakes[i] = openHandshake(opts, user)
+	}
+	return handshakes, nil
+}
+
+func (p ControlProtection) prepare(authDigest string) (control.Protection, string, error) {
+	digest := strings.ToUpper(p.Digest)
+	if p.Mode == ControlTLSAuth && digest == "" {
+		digest = authDigest
+	}
+	protection, err := control.NewProtection(control.Mode(p.Mode), control.Direction(p.Direction), digest, p.Key)
+	if err != nil {
+		return control.Protection{}, "", configError("control protection")
+	}
+	if digest == "" {
+		digest = authDigest
+	}
+	return protection, digest, nil
+}
+
+func openHandshake(config session.Options, user tlscontrol.Credentials) handshakeFunc {
+	return func(ctx context.Context, endpoint Endpoint, packets transport.PacketConn) (tunnel.PacketConn, error) {
+		opts := config
+		opts.TLS.Network = endpoint.Network
+		opts.TLS.Auth = tlscontrol.NewAuthentication(user)
 		link, err := session.Open(ctx, packets, opts)
 		if err != nil {
 			return nil, setControlError(err)
 		}
 		return link, nil
-	}, nil
+	}
 }
 
 func setControlError(err error) error {
-	var code ErrorCode
-	switch {
-	case errors.Is(err, tlscontrol.ErrCertificate):
-		code = CodeCertificate
-	case errors.Is(err, tlscontrol.ErrAuth):
-		code = CodeAuthentication
-	case errors.Is(err, control.ErrTransport):
-		code = CodeNetwork
-	case errors.Is(err, control.ErrProtection):
-		code = CodeConfig
-	default:
-		code = contextCode(err, CodeProtocol)
-	}
-	return &Error{Op: "handshake", Code: code}
-}
-
-// observeSession is called with c.mu held.
-func (c *Client) observeSession() {
-	s, ok := c.session.(*session.Session)
-	if !ok {
-		return
-	}
-	select {
-	case <-s.Done():
-		c.session = nil
-		c.state = StateIdle
-	default:
-	}
+	return &Error{Op: "handshake", Code: packetErrorCode(err, CodeProtocol)}
 }

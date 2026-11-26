@@ -1,0 +1,75 @@
+name: Beta release
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the reviewed v0.1.0-beta tag
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    uses: ./.github/workflows/hardening.yml
+
+  build:
+    name: Package ${{ matrix.target.os }} ${{ matrix.target.arch }}
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - {os: linux, arch: amd64}
+          - {os: linux, arch: arm64}
+          - {os: windows, arch: amd64}
+          - {os: darwin, arch: arm64}
+    env:
+      GOTOOLCHAIN: local
+      RELEASE_OS: ${{ matrix.target.os }}
+      RELEASE_ARCH: ${{ matrix.target.arch }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build and verify reproducibility
+        shell: bash
+        run: |
+          first="$(bash tools/build-release.sh v0.1.0-beta "$RELEASE_OS" "$RELEASE_ARCH" dist)"
+          second="$(bash tools/build-release.sh v0.1.0-beta "$RELEASE_OS" "$RELEASE_ARCH" "$RUNNER_TEMP/reproduction")"
+          cmp "$first" "$second"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beta-${{ matrix.target.os }}-${{ matrix.target.arch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    if: inputs.publish && github.ref == 'refs/tags/v0.1.0-beta'
+    needs: build
+    runs-on: ubuntu-24.04
+    environment: beta-release
+    concurrency: beta-release
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: beta-*
+          path: dist
+          merge-multiple: true
+      - name: Publish the prerelease
+        shell: bash
+        run: |
+          (cd dist && sha256sum ./*.tar.gz > SHA256SUMS)
+          gh release create v0.1.0-beta dist/*.tar.gz dist/SHA256SUMS \
+            --verify-tag --prerelease --title 'v0.1.0-beta' --notes-file CHANGELOG.md

@@ -12,33 +12,49 @@ import (
 )
 
 var (
-	ErrTransport = errors.New("OpenVPN control transport failed")
-	ErrReliable  = errors.New("OpenVPN reliable control channel failed")
+	ErrTransport  = errors.New("OpenVPN control transport failed")
+	ErrReliable   = errors.New("OpenVPN reliable control channel failed")
+	ErrRetransmit = errors.New("OpenVPN control retransmission budget exhausted")
 )
 
 // Stream runs the reliable control channel and presents TLS with a byte
 // stream. The caller owns the packet transport and must close the stream
 // before releasing the transport.
 type Stream struct {
-	conn   net.Conn
-	cancel context.CancelFunc
-	ready  chan struct{}
-	done   chan struct{}
-	drain  chan chan struct{}
-	err    error
-	local  wire.SessionID
-	peer   wire.SessionID
+	conn    net.Conn
+	cancel  context.CancelFunc
+	ready   chan struct{}
+	stopped chan struct{}
+	done    chan struct{}
+	drain   chan chan struct{}
+	err     error
+	local   wire.SessionID
+	peer    wire.SessionID
 }
 
 func startStream(d *driver, limit, chunkSize int) *Stream {
 	ctx, cancel := context.WithCancel(context.Background())
 	conn, bridge := net.Pipe()
-	s := &Stream{conn: conn, cancel: cancel, ready: make(chan struct{}), done: make(chan struct{}), drain: make(chan chan struct{}), local: d.local}
+	s := &Stream{
+		conn: conn, cancel: cancel, ready: make(chan struct{}), stopped: make(chan struct{}),
+		done: make(chan struct{}), drain: make(chan chan struct{}), local: d.local,
+	}
 	go s.run(ctx, bridge, d, limit, chunkSize)
 	return s
 }
 
 func (s *Stream) Conn() net.Conn { return s.conn }
+
+// Err returns the driver cause once it has stopped, including before the
+// bridge reports EOF to TLS.
+func (s *Stream) Err() error {
+	select {
+	case <-s.stopped:
+		return s.err
+	default:
+		return nil
+	}
+}
 
 func (s *Stream) WaitReady(ctx context.Context) error {
 	select {
@@ -148,6 +164,7 @@ func (s *Stream) run(ctx context.Context, bridge net.Conn, d *driver, limit, chu
 		default:
 		}
 	}
+	close(s.stopped)
 	s.cancel()
 	bridge.Close()
 	workers.Wait()

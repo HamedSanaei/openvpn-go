@@ -239,7 +239,7 @@ Scope tls-auth, tls-crypt, tls-crypt-v2 and key direction to the effective conne
 where the manual permits. Use one selected protection mode per endpoint.
 Read only caller-authorized file references. Keep unsupported
 security-sensitive directives fatal and report unsupported benign directives
-explicitly. [OpenVPN manual](https://openvpn.net/community-docs/community-articles/openvpn-2-6-manual/) · [Profile security](SECURITY_MODEL.md)
+explicitly. [OpenVPN manual](https://openvpn.net/community-docs/community-articles/openvpn-2-6-manual/) · [Profile security](SECURITY_MODEL.md) · [Implemented directive registry](PROFILE.md)
 
 ## Conformance checks
 
