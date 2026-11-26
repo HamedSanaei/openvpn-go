@@ -51,8 +51,9 @@ func (c *Client) establish(ctx context.Context, start int, recovery bool, lost E
 	var visits [MaxEndpoints]int
 	for {
 		index := c.order[position]
+		var delay time.Duration
 		if recovery || lost != "" {
-			delay := backoff.Next(rand.N[time.Duration])
+			delay = backoff.Next(rand.N[time.Duration])
 			c.mu.Lock()
 			if err := c.operationError(ctx, "connect"); err != nil {
 				c.mu.Unlock()
@@ -71,32 +72,41 @@ func (c *Client) establish(ctx context.Context, start int, recovery bool, lost E
 		}
 		c.state = StateDialing
 		c.stats.Attempts++
+		started := time.Now()
 		c.record(EventDialing, index, "", 0)
 		c.mu.Unlock()
 
-		link, err := c.dial(ctx, index, visits[index])
+		link, stage, err := c.dial(ctx, index, visits[index])
 		visits[index]++
 		c.mu.Lock()
 		stopped := c.operationError(ctx, "connect")
+		report := AttemptReport{Sequence: c.stats.Attempts, EndpointIndex: index, Stage: stage,
+			Started: started, Duration: time.Since(started), RetryReason: lost, RetryAfter: delay}
 		if err == nil && stopped == nil {
 			c.stats.Connections++
-			active := &connection{link: link, index: index, position: position, generation: c.stats.Connections}
+			active := &connection{link: link, index: index, position: position, generation: c.stats.Connections, started: time.Now()}
+			report.Stage, report.Generation = StageConnected, active.generation
+			c.recordAttempt(report)
 			c.active = active
 			c.state = StateConnected
 			if recovery {
 				c.stats.Reconnects++
 			}
-			c.stats.ConnectedSince = time.Now()
+			c.stats.ConnectedSince = active.started
 			c.record(EventConnected, index, "", 0)
 			c.mu.Unlock()
 			return active, nil
 		}
 		if stopped == nil {
 			lost = errorCode(err)
+			report.Code = lost
 			c.stats.AttemptFailures++
 			c.stats.LastError = lost
 			c.record(EventAttemptFailed, index, lost, 0)
+		} else {
+			report.Code = errorCode(stopped)
 		}
+		c.recordAttempt(report)
 		c.mu.Unlock()
 		if link != nil {
 			link.Close()

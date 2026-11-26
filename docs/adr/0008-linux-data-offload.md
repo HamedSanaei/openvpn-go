@@ -1,0 +1,33 @@
+# ADR 0008 · Linux data channel offload
+
+The pure-Go userspace data path remains the shipped backend.
+
+Linux 6.16 introduced the mainline `ovpn` driver. Distribution backports
+and the earlier OpenVPN 2.6 `ovpn-dco` module have distinct compatibility
+requirements. Test availability by probing the actual generic netlink
+family and required operations in the target namespace. An OS version
+alone cannot establish compatibility. OpenVPN 2.7 and OpenVPN 3 Core are
+behavioral references for the mainline interface. [Linux ovpn netlink ABI](https://docs.kernel.org/netlink/specs/ovpn.html) · [OpenVPN DCO compatibility](https://github.com/OpenVPN/openvpn/blob/v2.7.9/README.dco.md)
+
+An optional backend would hand the kernel a transport socket, peer
+address, data cipher, and per-direction key and nonce material after
+verified TLS and negotiation. The host service would require scoped
+network administration privilege. Limit that service to one owned
+network namespace and use a tested peer and key installation state
+machine. Keep TLS, authentication, rekey initiation and policy in
+userspace. Roll back partial key or peer installation and verify
+retiring-key deletion before reporting cleanup. Gate backend choice by
+transport, selected data channel format, AEAD, and kernel support.
+Do not fall back in a live session after installing data keys. Any
+preauthorized fallback must clean up the backend and start a fresh
+verified session.
+
+The recorded three-client sample exercises userspace at a local packet
+budget and provides no measurements on a DCO-enabled target. It does
+not justify the additional privilege, key custody and replay boundary
+today. Before implementing the optional backend, measure a sustained
+workload on applicable hardware, including CPU and throughput,
+reconnect behavior and rollback. Add isolated coverage for rekey,
+packet replay, peer deletion, application crash, and unsupported
+kernel responses. Keep DCO results and user-space results distinct.
+[Reproducible comparison](../RESOURCE_EVIDENCE.md)

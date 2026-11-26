@@ -119,7 +119,7 @@ func (c *Client) connectSocket(ctx context.Context, endpoint Endpoint, visit int
 	}
 	hosts, err := c.resolve(ctx, endpoint)
 	if err != nil {
-		return nil, "", err
+		return nil, "", errors.Join(errResolution, err)
 	}
 	// A UDP socket can connect before its remote has replied. On a
 	// subsequent visit start with a different address from the fresh lookup.

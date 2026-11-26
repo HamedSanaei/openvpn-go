@@ -100,6 +100,14 @@ func TestControlOpenVPN26(t *testing.T) {
 				if _, ok := c.ActiveEndpoint(); ok {
 					t.Fatal("an unauthenticated endpoint became active")
 				}
+				stage := client.StageCertificate
+				if tc.want == client.CodeAuthentication {
+					stage = client.StageAuthentication
+				}
+				reports := c.AttemptReports(0)
+				if len(reports) != 1 || reports[0].Stage != stage || reports[0].Code != tc.want {
+					t.Fatalf("redacted handshake reports = %+v", reports)
+				}
 			})
 		}
 	})

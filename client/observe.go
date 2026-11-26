@@ -1,6 +1,10 @@
 package client
 
-import "time"
+import (
+	"time"
+
+	"github.com/hamedsanaei/openvpn-go/internal/observability"
+)
 
 // EventKind identifies a bounded lifecycle transition.
 type EventKind string
@@ -90,6 +94,97 @@ func (c *Client) disconnected(active *connection, code ErrorCode) {
 		c.stats.LastError = code
 	}
 	c.record(EventDisconnected, active.index, code, 0)
+	c.finishGeneration(active, code)
+}
+
+// AttemptStage identifies the final stage reached by a connection attempt.
+type AttemptStage string
+
+const (
+	StageResolve        AttemptStage = "resolve"
+	StageDial           AttemptStage = "dial"
+	StageControl        AttemptStage = "control"
+	StageCertificate    AttemptStage = "certificate"
+	StageAuthentication AttemptStage = "authentication"
+	StageConnected      AttemptStage = "connected"
+)
+
+// AttemptReport uses ordinal endpoints, durations and stable codes. It is
+// safe to serialize without exposing endpoint or credential configuration.
+type AttemptReport struct {
+	Sequence      uint64        `json:"sequence"`
+	EndpointIndex int           `json:"endpoint_index"`
+	Stage         AttemptStage  `json:"stage"`
+	Code          ErrorCode     `json:"code,omitempty"`
+	Started       time.Time     `json:"started"`
+	Duration      time.Duration `json:"duration_ns"`
+	RetryReason   ErrorCode     `json:"retry_reason,omitempty"`
+	RetryAfter    time.Duration `json:"retry_after_ns,omitempty"`
+	Generation    uint64        `json:"generation,omitempty"`
+}
+
+// AttemptReports returns completed attempts newer than afterSequence.
+// At most 64 reports are retained. An interrupted attempt is reported even
+// when it does not increment the attempt failure counter.
+func (c *Client) AttemptReports(afterSequence uint64) []AttemptReport {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.attempts == nil {
+		return nil
+	}
+	return c.attempts.After(afterSequence)
+}
+
+func (c *Client) recordAttempt(report AttemptReport) {
+	if c.attempts == nil {
+		c.attempts = new(observability.History[AttemptReport])
+	}
+	c.attempts.Append(report)
+}
+
+// GenerationReport uses connection-local packet and plaintext byte counters.
+type GenerationReport struct {
+	Generation      uint64    `json:"generation"`
+	EndpointIndex   int       `json:"endpoint_index"`
+	ConnectedAt     time.Time `json:"connected_at"`
+	EndedAt         time.Time `json:"ended_at,omitzero"`
+	Code            ErrorCode `json:"code,omitempty"`
+	PacketsSent     uint64    `json:"packets_sent"`
+	BytesSent       uint64    `json:"bytes_sent"`
+	PacketsReceived uint64    `json:"packets_received"`
+	BytesReceived   uint64    `json:"bytes_received"`
+}
+
+// GenerationReports returns up to 64 completed generations and the active
+// snapshot, if any, newer than afterGeneration.
+func (c *Client) GenerationReports(afterGeneration uint64) []GenerationReport {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	active := c.liveConnection()
+	var reports []GenerationReport
+	if c.generations != nil {
+		reports = c.generations.After(afterGeneration)
+	}
+	if active != nil && active.generation > afterGeneration {
+		reports = append(reports, generationReport(active))
+	}
+	return reports
+}
+
+func (c *Client) finishGeneration(active *connection, code ErrorCode) {
+	report := generationReport(active)
+	report.EndedAt, report.Code = time.Now(), code
+	if c.generations == nil {
+		c.generations = new(observability.History[GenerationReport])
+	}
+	c.generations.Append(report)
+}
+
+func generationReport(active *connection) GenerationReport {
+	out := GenerationReport{Generation: active.generation, EndpointIndex: active.index, ConnectedAt: active.started}
+	out.PacketsSent, out.BytesSent = active.sent.Load()
+	out.PacketsReceived, out.BytesReceived = active.recv.Load()
+	return out
 }
 
 func (c *Client) stateSnapshot() ClientState {

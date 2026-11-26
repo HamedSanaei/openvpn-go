@@ -80,14 +80,7 @@ func TestOpenVPN3Differential(t *testing.T) {
 		t.Fatal("differential tests require the Core binary and checksum and a pinned server binary")
 	}
 	server := interopPeer(t)
-	sum := binarySHA256(t, core)
-	if sum != expectedHash {
-		t.Fatal("OpenVPN 3 binary SHA-256 does not match the reference build")
-	}
-	version, err := exec.CommandContext(t.Context(), core, "--version").CombinedOutput()
-	if err != nil || !bytes.Contains(version, []byte("\nOpenVPN core "+coreVersion+" ")) {
-		t.Fatalf("expected OpenVPN 3 Core %s: %v", coreVersion, err)
-	}
+	sum := verifyCoreBuild(t, core, expectedHash)
 	peerVersion := os.Getenv("OPENVPN_INTEROP_VERSION")
 	if peerVersion == "" {
 		peerVersion = "2.6.23"
@@ -158,6 +151,19 @@ func TestOpenVPN3Differential(t *testing.T) {
 			}
 		})
 	}
+}
+
+func verifyCoreBuild(t *testing.T, path, expectedHash string) string {
+	t.Helper()
+	sum := binarySHA256(t, path)
+	if sum != expectedHash {
+		t.Fatal("OpenVPN 3 binary SHA-256 does not match the reference build")
+	}
+	version, err := exec.CommandContext(t.Context(), path, "--version").CombinedOutput()
+	if err != nil || !bytes.Contains(version, []byte("\nOpenVPN core "+coreVersion+" ")) {
+		t.Fatalf("expected OpenVPN 3 Core %s: %v", coreVersion, err)
+	}
+	return sum
 }
 
 func binarySHA256(t *testing.T, path string) string {
