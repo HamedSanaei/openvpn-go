@@ -129,3 +129,10 @@ record the exact build, platform and exported profile fixture. Capture whether
 the connection used a fixed cipher and which data format and key derivation
 were observed. Include a default-policy rejection test for each option that
 requires explicit compatibility mode.
+
+## Authorized external profiles
+
+Use the opt-in test for a pinned lab router or an account authorized for
+provider compatibility testing. It reports stable failure codes and
+negotiation features, and can send a synthetic reply probe through the tunnel
+before and after a reconnect. [Commands and observed results](../../docs/EXTERNAL_INTEROP.md)
