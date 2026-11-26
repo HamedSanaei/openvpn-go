@@ -11,6 +11,7 @@ import (
 
 	"github.com/hamedsanaei/openvpn-go/internal/control"
 	"github.com/hamedsanaei/openvpn-go/internal/data"
+	"github.com/hamedsanaei/openvpn-go/internal/observability"
 	"github.com/hamedsanaei/openvpn-go/internal/tlscontrol"
 	"github.com/hamedsanaei/openvpn-go/transport"
 	"github.com/hamedsanaei/openvpn-go/tunnel"
@@ -81,6 +82,7 @@ func Open(ctx context.Context, raw transport.PacketConn, opts Options) (*Session
 			opts.TLS.Auth.Clear()
 		}
 	}()
+	observability.Enter(ctx, observability.PhaseResetACK)
 	stream, err = mux.StartInitial()
 	if err != nil {
 		return nil, err
@@ -89,6 +91,7 @@ func Open(ctx context.Context, raw transport.PacketConn, opts Options) (*Session
 	if err != nil {
 		return nil, err
 	}
+	observability.Enter(ctx, observability.PhaseDataSetup)
 	mtu := opts.MaxPacketSize - data.Overhead
 	if link.Info.Tunnel.MTU != 0 || opts.TunnelMTU != 0 {
 		if opts.TunnelMTU != 0 {
@@ -107,10 +110,12 @@ func Open(ctx context.Context, raw transport.PacketConn, opts Options) (*Session
 	}
 	link.Info.PacketMTU = mtu
 	opts.TunnelMTU = int(link.Info.Tunnel.MTU)
+	observability.Enter(ctx, observability.PhaseKeyDerivation)
 	keys, err := link.DataKeys()
 	if err != nil {
 		return nil, err
 	}
+	observability.Enter(ctx, observability.PhaseDataSetup)
 	ch, err := data.NewChannel(link.Info.PeerID, udp, keys)
 	if err != nil {
 		return nil, err

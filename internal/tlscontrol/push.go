@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/hamedsanaei/openvpn-go/internal/crypt"
 	"github.com/hamedsanaei/openvpn-go/tunnel"
 )
 
@@ -16,6 +17,7 @@ type Negotiation struct {
 	Cipher     string
 	PeerID     uint32
 	TLSVersion uint16
+	Derivation crypt.Derivation
 
 	PingInterval time.Duration
 	PingTimeout  time.Duration
@@ -28,6 +30,7 @@ type Negotiation struct {
 type pushState struct {
 	Negotiation
 	allowed         []string
+	fixedAEAD       string
 	havePeer        bool
 	exporter        bool
 	allowExit       bool
@@ -80,8 +83,19 @@ func (p *pushState) add(message []byte) (bool, error) {
 		p.continued = true
 		return false, nil
 	}
-	if p.continued != (marker == "1") || !p.exporter || !p.havePeer || p.Cipher == "" {
+	if p.continued != (marker == "1") || !p.havePeer {
 		return false, ErrNegotiation
+	}
+	if p.fixedAEAD != "" {
+		if p.exporter || (p.Cipher != "" && p.Cipher != p.fixedAEAD) {
+			return false, ErrNegotiation
+		}
+		p.Cipher, p.Derivation = p.fixedAEAD, crypt.ClassicKM2
+	} else {
+		if !p.exporter || p.Cipher == "" {
+			return false, ErrNegotiation
+		}
+		p.Derivation = crypt.TLSExporter
 	}
 	if err := p.finishTunnel(); err != nil {
 		return false, err

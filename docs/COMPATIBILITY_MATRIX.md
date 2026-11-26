@@ -73,10 +73,11 @@ The report establishes the results for these generated cases. Add a case
 for each new behavior before expanding compatibility claims.
 [Differential tests](../tests/interop/openvpn3_test.go) · [Hardening workflow](../.github/workflows/hardening.yml)
 
-## Candidate coverage for older servers and MikroTik
+## Historical Community peers and MikroTik CHR
 
-The historical Community rows record isolated AEAD negotiation probes. The RouterOS row records an isolated CHR evaluation, with hardware validation pending. The 2.6.23 baseline
-remains the release reference. Exercise older server builds only in isolated
+The historical Community rows record isolated AEAD negotiation probes.
+The MikroTik result applies to the isolated virtual CHR build. The 2.6.23
+baseline remains the release reference. Exercise older server builds only in isolated
 test environments. OpenVPN Community has ended upstream support for 2.4 and
 2.5. [OpenVPN release support](https://community.openvpn.net/Pages/Supported%20versions)
 
@@ -84,7 +85,7 @@ test environments. OpenVPN Community has ended upstream support for 2.4 and
 |---|---|---|
 | OpenVPN Community 2.5.11, commit `6fb2a2560845e15da8918c114fe020b4a06b3cef` | Verified TLS 1.2 over TCP, TUN, AES-256-GCM and AES-128-GCM configured, OpenSSL 3.0.13 | The server pushed `peer-id` and `cipher AES-256-GCM` and omitted `tls-ekm`. The Go client returned a protocol error before activating the session. |
 | OpenVPN Community 2.4.12, commit `058407a89cb812115b383570b12f4c2fde500d39` | Verified TLS 1.2 over TCP, TUN, AES-256-GCM and AES-128-GCM configured, private OpenSSL 1.1.1w | The server pushed `peer-id` and omitted both the negotiated cipher and `tls-ekm`. The Go client returned a protocol error before activating the session. |
-| MikroTik CHR 7.25.2 x86_64 | TLS 1.2, certificate and PPP password, TCP/UDP, fixed AES-256-GCM and AES-128-GCM | The Community reference verified identity, packet traffic and reconnect. Go timed out during initial setup in all four cases; the repeat returned UDP timeouts and TCP network failures. The reference push included a peer ID and omitted cipher and exporter negotiation. Hardware target `RB5009UG+S+IN`, arm64, 7.25.2, is pending. [Lab results](EXTERNAL_INTEROP.md#mikrotik-routeros) |
+| MikroTik CHR 7.25.2 x86_64 | TLS 1.2, certificate and PPP password, plain outer control, IPv4 TUN, TCP/UDP, fixed AES-256-GCM and AES-128-GCM | All four Go cases verified server identity, classic key method 2 derivation, peer-ID `DATA_V2` traffic, controlled reconnect and a separate intra-session rekey. The default-policy negative did not activate. Hardware target `RB5009UG+S+IN`, arm64, 7.25.2, is pending. [Lab results](EXTERNAL_INTEROP.md#mikrotik-routeros) |
 
 [OpenVPN 2.5.11](https://github.com/OpenVPN/openvpn/releases/tag/v2.5.11) · [OpenVPN 2.4.12](https://github.com/OpenVPN/openvpn/releases/tag/v2.4.12) · [OpenVPN 2.5 manual](https://openvpn.net/community-docs/community-articles/openvpn-2-5-manual/) · [OpenVPN 2.6 changes](https://github.com/OpenVPN/openvpn/blob/v2.6.23/Changes.rst#overview-of-changes-in-26) · [MikroTik OpenVPN documentation](https://help.mikrotik.com/docs/spaces/ROS/pages/2031655/OpenVPN)
 
@@ -94,34 +95,15 @@ The test captures the authenticated push and checks the rejection before
 the client publishes control information or an active endpoint.
 [Legacy probe](../tests/interop/version_policy_test.go) · [Signed reference builds](../tests/interop/build-peer.sh)
 
-Any future legacy policy must be an explicit, per-endpoint opt-in for
-`AES-256-GCM` or `AES-128-GCM`, verified server identity and TLS 1.2 or
-later. Confine legacy derivation to that mode. Require an independently
-verified key method 2 transcript and vectors before adding it. Require
-explicit AEAD selection and a reviewed 2.4 NCP policy before advertising
-`IV_NCP=2`. Review any `DATA_V1` framing separately. Compression, CBC
-and older TLS stay outside this policy. Verify packet exchange and rekey
-for every permitted combination before enabling the mode.
-
-Review protocol differences in M2 and M3 before adding any compatibility
-mode. A mode that permits the older data key derivation, a fixed cipher,
-or another data packet format must be explicitly selected for its endpoint.
-A missing exporter or cipher signal on a default endpoint remains a
-terminal negotiation error. All candidates require verified server
-identity and TLS 1.2 or later. Choose separate compatibility cases for
-RouterOS 6.x or existing CBC-only profiles if those are required. Such
-cases need their own approved security policy and interoperability
-evidence before implementation.
-
-The M4 parser rejects an unapproved `cipher` and any `data-ciphers-fallback`
-directive with a line-numbered diagnostic. A supported AEAD in `cipher`
-produces an explicit warning because the client requires negotiated
-AEAD, TLS exporter derivation and a peer ID. A RouterOS configuration
-that requires a fixed cipher without negotiation falls outside that
-policy. M6 evidence must show a verified handshake, bidirectional IP
-traffic, and rekey or a controlled reconnect on the specified build. Verify
-that a required-but-unconfigured mode, wrong server identity or mismatched
-cipher fails. [Pinned CHR lab and hardware target](EXTERNAL_INTEROP.md#mikrotik-routeros)
+`compat-fixed-aead` selects one AES-GCM cipher for a specific endpoint.
+It requires verified server identity, a client certificate, TLS 1.2 or
+later, and `DATA_V2` with a peer ID. Classic key method 2 derivation is
+confined to this policy. The default requires negotiated AEAD and the TLS
+exporter. `cipher` remains advisory for eligible AEAD values, and
+`data-ciphers-fallback` remains unsupported. Older TLS, CBC, compression,
+and `DATA_V1` remain outside both policies. The CHR results do not qualify
+RouterOS 6.x, the historical Community peers in fixed mode, or other
+appliances. [Profile syntax](PROFILE.md) · [Fixed-AEAD ADR](adr/0009-fixed-aead-compatibility.md)
 
 The external profile record tracks Access Server exports and the pending
 authorized provider cases. [Provider and Access Server results](EXTERNAL_INTEROP.md#provider-and-access-server-profiles)

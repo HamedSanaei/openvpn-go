@@ -2,6 +2,7 @@ package data
 
 import (
 	"bytes"
+	"crypto/fips140"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hamedsanaei/openvpn-go/internal/crypt"
+	"github.com/hamedsanaei/openvpn-go/internal/wire"
 )
 
 func TestIndependentExporterAndDataVectors(t *testing.T) {
@@ -78,6 +80,43 @@ func TestTamperTruncationAndReplay(t *testing.T) {
 			}
 			if _, err := receiver.Open(valid, time.Now()); err != nil {
 				t.Fatalf("forgery changed the replay state: %v", err)
+			}
+			reject(t, receiver, valid, time.Now())
+		})
+	}
+}
+
+func TestFixedAEADAuthenticatesDataV2AndRejectsReplay(t *testing.T) {
+	if fips140.Enabled() {
+		t.Skip("fixed AEAD is disabled in FIPS mode")
+	}
+	for _, name := range []string{crypt.AES128GCM, crypt.AES256GCM} {
+		t.Run(name, func(t *testing.T) {
+			material := crypt.ClassicMaterial{Premaster: [48]byte{1}, ClientRandom2: [32]byte{2}, ServerRandom2: [32]byte{3}}
+			keys, err := crypt.ClassicDataKeys(name, &material, [8]byte{4}, [8]byte{5})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sender, err := NewChannel(7, true, keys)
+			if err != nil {
+				t.Fatal(err)
+			}
+			keys.Send, keys.Receive = keys.Receive, keys.Send
+			receiver, err := NewChannel(7, true, keys)
+			if err != nil {
+				t.Fatal(err)
+			}
+			valid := seal(t, sender)
+			legacy := bytes.Clone(valid)
+			legacy[0] = byte(wire.DataV1)<<3 | (legacy[0] & 7)
+			reject(t, receiver, legacy, time.Now())
+			for _, index := range []int{0, 8, Overhead} {
+				tampered := bytes.Clone(valid)
+				tampered[index] ^= 1
+				reject(t, receiver, tampered, time.Now())
+			}
+			if _, err := receiver.Open(valid, time.Now()); err != nil {
+				t.Fatalf("valid packet after tampering: %v", err)
 			}
 			reject(t, receiver, valid, time.Now())
 		})

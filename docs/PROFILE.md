@@ -75,6 +75,7 @@ their own lines.
 | `auth` | `SHA1`, `SHA256`, `SHA384` or `SHA512`, case-insensitive. Selects the OpenVPN auth digest, including the HMAC for `tls-auth`. The default is `SHA1`. |
 | `data-ciphers` | Ordered, colon-separated subset of `AES-256-GCM`, `AES-128-GCM` and `CHACHA20-POLY1305`, with each cipher listed at most once. Omission offers all three. |
 | `cipher` | A single supported AEAD produces an `ignored_directive` warning. Configure the negotiated offer with `data-ciphers`. |
+| `compat-fixed-aead` | Explicit fixed `AES-128-GCM` or `AES-256-GCM` for one remote. Selects the concise server key-method-2 reply, classic derivation and DATA_V2 for that endpoint. Requires a client certificate and plain outer control with verified TLS. |
 | `remote-cert-tls` | `server`. Requires explicit leaf Key Usage and TLS server Extended Key Usage. |
 | `peer-fingerprint` | SHA-256 leaf fingerprint with 32 colon-separated hex octets, a relative file path, or an inline block with one fingerprint per line. Up to 32 distinct pins are accepted across all declarations. |
 | `crl-verify` | Relative file path or inline block containing PEM X.509 CRLs in complete issuer list format. |
@@ -121,7 +122,11 @@ in order. Later settings override earlier settings for the same field.
 The supported block directives are `remote`, `proto`, `port`, `rport`,
 `bind`, `nobind`, `local`, `lport`, `connect-timeout`, `tun-mtu`,
 `explicit-exit-notify`, `key-direction`, `tls-auth`, `tls-crypt` and
-`tls-crypt-v2`.
+`tls-crypt-v2`. A `compat-fixed-aead` entry may be declared once inside
+each applicable connection block. At top level it requires exactly one
+top-level remote and no connection blocks. An explicit `data-ciphers`
+offer must contain just the matching cipher. The legacy `cipher`
+directive remains advisory. [Fixed AEAD policy](adr/0009-fixed-aead-compatibility.md)
 A block's protection replaces its inherited protection. Conflicting modes
 within the same scope are errors. Empty or nested connection blocks and
 profiles combining block and top-level remotes are errors. Defaults are

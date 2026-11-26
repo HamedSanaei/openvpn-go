@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hamedsanaei/openvpn-go/internal/crypt"
 	"github.com/hamedsanaei/openvpn-go/transport"
 	"github.com/hamedsanaei/openvpn-go/tunnel"
 )
@@ -35,6 +36,9 @@ type Endpoint struct {
 	ConnectTimeout     time.Duration
 	TunnelMTU          int
 	ExplicitExitNotify bool
+	// FixedAEAD explicitly selects the fixed AES-GCM compatibility policy
+	// for this endpoint. An empty string requires modern negotiation.
+	FixedAEAD string
 }
 
 // Validated returns an endpoint with defaults applied and its identity checked.
@@ -169,6 +173,9 @@ func (cfg Config) validated() (Config, error) {
 func (e *Endpoint) normalize() error {
 	if err := e.VerifyX509Name.Validate(); err != nil {
 		return err
+	}
+	if e.FixedAEAD != "" && e.FixedAEAD != crypt.AES128GCM && e.FixedAEAD != crypt.AES256GCM {
+		return configError("fixed AEAD policy")
 	}
 	if e.Network == "" {
 		e.Network = "udp"

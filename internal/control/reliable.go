@@ -38,6 +38,11 @@ type driver struct {
 	peer  wire.SessionID
 	bound bool
 	keyID uint8
+	// An initial plain reset and its acknowledgement can arrive separately.
+	resetSender    wire.SessionID
+	resetACKSender wire.SessionID
+	splitReset     bool
+	splitEcho      time.Time
 
 	sendID uint32
 	recvID uint32
@@ -217,9 +222,11 @@ func (d *driver) receive(ctx context.Context, raw []byte) error {
 		return nil
 	}
 	if !d.bound {
-		if p.Opcode != reset || p.ID != 0 ||
+		split := d.keyID == 0 && d.codec.codec.mode == Plain &&
+			d.splitResetReady(p)
+		if !split && (p.Opcode != reset || p.ID != 0 ||
 			(d.keyID == 0 && !slices.Contains(p.ACKs[:p.ACKCount], uint32(0))) ||
-			(d.keyID != 0 && (p.Sender != d.peer || len(p.Payload) != 0)) {
+			(d.keyID != 0 && (p.Sender != d.peer || len(p.Payload) != 0))) {
 			return nil
 		}
 		resend := false
@@ -234,12 +241,22 @@ func (d *driver) receive(ctx context.Context, raw []byte) error {
 			return nil
 		}
 		d.peer, d.bound, d.recvID = p.Sender, true, 1
-		d.acknowledge(p.ACKs[:p.ACKCount])
+		d.splitReset = split
+		if split {
+			d.acknowledge([]uint32{0})
+		} else {
+			d.acknowledge(p.ACKs[:p.ACKCount])
+		}
 		if err := d.queueACK(ctx, 0); err != nil {
 			return err
 		}
 		if resend {
 			return d.enqueue(ctx, wire.WrappedKey, nil)
+		}
+		if split {
+			// This peer completes the initial exchange when reset zero
+			// is repeated with its reset acknowledgement attached.
+			return d.echoSplitReset(ctx)
 		}
 		return d.send(ctx, wire.ControlPacket{Header: wire.Header{Opcode: wire.ACK}})
 	}
@@ -254,6 +271,9 @@ func (d *driver) receive(ctx context.Context, raw []byte) error {
 	if p.Opcode == wire.ACK {
 		return nil
 	}
+	if d.splitReset && d.recvID == 1 && p.Opcode == wire.ServerReset && p.ID == 0 && len(p.Payload) == 0 {
+		return d.echoSplitReset(ctx)
+	}
 	if p.ID < d.recvID {
 		if d.recvID-p.ID <= windowSize {
 			return d.queueACK(ctx, p.ID)
@@ -267,6 +287,28 @@ func (d *driver) receive(ctx context.Context, raw []byte) error {
 		d.rx[p.ID] = p.Payload
 	}
 	return d.queueACK(ctx, p.ID)
+}
+
+func (d *driver) echoSplitReset(ctx context.Context) error {
+	now := time.Now()
+	if now.Sub(d.splitEcho) < ackDelay {
+		return nil
+	}
+	d.splitEcho = now
+	return d.send(ctx, wire.ControlPacket{Header: wire.Header{Opcode: wire.ClientReset}})
+}
+
+func (d *driver) splitResetReady(p wire.ControlPacket) bool {
+	switch {
+	case p.Opcode == wire.ServerReset && p.ID == 0 && p.ACKCount == 0 && len(p.Payload) == 0:
+		d.resetSender = p.Sender
+	case p.Opcode == wire.ACK && p.ACKCount == 1 && p.ACKs[0] == 0:
+		// receive has already verified the ACK target equals d.local.
+		d.resetACKSender = p.Sender
+	default:
+		return false
+	}
+	return d.resetSender == p.Sender && d.resetACKSender == p.Sender
 }
 
 func (d *driver) acknowledge(ids []uint32) {

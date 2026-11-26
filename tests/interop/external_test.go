@@ -40,7 +40,26 @@ type externalResult struct {
 	Identity    bool                      `json:"client_certificate"`
 	TLS         string                    `json:"tls,omitempty"`
 	AEAD        string                    `json:"aead,omitempty"`
+	Derivation  client.KeyDerivation      `json:"derivation,omitempty"`
+	DataFormat  string                    `json:"data_format,omitempty"`
 	RoundTrips  int                       `json:"synthetic_round_trips"`
+	Rekeys      int                       `json:"verified_rekeys,omitempty"`
+	Attempts    []externalAttempt         `json:"attempts,omitempty"`
+	Generations []externalGeneration      `json:"generations,omitempty"`
+}
+
+type externalAttempt struct {
+	Stage         client.AttemptStage `json:"stage"`
+	Phase         client.AttemptPhase `json:"phase"`
+	PhaseDuration time.Duration       `json:"phase_duration_ns"`
+	PhaseSteps    uint8               `json:"phase_steps,omitempty"`
+	Code          client.ErrorCode    `json:"code,omitempty"`
+}
+
+type externalGeneration struct {
+	Generation      uint64 `json:"generation"`
+	PacketsSent     uint64 `json:"packets_sent"`
+	PacketsReceived uint64 `json:"packets_received"`
 }
 
 func TestExternalProfile(t *testing.T) {
@@ -87,6 +106,7 @@ func TestExternalProfileHarness(t *testing.T) {
 	t.Setenv("OVPN_EXTERNAL_ECHO", "10.49.0.1")
 	t.Setenv("OVPN_EXTERNAL_REMOTE", "1")
 	t.Setenv("OVPN_EXTERNAL_ROOT", "")
+	t.Setenv("OVPN_EXTERNAL_REKEY", "0")
 	result := probeExternalProfile(t.Context(), probe)
 	if result.Stage != "verified" || result.RoundTrips != 2 ||
 		result.TLS != "TLS 1.2" || result.AEAD != "AES-256-GCM" || !result.Credentials || !result.Identity {
@@ -162,8 +182,8 @@ func TestExternalCredentialsBounds(t *testing.T) {
 	}
 }
 
-func probeExternalProfile(ctx context.Context, name string) externalResult {
-	result := externalResult{Stage: "input"}
+func probeExternalProfile(ctx context.Context, name string) (result externalResult) {
+	result = externalResult{Stage: "input"}
 	file, err := openExternalFile(name)
 	if err != nil {
 		result.Code = "profile_unavailable"
@@ -224,6 +244,10 @@ func probeExternalProfile(ctx context.Context, name string) externalResult {
 	cfg.RemoteRandom = false
 	cfg.ConnectTimeout, cfg.HandshakeTimeout = 5*time.Second, 12*time.Second
 	cfg.Retry = client.RetryPolicy{MaxAttempts: 1}
+	rekey := os.Getenv("OVPN_EXTERNAL_REKEY") == "1"
+	if rekey {
+		cfg.RekeyInterval = 2 * time.Second
+	}
 
 	peer := netip.Addr{}
 	if value := os.Getenv("OVPN_EXTERNAL_ECHO"); value != "" {
@@ -252,7 +276,19 @@ func probeExternalProfile(ctx context.Context, name string) externalResult {
 		result.Stage, result.Code = "configure", externalError(err)
 		return result
 	}
-	defer c.Close()
+	defer func() {
+		c.Close()
+		for _, a := range c.AttemptReports(0) {
+			result.Attempts = append(result.Attempts, externalAttempt{
+				Stage: a.Stage, Phase: a.Phase, PhaseDuration: a.PhaseDuration, PhaseSteps: a.PhaseSteps, Code: a.Code,
+			})
+		}
+		for _, g := range c.GenerationReports(0) {
+			result.Generations = append(result.Generations, externalGeneration{
+				Generation: g.Generation, PacketsSent: g.PacketsSent, PacketsReceived: g.PacketsReceived,
+			})
+		}
+	}()
 	if err := c.Connect(ctx); err != nil {
 		result.Stage, result.Code = "connect", externalError(err)
 		return result
@@ -263,8 +299,12 @@ func probeExternalProfile(ctx context.Context, name string) externalResult {
 		return result
 	}
 	result.Stage, result.TLS, result.AEAD = "connected", tls.VersionName(info.TLSVersion), info.DataCipher
+	result.Derivation, result.DataFormat = info.KeyDerivation, info.DataFormat
 	if peer.IsValid() {
-		result.Stage, result.Code, result.RoundTrips = probeExternalData(ctx, c, first, peer)
+		result.Stage, result.Code, result.RoundTrips = probeExternalData(ctx, c, first, peer, rekey)
+		if result.Stage == "rekey_verified" {
+			result.Rekeys = 1
+		}
 	}
 	return result
 }
@@ -326,7 +366,7 @@ func externalError(err error) string {
 
 // When explicitly given a test-owned IPv4 echo target, exercise data on both
 // sides of a transport interruption without creating an OS tunnel or routes.
-func probeExternalData(ctx context.Context, c *client.Client, first transport.PacketConn, peer netip.Addr) (stage, code string, trips int) {
+func probeExternalData(ctx context.Context, c *client.Client, first transport.PacketConn, peer netip.Addr, rekey bool) (stage, code string, trips int) {
 	ctx, cancel := context.WithTimeout(ctx, 35*time.Second)
 	defer cancel()
 	device, app := testkit.PacketPipe(8, transport.DefaultPacketSize)
@@ -360,6 +400,12 @@ func probeExternalData(ctx context.Context, c *client.Client, first transport.Pa
 		}
 		trips++
 		if count == 1 {
+			if rekey {
+				if current, ok := c.ControlInfo(); !ok || current.KeyID != 0 {
+					return "rekey", "initial_key_not_verified", trips
+				}
+				return probeExternalRekey(ctx, c, app, peer, done)
+			}
 			stage = "reconnect"
 			if err := first.Close(); err != nil {
 				return stage, "transport_close_failed", trips
@@ -369,6 +415,34 @@ func probeExternalData(ctx context.Context, c *client.Client, first transport.Pa
 	return "verified", "", trips
 }
 
+func probeExternalRekey(ctx context.Context, c *client.Client, app transport.PacketConn, peer netip.Addr, done <-chan error) (string, string, int) {
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-done:
+			return "rekey", externalError(err), 1
+		case <-ctx.Done():
+			return "rekey", "generation_timeout", 1
+		case <-ticker.C:
+			if c.Stats().Connections != 1 {
+				return "rekey", "replaced_connection", 1
+			}
+			info, ok := c.ControlInfo()
+			if !ok || info.KeyID == 0 {
+				continue
+			}
+			if err := externalEcho(ctx, app, info.TunnelIP, peer); err != nil {
+				return "rekey", "echo_failed", 1
+			}
+			if c.Stats().Connections != 1 {
+				return "rekey", "replaced_connection", 1
+			}
+			return "rekey_verified", "", 2
+		}
+	}
+}
+
 func externalEcho(ctx context.Context, app transport.PacketConn, source, peer netip.Addr) error {
 	if !source.Is4() {
 		return errors.New("missing assigned IPv4 address")
@@ -376,7 +450,9 @@ func externalEcho(ctx context.Context, app transport.PacketConn, source, peer ne
 	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
 	defer cancel()
 	src, dst := source.As4(), peer.As4()
-	packet := make([]byte, 20+8+16)
+	// Match the payload size of the Community reference ICMP probe.
+	const payloadSize = 56
+	packet := make([]byte, 20+8+payloadSize)
 	packet[0], packet[8], packet[9] = 0x45, 64, 1
 	binary.BigEndian.PutUint16(packet[2:4], uint16(len(packet)))
 	copy(packet[12:16], src[:])
@@ -385,11 +461,22 @@ func externalEcho(ctx context.Context, app transport.PacketConn, source, peer ne
 	packet[20] = 8
 	rand.Read(packet[24:])
 	binary.BigEndian.PutUint16(packet[22:24], checksum(packet[20:], 0))
-	if err := app.WritePacket(ctx, packet); err != nil {
-		return err
-	}
-
 	buffer := make([]byte, transport.DefaultPacketSize)
+	for ctx.Err() == nil {
+		round, stop := context.WithTimeout(ctx, 300*time.Millisecond)
+		err := app.WritePacket(round, packet)
+		if err == nil {
+			err = readExternalEcho(round, app, buffer, packet, src, dst)
+		}
+		stop()
+		if !errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+	}
+	return ctx.Err()
+}
+
+func readExternalEcho(ctx context.Context, app transport.PacketConn, buffer, packet []byte, src, dst [4]byte) error {
 	for {
 		n, err := app.ReadPacket(ctx, buffer)
 		if err != nil {
@@ -400,7 +487,7 @@ func externalEcho(ctx context.Context, app transport.PacketConn, source, peer ne
 			continue
 		}
 		offset := int(buffer[0]&0xf) * 4
-		if offset >= 20 && n == offset+24 && buffer[offset] == 0 && buffer[offset+1] == 0 &&
+		if offset >= 20 && n == offset+len(packet)-20 && buffer[offset] == 0 && buffer[offset+1] == 0 &&
 			checksum(buffer[offset:n], 0) == 0 && bytes.Equal(buffer[offset+4:n], packet[24:]) {
 			return nil
 		}
