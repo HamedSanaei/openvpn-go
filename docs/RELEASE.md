@@ -29,11 +29,46 @@ hardening workflow and builds each archive twice to compare the bytes.
 Local candidate builds for all four targets produced identical archives
 on repetition and passed SHA-256 verification.
 
-For public publication, configure the `beta-release` environment with
-required reviewers, then dispatch the workflow on the reviewed
-`v0.1.0-beta` tag with publication enabled. The publication job verifies
-the tag and emits archive SHA-256 sums with a GitHub prerelease.
+The release workflow attests each archive's build provenance and SPDX
+SBOM. A separate job verifies both attestations against the workflow and
+source commit, compares the archives' SHA-256 sums and checks that each
+packaged SBOM matches the standalone copy. That job uploads
+`verified-beta-candidate` and records the SHA-256 of its `SHA256SUMS`
+manifest in the run summary. The manifest covers the four archives and
+the standalone SBOM. The Go toolchain's patent notice ships with the
+other license notices.
 [Release workflow](../.github/workflows/release.yml)
+
+## Independent approval
+
+Dispatch the release workflow with publication disabled on the candidate
+commit. Select two independent people with GitHub user accounts. Assign
+one to security and the other to licenses and provenance. Configure both
+as required reviewers in the `beta-release` environment. Enable **Prevent
+self-review**, disable administrator bypass where GitHub supports it and
+limit deployments to the release tag. Set the environment variables
+`BETA_SECURITY_REVIEWER_ID` and `BETA_PROVENANCE_REVIEWER_ID` to the two
+numeric GitHub user IDs. [GitHub deployment environments](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments)
+
+After examining the exact candidate and both attestations, each reviewer
+records their respective approval on the release-gate issue using the
+full commit and manifest hashes from the run summary. Use one unedited
+comment per decision with one of these lines, replacing the two
+placeholders. A new comment using `revoke` cancels an earlier approval
+for the same candidate. [Release-gate issue](https://github.com/HamedSanaei/openvpn-go/issues/3)
+
+~~~text
+openvpn-go approve security COMMIT_SHA MANIFEST_SHA256
+openvpn-go approve provenance COMMIT_SHA MANIFEST_SHA256
+~~~
+
+After both sign-offs, target the reviewed commit with the
+`v0.1.0-beta` tag and dispatch with publication enabled. The publication
+job checks the environment, reviewer identities, commit and manifest
+against the rebuilt archives before creating the prerelease. The release
+includes the SBOM, SHA-256 manifest and `RELEASE_APPROVALS.json` with the
+two linked decisions.
+[Approval verifier](../tools/release_approvals.py)
 
 ## Upgrades and scope
 
