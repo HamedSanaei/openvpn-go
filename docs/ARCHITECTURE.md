@@ -96,17 +96,55 @@ flowchart TD
 9. On recoverable failure, close the failed transport and try the next endpoint under the configured policy.
 10. On cancellation or Close, stop timers, unblock I/O and release all resources.
 
-## API shape (not frozen)
+## M1 public API
 
-The public API is expected to expose:
-- Config and validated Profile types.
-- Client construction and Connect/Close lifecycle.
-- packet read/write methods or a Run method bound to a PacketTunnel.
-- context-aware cancellation.
-- ActiveEndpoint, State and Stats snapshots.
-- typed errors that distinguish retryable network failures from terminal authentication and certificate failures.
+| Entry point | Contract |
+|---|---|
+| `client.New(Config)` | Validate and copy the endpoints, apply packet and timeout defaults, and prepare an idle client without network I/O. |
+| `Client.Connect(ctx)` | Dial the first configured endpoint with a separate dial deadline, then pass the owned transport to the internal handshake with its own deadline. On success the authenticated session owns that transport. A failed attempt closes the transport and permits another call. |
+| `Client.State()`, `Client.ActiveEndpoint()` and `Client.ControlInfo()` | Concurrent-safe snapshots. Only an authenticated session publishes the active endpoint and its negotiated settings. |
+| `Client.Run(ctx, tunnel.PacketConn)` | Start one bidirectional forwarding run on an authenticated session. Two bounded packet buffers support one worker per direction. Join both workers on exit and release the session. The embedding application owns its tunnel and may reuse it after the call. |
+| `Client.Close()` | Cancel in-flight dial, handshake and forwarding, release the owned session, join operations and permanently close the client. Concurrent Close calls share one result. |
+| `client.Error` | Return a redacted operation and error code. Use `errors.As` to inspect the code and `errors.Is` for canceled, timed-out or closed operations. |
+| `transport.SocketDialer` | Provide native UDP datagrams or TCP length-framed packets. Both use a 16 KiB default limit. An oversized TCP input closes the stream. UDP drops the offending datagram and preserves the next boundary. |
 
-Do not freeze signatures until M1 API review and an Xray integration spike.
+Callers may inject a cancellable `transport.Dialer`. The transport and
+tunnel ports permit concurrent reading and writing, retain no caller buffer,
+and discard a packet when the destination is too short. Cancellation before
+any TCP frame bytes are read or written leaves the stream usable. An
+interrupted partial frame closes it.
+
+## M2 control session
+
+The reliable control driver validates a server reset before exposing ordered
+bytes to TLS. It keeps ACK, retransmit and wrapper replay state separate and
+bounds all retained messages. The optional outer protection covers the reset
+and the later TLS records. With tls-crypt-v2, only an authenticated initial
+server response can request an additional copy of the opaque wrapped key.
+
+The control exchange progresses through reset, verified TLS, key method 2
+and a complete authenticated `PUSH_REPLY`. The server selects an approved
+cipher and peer ID and enables the TLS exporter. The session owns the
+transport and its control workers.
+[Protocol baseline](PROTOCOL_BASELINE.md) · [M2 evidence](MILESTONES.md#m2--control-channel-and-tls)
+
+## M3 data session
+
+`Connect` derives directional AEAD keys from the control TLS exporter.
+The packet multiplexer dispatches `P_DATA_V2` and control records from one
+transport reader. `Run` delivers authenticated IP packets to the tunnel,
+with separate replay state for each data generation. It consumes encrypted
+keepalives inside the session. The embedding application configures the
+tunnel interface and routes.
+
+A soft reset negotiates a verified TLS replacement. The previous control
+stream stops when the replacement starts. The session sends with the current
+data key until the replacement completes its reliable control flight, then
+publishes the new key and retains the prior receive key for up to 30 seconds.
+The key ID sequence advances from 0 through 7 and wraps to 1. Key use is
+bounded before packet-ID exhaustion. M4 adds profile parsing and M5 adds
+endpoint selection.
+[Data channel](../internal/data/channel.go) · [Rekey lifecycle](../internal/session/rekey.go)
 
 ## Design constraints
 

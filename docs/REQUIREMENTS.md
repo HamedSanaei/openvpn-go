@@ -2,6 +2,10 @@
 
 Requirement keywords MUST, MUST NOT, SHOULD and MAY are normative for this project. Every MUST requirement needs at least one automated test or an explicitly documented manual acceptance test.
 
+The approved client scope and exact initial OpenVPN release are recorded in
+the [M0 decision](adr/0006-m0-governance-and-scope.md) and
+[compatibility matrix](COMPATIBILITY_MATRIX.md).
+
 ## Functional requirements
 
 | ID | Requirement | Initial priority |
@@ -13,10 +17,10 @@ Requirement keywords MUST, MUST NOT, SHOULD and MAY are normative for this proje
 | FR-005 | Establish and maintain the TLS control channel. | MUST |
 | FR-006 | Validate certificate chain and server identity by default; support explicit name override and verify-x509-name policy. | MUST |
 | FR-007 | Support client certificate/private-key authentication. | MUST |
-| FR-008 | Support username/password authentication when configured. | MUST |
-| FR-009 | Support tls-auth, tls-crypt and tls-crypt-v2 modes. | MUST for v1.0; stage by milestone |
+| FR-008 | Support username/password authentication alongside client certificates when configured. | MUST |
+| FR-009 | Support tls-auth, tls-crypt and tls-crypt-v2 in the declared compatibility matrix. | MUST, staged by milestone |
 | FR-010 | Implement control-channel ACK, retransmission, packet IDs and replay protection. | MUST |
-| FR-011 | Negotiate and implement supported AEAD data ciphers (initial candidates: AES-GCM and ChaCha20-Poly1305). | MUST |
+| FR-011 | Negotiate and implement the declared AES-128-GCM, AES-256-GCM and ChaCha20-Poly1305 data ciphers. | MUST |
 | FR-012 | Implement protocol-correct data packet IDs, replay defense and key generation selection. | MUST |
 | FR-013 | Implement key derivation and rekey/renegotiation for the declared compatibility matrix. | MUST |
 | FR-014 | Parse OVPN profiles, including inline and external CA/cert/key/auth material. | MUST |
@@ -66,8 +70,14 @@ Requirement keywords MUST, MUST NOT, SHOULD and MAY are normative for this proje
 - Scripts, plugins and arbitrary external command execution from profiles.
 - Route/DNS mutation and privileged OS configuration.
 - Management interface emulation.
+- Password-only deployments and interactive deferred authentication or SSO.
+- Extensions excluded by the initial compatibility matrix.
 - Full parity with every OpenVPN directive.
 
 ## Traceability rule
 
-Every implementation task must reference one or more requirement IDs. Every MUST requirement must map to tests in docs/TEST_STRATEGY.md before release.
+Every implementation task must reference one or more requirement IDs. The
+[test strategy](TEST_STRATEGY.md) maps every requirement to an acceptance
+criterion and a milestone. The [task mapping](TASKS.md#requirement-mapping)
+links the engineering work to those criteria. Each MUST requires passing
+evidence before its stated delivery gate.

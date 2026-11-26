@@ -2,11 +2,10 @@
 
 This is the working entry point for the new independent OpenVPN client library.
 
-**Status:** scaffold and planning documents created; no protocol implementation yet.  
-**Local path:** C:\Users\Hamed\Documents\openvpn-go  
-**Proposed module:** github.com/hamedsanaei/openvpn-go (provisional)  
-**License:** MIT (selected; see LICENSE and docs/LICENSE_RESEARCH.md).  
-**SPDX-License-Identifier:** MIT
+- **Status** · M3 complete. M4 is the next implementation milestone.
+- **Module** · `github.com/hamedsanaei/openvpn-go`
+- **License** · [MIT](LICENSE)
+- **SPDX-License-Identifier** · MIT
 
 ## Read in this order
 
@@ -22,13 +21,15 @@ This is the working entry point for the new independent OpenVPN client library.
 10. docs/LICENSE_RESEARCH.md — license comparison and accepted MIT decision.
 11. docs/PROVENANCE.md — source/dependency/test-fixture ledger.
 
-## First milestone
+## M0 handoff
 
-Start with M0 only. Before implementation:
-- confirm the copyright holder details for public release;
-- resolve whether formal clean-room separation is required;
-- approve protocol compatibility targets;
-- review requirements and acceptance tests;
-- install and pin the Go toolchain and verify CI.
-
-The existing legacy repository at Documents\go-openvpn remains untouched by this new scaffold and must not be used as a source for implementation code.
+The owner approved the scope, MIT patent policy and independent development
+process. The initial reference peer is OpenVPN Community 2.6.23. The
+specification and acceptance plans are in [docs/PROTOCOL_BASELINE.md](docs/PROTOCOL_BASELINE.md)
+and [docs/TEST_STRATEGY.md](docs/TEST_STRATEGY.md). The
+[M0 gate](docs/MILESTONES.md#m0--governance-requirements-and-protocol-specification)
+records the engineering evidence and the source reference is frozen in the
+[provenance ledger](docs/PROVENANCE.md). The [M1 exit checks](docs/MILESTONES.md#m1--foundation-and-public-api) record
+the implemented foundation. The [M2 exit checks](docs/MILESTONES.md#m2--control-channel-and-tls) record
+control interoperability. The [M3 exit checks](docs/MILESTONES.md#m3--data-channel-and-cryptography) record
+tunnel traffic and rekey. Continue with [M4](docs/TASKS.md#m4--profile-parser).

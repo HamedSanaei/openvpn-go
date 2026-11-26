@@ -2,7 +2,7 @@
 
 ## Project status
 
-This repository is a design scaffold. It is not yet a functional VPN client and must not be used for production or sensitive traffic.
+M3 delivers the verified TLS control handshake and protected tunnel data path. Independent security review and release hardening are scheduled for M6.
 
 ## Reporting a vulnerability
 

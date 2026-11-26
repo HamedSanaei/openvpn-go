@@ -19,6 +19,6 @@ lint:
 fuzz-smoke:
 	@echo "Fuzz targets are scheduled for M6; none are implemented yet."
 
-# Placeholder until the disposable OpenVPN server harness is implemented.
 interop:
-	@echo "Interoperability harness is scheduled for M2/M6; none is implemented yet."
+	@test -n "$$OPENVPN_INTEROP_BIN" || { echo "Set OPENVPN_INTEROP_BIN to the pinned OpenVPN 2.6.23 test binary."; exit 1; }
+	go test -v -count=1 ./tests/interop

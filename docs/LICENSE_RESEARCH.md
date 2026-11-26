@@ -43,6 +43,7 @@ The new implementation must contain independently authored code and dependencies
 - [x] MIT license text added as LICENSE.
 - [x] README identifies MIT and links to LICENSE.
 - [x] License decision ADR updated.
+- [x] Owner confirmed the standard MIT terms without a separate project patent grant for M0.
 - [ ] Verify all initial contributors' rights and provenance before public release.
 - [ ] Review dependency and generated-code licenses before adding dependencies.
 - [ ] Add license scanning and SPDX/SBOM generation to release CI.

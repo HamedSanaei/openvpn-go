@@ -1,6 +1,6 @@
-// Package client will expose the high-level OpenVPN client lifecycle.
+// Package client defines the OpenVPN client configuration and lifecycle.
 //
-// The public API is intentionally not frozen in the initial scaffold. It will
-// be finalized after the packet transport, tunnel and session ownership
-// contracts are reviewed in M1.
+// Connect verifies the server identity and establishes the OpenVPN TLS
+// control channel and derives data keys. ControlInfo exposes the
+// authenticated negotiation. Run forwards IP packets to a caller-owned tunnel.
 package client

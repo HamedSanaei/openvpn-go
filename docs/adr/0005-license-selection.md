@@ -20,6 +20,11 @@ Use the **MIT License** for project-owned code, subject to source-provenance and
 - Requires retention of the copyright and permission notice in copies or substantial portions of the Software.
 - Has no express patent grant; this is an accepted trade-off for this project.
 
+The owner confirmed the MIT patent policy as part of M0 on 2026-11-26. The
+project uses the standard MIT text and adds no separate project patent grant.
+Any later change to licensing or patent terms requires a new owner decision
+and review of the rights to the affected contributions.
+
 Apache-2.0 was considered because it includes an express contributor patent grant, but its additional notice and redistribution conditions were not selected for this adoption-focused project. 0BSD and MIT-0 were also considered, but MIT's familiarity and clear attribution convention were preferred.
 
 ## Consequences
