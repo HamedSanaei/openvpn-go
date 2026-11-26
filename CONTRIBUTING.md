@@ -29,6 +29,4 @@ This project is being developed as an independent implementation from public pro
 
 ## Contribution certification
 
-The project plans to use the Developer Certificate of Origin (DCO) sign-off model. Once enabled, contributors must use git commit --signoff and certify that they have the right to submit the work under the project license selected by the owner.
-
-The final license and contribution policy must be approved before accepting external code contributions.
+External contributors must sign off each commit with `git commit --signoff` under the project's MIT contribution policy. Maintainers verify the sign-off and the provenance disclosure during review. The sign-off represents the contributor's certification that they have the right to submit the contribution. [Developer Certificate of Origin 1.1](https://developercertificate.org/)

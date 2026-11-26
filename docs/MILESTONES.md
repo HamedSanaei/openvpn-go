@@ -3,44 +3,41 @@
 Estimates are for one experienced Go engineer after the scope and clean-room process are approved. They are planning ranges, not delivery promises. Protocol research or interoperability surprises can extend them.
 
 ## M0 — Governance, requirements and protocol specification
-**Estimate:** 2–4 working days  
-**Deliverable:** approved scope, requirement IDs, threat model, license decision, provenance process and protocol design notes.
+**Status:** Complete on 2026-11-26.
 
-Exit gate:
-- [ ] Owner approves product scope and license.
-- [ ] Formal clean-room requirement is decided and contributor separation is resolved.
-- [ ] Every MUST requirement has an acceptance test plan.
-- [ ] Supported OpenVPN versions and profile modes are declared.
+- [x] Owner approved product scope, MIT license and patent policy. [Decision record](adr/0006-m0-governance-and-scope.md)
+- [x] Owner resolved formal clean-room separation and contributor requirements. [Source separation](CLEAN_ROOM.md)
+- [x] Every requirement, including all MUST requirements, has a planned acceptance test or review and a milestone. [Acceptance criteria](TEST_STRATEGY.md) · [Task mapping](TASKS.md#requirement-mapping)
+- [x] The OpenVPN reference version and modes are declared. Packet layouts, state transitions, threat controls and provenance have been specified. [Compatibility matrix](COMPATIBILITY_MATRIX.md) · [Protocol baseline](PROTOCOL_BASELINE.md) · [Security model](SECURITY_MODEL.md) · [Provenance ledger](PROVENANCE.md)
+- [x] Go 1.26.11 pinned. Formatting, `go test ./...` and `go vet ./...` passed on Windows amd64 and Linux amd64. `go test -race ./...` passed on Linux amd64. The scaffold has no Go test files. Actionlint 1.7.11 passed on the revised workflow. The hosted CI run verifies the original scaffold revision. The M0 Go steps ran locally with the new pin. [Module](../go.mod) · [Workflow](../.github/workflows/ci.yml) · [Scaffold CI run](https://github.com/HamedSanaei/openvpn-go/actions/runs/45817778587)
 
 ## M1 — Foundation and public API
-**Estimate:** 3–5 working days  
-**Deliverable:** compilable Go module, public Config/Client/Transport/Tunnel contracts, typed errors, lifecycle model, CI and deterministic testkit.
+**Status:** Complete on 2026-11-26.
 
-Exit gate:
-- [ ] API review complete.
-- [ ] UDP packet transport and TCP framing unit tests pass.
-- [ ] Cancellation and Close tests prove no goroutine leaks.
-- [ ] go test, race, vet and formatting pass.
+- [x] API review covers configuration, redacted errors, endpoint identity and ownership of the transport, session and tunnel. An external-package test exercises the public entry point. [API contract](ARCHITECTURE.md#m1-public-api) · [Public API test](../client/public_test.go)
+- [x] UDP loopback and TCP framing tests pass on Windows amd64 and Linux amd64. Scenarios include truncated and oversized frames, short buffers, partial I/O and socket closure. [Transport tests](../transport/transport_test.go) · [TCP tests](../transport/tcp_test.go)
+- [x] Deterministic cancellation and concurrent Close tests pass. Close waits for pending dials and forwarding workers, and tests verify that owned resources close once. [Lifecycle tests](../client/client_test.go)
+- [x] Formatting, `go test ./...`, `go test -race ./...`, `go vet ./...` and a cgo-free build pass with the pinned Go version. The full check set ran locally on Linux amd64 and the workflow passed Actionlint. The updated workflow will run on a pull request. [CI workflow](../.github/workflows/ci.yml)
+- [x] GitHub main requires a pull request and the Go CI check. Force pushes and deletion are disabled. [Branch protection](https://github.com/HamedSanaei/openvpn-go/settings/branches)
 
 ## M2 — Control channel and TLS
-**Estimate:** 1–2 weeks  
-**Deliverable:** packet codec, control state machine, TLS handshake, peer identity validation, auth sequence and control reliability.
+**Status:** Complete on 2026-11-26.
 
-Exit gate:
-- [ ] Control handshake works against pinned test server.
-- [ ] Certificate chain/name failures are terminal and tested.
-- [ ] ACK/retransmit/replay tests pass under loss and reordering.
-- [ ] tls-auth and tls-crypt interop passes.
+- [x] The authenticated control handshake passes against OpenVPN Community 2.6.23 on UDP and TCP. All 20 baseline modes and a focused TLS 1.3 case pass. [Compatibility evidence](COMPATIBILITY_MATRIX.md#evidence-records)
+- [x] Certificate chain and server-name failures are terminal. Unit tests also reject expired and not-yet-valid certificates. A wrong password returns a redacted authentication failure. [TLS tests](../internal/tlscontrol/handshake_test.go) · [Interop suite](../tests/interop/control_test.go)
+- [x] ACK, retransmission, replay and ordered delivery tests pass. The pinned server tests also pass after a deliberately dropped reset and reordered control packets. [Reliability tests](../internal/control/reliable_test.go)
+- [x] tls-auth, tls-crypt and tls-crypt-v2 pass on both transports with client certificate and certificate-plus-password authentication. The v2 suite includes a forced cookie exchange and a wire fixture for the no-cookie path. [Compatibility matrix](COMPATIBILITY_MATRIX.md) · [v2 fixtures](../internal/control/reliable_test.go)
+
+The verified TLS control session supplies the negotiated parameters and
+exporter material consumed by M3.
 
 ## M3 — Data channel and cryptography
-**Estimate:** 1–2 weeks  
-**Deliverable:** key derivation, AEAD data packet formats, replay protection, key IDs and rekey.
+**Status:** Complete on 2026-11-26.
 
-Exit gate:
-- [ ] Independent vectors validate derivation and nonce construction.
-- [ ] AEAD tampering/replay tests pass.
-- [ ] Bidirectional data packets pass against the compatibility matrix.
-- [ ] Rekey overlap and key-ID rollover are tested.
+- [x] Go and OpenSSL return the same 256 exporter bytes in TLS 1.2 and 1.3. Independent nonce and DATA_V2 vectors match in both directions for every supported cipher. [Exporter test](../tests/interop/exporter_test.go) · [Vector tests](../internal/data/channel_test.go)
+- [x] AEAD tampering, truncation, invalid IDs, replay and packet-usage tests pass. Only authenticated keepalives and valid IP packets refresh liveness. [Data tests](../internal/data/channel_test.go) · [Liveness test](../internal/session/session_test.go)
+- [x] Bidirectional UDP traffic through the tunnel passes all 120 IPv4 scenarios with OpenVPN 2.6.23. The suite also covers IPv6 over IPv6 transport. [Compatibility evidence](COMPATIBILITY_MATRIX.md#evidence-records)
+- [x] Both endpoints initiate rekey successfully. Live traffic passes after rollover from key ID 7 to 1. Deterministic tests cover overlap, old-key expiry and rejection of a prior generation using a reused ID. [Rekey tests](../tests/interop/data_test.go) · [Generation tests](../internal/data/channel_test.go)
 
 ## M4 — Profile parser and configuration
 **Estimate:** 4–7 working days  

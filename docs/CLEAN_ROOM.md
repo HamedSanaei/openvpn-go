@@ -2,7 +2,7 @@
 
 ## Status and limitation
 
-This repository is a new scaffold with no protocol implementation code. The intended implementation source is public OpenVPN protocol documentation and independently authored requirements.
+On 2026-11-26 the owner chose a spec-driven independent implementation and resolved that formal clean-room separation is optional for this project. No isolated implementation appointment is required under this decision. The implementation sources are public protocol specifications and manuals, independently authored requirements and permitted test evidence. [The M0 decision record](adr/0006-m0-governance-and-scope.md) records the scope of this approval.
 
 **Important limitation:** previous work in this ChatGPT conversation inspected and modified files in the legacy go-openvpn repository. Therefore this same already-exposed assistant/contributor cannot truthfully certify a formal legal clean-room separation. A spec-driven independent rewrite can still be developed, but a formal clean-room claim requires a separate implementation contributor who has not accessed the legacy source or its derived patches.
 
@@ -16,7 +16,7 @@ Preferred model when formal clean-room status is required:
 2. Implementation team: receives only the approved requirements, public protocol references, test vectors generated independently and API contracts. It must not access the legacy repository, its source files, tests, diffs, patches or implementation-specific design notes.
 3. Review team: checks provenance, dependency licenses, generated files and test fixtures before release.
 
-If the project is developed by one person, describe it as an independent/spec-driven rewrite and do not make a formal clean-room legal claim.
+Describe the project as a spec-driven independent implementation. If a formal separation requirement is introduced later, record a new owner decision and appoint an isolated implementation contributor before the work governed by that requirement.
 
 ## Prohibited inputs
 
@@ -30,6 +30,7 @@ If the project is developed by one person, describe it as an independent/spec-dr
 ## Permitted inputs, subject to citation and review
 
 - Public OpenVPN wire-protocol documentation and official manuals.
+- Public upstream release material and official tagged definitions for corroborating version-specific wire facts. Use independently written design, code and fixtures.
 - Public standards and RFCs relevant to TLS, X.509, AEAD and network protocols.
 - Independently generated test certificates and packet fixtures.
 - Black-box interoperability results from a properly licensed OpenVPN installation.
@@ -48,7 +49,7 @@ If the project is developed by one person, describe it as an independent/spec-dr
 
 ## Contributor workflow
 
-- Require DCO sign-off or an approved CLA before external contributions.
+- Require Developer Certificate of Origin (DCO) sign-off on external contributions as described in [CONTRIBUTING.md](../CONTRIBUTING.md).
 - Require a provenance statement for copied/adapted snippets or generated artifacts.
 - Reject contributions with unclear origin.
 - Record protocol decisions in docs/adr/.

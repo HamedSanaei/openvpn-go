@@ -1,39 +1,95 @@
 # Provenance ledger
 
-This ledger records the origin of implementation inputs. Update it for every new dependency, generated file, protocol fixture or externally sourced code fragment.
+Record the origin, version, allowed use and maintainer review for every
+external input used to build, specify or test the project. Retain source
+references beside the affected requirement or behavior.
 
-## Initial scaffold
-
-| Item | Origin | License/status | Notes |
+| Item | Origin and version | License or use | Evidence |
 |---|---|---|---|
-| Project plan and requirements | Independently authored for this project | MIT selected | Based on user requirements and public protocol references |
-| Architecture and package skeleton | Independently designed | MIT selected | No protocol implementation copied |
-| Protocol baseline | Public OpenVPN documentation | Reference material; not copied as source code | URLs recorded in PROTOCOL_BASELINE.md |
-| Go module and CI scaffold | Independently authored | MIT selected | No third-party source code included |
+| Initial scaffold and project documents | Project-authored at commit `5b4dafc1a80198e6dca4f5eee57834ee19a4de7a` | MIT | Initial Git commit and [LICENSE](../LICENSE) |
+| M0 specifications and policy | Independently authored for this project, 2026-11-26 | MIT | [M0 decision](adr/0006-m0-governance-and-scope.md) and [baseline](PROTOCOL_BASELINE.md) |
+| Protocol references | OpenVPN's public wire draft, 2.6 manual and official generated protocol documentation | Technical references for wire facts | [Wire draft](https://openvpn.github.io/openvpn-rfc/openvpn-wire-protocol.html) · [Manual](https://openvpn.net/community-docs/community-articles/openvpn-2-6-manual/) · [Protocol documentation](https://build.openvpn.net/doxygen/network_protocol.html) |
+| OpenVPN 2.6.23 | Official tag `v2.6.23`, commit `49620843c487a7fee58e3030b7c88681c115e24e` | External reference peer. Tagged materials corroborate protocol facts where the draft is incomplete. | [Exact release](https://github.com/OpenVPN/openvpn/releases/tag/v2.6.23) · [Compatibility matrix](COMPATIBILITY_MATRIX.md) |
+| TLS and exporter standards | RFC 5705 and RFC 8446 | Specifications for protocol behavior | [RFC 5705](https://www.rfc-editor.org/info/rfc5705) · [RFC 8446](https://www.rfc-editor.org/info/rfc8446) |
+| Go and standard library | Official Go 1.26.11, Windows and Linux amd64 archives verified against published SHA-256 values | BSD-3-Clause for the Go project. Review the toolchain's bundled notices when distributing artifacts. | [Go downloads](https://go.dev/dl/) · [Go license](https://go.dev/LICENSE) |
+| GitHub Actions | Existing `actions/checkout@v4` and `actions/setup-go@v5` references | MIT, CI tooling | [checkout v4 license](https://github.com/actions/checkout/blob/v4/LICENSE) · [setup-go v5 license](https://github.com/actions/setup-go/blob/v5/LICENSE) |
+| actionlint | `github.com/rhysd/actionlint` v1.7.11 | MIT, local M0 workflow validation tool | [Release](https://github.com/rhysd/actionlint/releases/tag/v1.7.11) · [License](https://github.com/rhysd/actionlint/blob/v1.7.11/LICENSE.txt) |
 
-## Legacy repository boundary
+Protocol citations identify interoperable behavior. Keep upstream code,
+expressive text, and tests out of project code and fixtures unless a
+separate compatibility and rights review explicitly authorizes reuse.
 
-- Legacy repository: https://github.com/n0madic/go-openvpn
-- Legacy license observed in prior review: MPL-2.0.
-- No source files, tests, comments, documentation or commits from that repository are included in this scaffold.
-- Previous ChatGPT work has inspected and modified the legacy source. This is disclosed in CLEAN_ROOM.md; formal clean-room status is not claimed.
-- The MIT license in this repository does not relicense the legacy repository or authorize copying its code.
+## Frozen legacy reference
 
-## Dependency inventory
+| Field | Value |
+|---|---|
+| Repository | `https://github.com/n0madic/go-openvpn.git` |
+| Pinned public revision | `392ad88d39d9a2feebf9c828aa3eb0e79468c967` |
+| Observation | Public upstream `master` HEAD, recorded on 2026-11-26 using `git ls-remote --symref` |
+| License recorded in the initial review | MPL-2.0 |
+| Disposition | Separate historical reference, excluded from specification and implementation inputs |
 
-No third-party Go dependencies have been added to go.mod at scaffold stage.
+The original plan named a local legacy checkout at `Documents/go-openvpn`.
+That directory was absent from the M0 workspace host. The pin identifies
+public upstream and makes no claim about private legacy work. No legacy
+source, tests, comments, fixtures or Git objects were imported. The
+configured Git remote resolves to this project's own GitHub repository.
+Keep the histories and workspaces separate and retain the prior-exposure
+disclosure. [Source separation rules](CLEAN_ROOM.md)
 
-For each future dependency, record:
-- module path and pinned version;
-- purpose and whether it is direct or transitive;
-- SPDX license identifier and source URL;
-- maintenance/security review date;
-- whether it introduces cgo, native binaries or platform constraints.
+## Dependency policy
+
+M3 adds ChaCha20-Poly1305 through the maintained Go cryptography module,
+because the public standard library does not expose that AEAD. The two
+selected versions below were reviewed on 2026-11-26 and require no cgo.
+`go mod verify` and Govulncheck 1.10.0 passed for this change.
+
+| Module | Version | SPDX license | Scope |
+|---|---|---|---|
+| `golang.org/x/crypto` | v0.59.0 | BSD-3-Clause | Direct, ChaCha20-Poly1305 AEAD. [Upstream license](https://github.com/golang/crypto/blob/v0.59.0/LICENSE) |
+| `golang.org/x/sys` | v0.50.0 | BSD-3-Clause | Transitive, CPU capability detection through `x/sys/cpu`. [Upstream license](https://github.com/golang/sys/blob/v0.50.0/LICENSE) |
+
+Review every direct addition and the transitive modules it introduces
+before merging.
+
+1. Prefer the standard library. State the requirement and why an external
+   module is needed. Record the module path, exact selected version, upstream
+   source, SPDX license, direct or transitive status, intended use, and any
+   native or platform constraints.
+2. Review maintenance activity, published vulnerabilities, transitive
+   licenses and release authenticity. Record the review date and decision.
+   Review updates by the same process and keep the selected versions and
+   checksums in `go.mod`/`go.sum`. Record equivalent pins for generated tools
+   and release images. A tool without a Go module receives its own ledger row.
+3. Inspect resulting dependencies and notices during the change. Run
+   `go mod verify` when dependencies are present and retain vulnerability
+   scans and the SPDX SBOM at release. Revisit the pins when a relevant
+   security fix is published.
+4. Contributions containing generated output or third-party fragments
+   record the generator/source version, input origin, license and rights
+   review. Maintainers verify DCO sign-off on external commits. [Contribution process](../CONTRIBUTING.md)
 
 ## Test fixture inventory
 
-No production profile, credential, certificate or traffic capture is included. Test keys/certificates must be generated specifically for this repository and listed here.
+M2 generates synthetic CA and client/server certificates in
+`internal/testkit/pki.go`. The interop suite uses the pinned OpenVPN CLI to
+generate temporary static and wrapped client keys, including test-only
+metadata, and creates its own test usernames and passwords. The SHA-256 of
+the verified OpenVPN 2.6.23 source archive used for M2 was
+`4041c709162bec1325abf5aa8cf27a255cc477c634b15ee310411c701fc40a96`.
+[Fixture generator](../internal/testkit/pki.go) · [Interop test suite](../tests/interop/control_test.go) · [OpenVPN signature instructions](https://openvpn.net/community-docs/sig/)
 
-## Update rule
+M3's vector generator uses Python standard-library HMAC and hashing for
+RFC 5705 and RFC 8446 test exports, and Python Cryptography 41.0.7 for AEAD.
+All secrets and payloads in the fixture are synthetic. Regenerate the MIT
+fixture with `python3 internal/data/testdata/generate_vectors.py`.
+[Generator](../internal/data/testdata/generate_vectors.py) · [Vectors](../internal/data/testdata/vectors.json)
 
-A pull request that adds external code, generated code, a fixture or a dependency must update this file and pass the license/provenance review.
+For each new fixture, record
+the path, origin, generator and revision, synthetic inputs, intended
+scenario, reproduction command and license or reuse terms. Use generated
+keys, certificates and credentials, isolated test addresses and sanitized
+traces. Keep ephemeral private material out of Git and clean it up after
+the run. Independently generate crypto vectors and record how to reproduce
+them without using the client's implementation as the oracle.
+[Test strategy](TEST_STRATEGY.md)

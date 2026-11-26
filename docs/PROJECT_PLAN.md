@@ -1,12 +1,12 @@
 # Product plan: OpenVPN Go
 
-**Project status:** planning and scaffold  
-**Working name:** OpenVPN Go  
-**Proposed module:** github.com/hamedsanaei/openvpn-go (provisional)  
-**Target:** an independently implemented, modular OpenVPN client library in Go  
-**Primary integration:** a future 3x-ui/Xray outbound adapter  
-**License:** MIT (selected; see LICENSE and docs/LICENSE_RESEARCH.md)  
-**Release target:** v0.1.0-beta only after interoperability and security gates pass
+- **Project status** · M3 complete
+- **Project name** · OpenVPN Go
+- **Module** · `github.com/hamedsanaei/openvpn-go`
+- **Target** · An independently implemented, modular OpenVPN client library in Go
+- **Primary integration** · A future 3x-ui/Xray outbound adapter
+- **License** · [MIT](../LICENSE)
+- **Release target** · v0.1.0-beta after interoperability and security gates pass
 
 ## 1. Product vision
 
@@ -18,7 +18,11 @@ The first product is a client engine, not a server and not a complete VPN deskto
 
 The legacy repository is MPL-2.0. This project is intended to have its own identity and a permissive license. Therefore the new implementation must not copy, translate, mechanically port or adapt implementation code, tests, comments, fixtures or documentation from that repository.
 
-The protocol behavior will be specified from public OpenVPN documentation and standards, then independently implemented and tested against real OpenVPN servers. See CLEAN_ROOM.md for an important limitation: previous work in this ChatGPT context has inspected and modified the legacy source, so formal legal clean-room separation cannot be claimed for implementation by that same already-exposed contributor. A separate implementation contributor with no access to the legacy source is required if formal clean-room separation is a hard legal requirement.
+The protocol baseline uses public OpenVPN documentation and standards.
+The owner approved spec-driven independent development. Maintain the
+separation and prior-exposure disclosure and validate the implementation
+against the approved reference server.
+[Source separation](CLEAN_ROOM.md) · [M0 decision](adr/0006-m0-governance-and-scope.md)
 
 ## 3. Product goals
 
@@ -91,7 +95,7 @@ The 3x-ui/Xray adapter lives outside the core package graph.
 - Compression and weak legacy ciphers are not enabled.
 - Packet sizes, parser depth, queues, retries and buffers are bounded.
 - All replay windows and packet counters are tested at boundaries and rollover.
-- OpenVPN's published wire-protocol document is treated as a technical reference, not the sole conformance authority; it is marked work-in-progress. Validate behavior against official OpenVPN releases and the official manual.
+- The compatibility matrix pins OpenVPN Community 2.6.23. The protocol baseline uses OpenVPN's draft, the official manual and version-specific corroboration. Validate behavior against the pinned release. [Compatibility matrix](COMPATIBILITY_MATRIX.md) · [Protocol baseline](PROTOCOL_BASELINE.md)
 
 ## 8. Definition of done for a release
 
@@ -113,12 +117,12 @@ A release cannot be called production-ready until:
 - Architecture decisions are recorded in docs/adr/.
 - Every feature has tests and a traceability link to a requirement.
 - Every external dependency has a license and maintenance review.
-- No remote GitHub repository is created until the owner confirms the project name and the provenance review is ready.
+- The confirmed GitHub origin is `HamedSanaei/openvpn-go`. The legacy reference is frozen in the provenance ledger and stays outside this repository.
 
-## 10. Immediate next steps
+## 10. M4 entry
 
-1. Verify the MIT copyright holder details before public release.
-2. Confirm whether formal clean-room separation is required. If yes, appoint an implementation contributor who has not accessed the legacy source.
-3. Install and pin the Go toolchain; the current development host did not have a Go executable in PATH during scaffold creation.
-4. Review the protocol requirements and compatibility targets.
-5. Start M0 and do not implement protocol code before the protocol baseline and threat model are approved.
+The Go client authenticates the OpenVPN control session, derives keys and
+exchanges IP traffic with the pinned peer. M4 converts OVPN profiles to the
+public configuration and validates directives and file references. Copyright
+ownership and contributor rights are reviewed before publishing a release.
+[Delivery gates](MILESTONES.md) · [Engineering work](TASKS.md)
