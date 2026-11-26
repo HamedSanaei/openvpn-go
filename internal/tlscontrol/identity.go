@@ -7,6 +7,7 @@ import (
 	"encoding/asn1"
 	"slices"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -34,9 +35,13 @@ func ValidNamePolicy(mode, value string) bool {
 // PeerConfig binds verification to an endpoint. Exact X.509 identities
 // replace Go's SAN check and explicitly perform the complete chain check.
 func PeerConfig(base *tls.Config, serverName, mode, value string, requireUsage bool) *tls.Config {
+	return PeerConfigWithTrust(base, serverName, mode, value, requireUsage, ServerTrust{})
+}
+
+func PeerConfigWithTrust(base *tls.Config, serverName, mode, value string, requireUsage bool, trust ServerTrust) *tls.Config {
 	cfg := base.Clone()
 	cfg.ServerName = serverName
-	if mode == "" && !requireUsage {
+	if mode == "" && !requireUsage && len(trust.pins) == 0 && len(trust.crls) == 0 {
 		return cfg
 	}
 	exact := mode == "name" || mode == "subject"
@@ -47,24 +52,27 @@ func PeerConfig(base *tls.Config, serverName, mode, value string, requireUsage b
 			return ErrCertificate
 		}
 		leaf := state.PeerCertificates[0]
+		chains, now := state.VerifiedChains, time.Now()
+		if base.Time != nil {
+			now = base.Time()
+		}
 		if exact {
 			intermediates := x509.NewCertPool()
 			for _, cert := range state.PeerCertificates[1:] {
 				intermediates.AddCert(cert)
 			}
 			opts := x509.VerifyOptions{Roots: base.RootCAs, Intermediates: intermediates,
-				KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
-			if base.Time != nil {
-				opts.CurrentTime = base.Time()
-			}
-			if _, err := leaf.Verify(opts); err != nil {
+				KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, CurrentTime: now}
+			var err error
+			chains, err = leaf.Verify(opts)
+			if err != nil {
 				return ErrCertificate
 			}
 		}
 		if requireUsage && !serverUsage(leaf) {
 			return ErrCertificate
 		}
-		if !matchName(leaf, mode, value, subject) {
+		if !matchName(leaf, mode, value, subject) || !trust.verify(leaf, chains, now) {
 			return ErrCertificate
 		}
 		return nil

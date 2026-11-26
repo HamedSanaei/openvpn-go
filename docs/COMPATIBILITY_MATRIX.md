@@ -29,8 +29,9 @@ digests and symmetric key-direction mode with focused cases. For the two
 non-cookie path with an independent wire fixture if the 2.6.23 server still
 chooses a cookie under `allow-noncookie`.
 
-The 2.6.23 baseline excludes MFA/SSO and deferred interactive auth,
-static-key mode, key method 1, legacy PRF fallback, compression, legacy data
+The 120-case matrix covers the listed certificate and password modes.
+Focused authentication tests cover pending text challenges and token expiry.
+The matrix excludes static-key mode, key method 1, legacy PRF fallback, compression, legacy data
 ciphers, TAP, DCO, address floating, dynamic control wrapping, epoch data
 formats, and Access Server or other OpenVPN releases without recorded results.
 IPv6 transport and IPv6 tunnel traffic are focused tests, independent of the
@@ -43,6 +44,11 @@ server identity. Password-only operation requires an explicit client
 policy. The DNS integration suite exercises authenticated resolver
 changes and rejects stale and pending configurations during reconnect.
 [Password-authentication tests](../tests/interop/password_test.go) · [DNS reconnect test](../tests/interop/dns_test.go)
+
+Focused OpenVPN Community tests cover rotating server pins, leaf CRLs,
+external signers, deferred text authentication, token expiry followed by
+fresh authentication, and negotiated UDP exit with server-side cleanup.
+The optional federated browser path uses a mock provider. [Session policy tests](../tests/interop/session_policy_test.go) · [Connection policies](CONNECTION_POLICIES.md)
 
 ## OpenVPN 3 Core differential reference
 
@@ -61,7 +67,7 @@ Core and OpenVPN Go use the same generated profile for each case.
 | UDP, TLS 1.3, ChaCha20-Poly1305 and tls-crypt | Matching negotiation and bidirectional UDP payload |
 | UDP, TLS 1.3, AES-256-GCM and tls-crypt-v2 with forced cookie | Matching negotiation and bidirectional UDP payload |
 | Wrong certificate name, wrong CA and wrong password | Both reject each profile with the corresponding failure category |
-| Profile `connect-retry-max` | Core connects and passes traffic. The Go profile parser rejects the directive and exposes the retry limit through the caller's `RetryPolicy`. |
+| Profile `connect-retry-max` | Both clients accept the directive, connect and pass traffic. |
 
 The report establishes the results for these generated cases. Add a case
 for each new behavior before expanding compatibility claims.

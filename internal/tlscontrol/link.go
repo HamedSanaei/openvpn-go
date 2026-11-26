@@ -2,6 +2,7 @@ package tlscontrol
 
 import (
 	"bytes"
+	"context"
 
 	"github.com/hamedsanaei/openvpn-go/internal/crypt"
 )
@@ -38,3 +39,15 @@ func (l *Link) ReadUntilClosed() error {
 }
 
 func (l *Link) Close() { l.stream.Close() }
+
+// NotifyExit sends an authenticated exit and waits for reliable delivery.
+func (l *Link) NotifyExit(ctx context.Context) error {
+	deadline, _ := ctx.Deadline()
+	if err := l.conn.SetWriteDeadline(deadline); err != nil {
+		return err
+	}
+	if _, err := l.conn.Write([]byte("EXIT\x00")); err != nil {
+		return err
+	}
+	return l.stream.Drain(ctx)
+}

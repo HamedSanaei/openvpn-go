@@ -31,9 +31,10 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 	v4 := flags.String("ipv4", "", "expected IPv4 address")
 	v6 := flags.String("ipv6", "", "expected IPv6 address and prefix")
 	attempts := flags.Int("attempts", 0, "maximum dial attempts per sequence")
+	mssMTU := flags.Int("mss-mtu", 0, "inner MTU ceiling for optional TCP MSS clamping")
 	passwordOnly := flags.Bool("allow-password-only", false, "allow verified profiles without a client certificate")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *path == "" || *tun == "" || (*v4 == "" && *v6 == "") {
-		fmt.Fprintln(stderr, "Usage: ovpn-xray -profile client.ovpn -tun ovpn0 [-root directory] [-ipv4 addr] [-ipv6 prefix] [-attempts n] [-allow-password-only]")
+		fmt.Fprintln(stderr, "Usage: ovpn-xray -profile client.ovpn -tun ovpn0 [-root directory] [-ipv4 addr] [-ipv6 prefix] [-attempts n] [-mss-mtu n] [-allow-password-only]")
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
@@ -78,14 +79,18 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	cfg.Retry.MaxAttempts = *attempts
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "attempts" {
+			cfg.Retry.MaxAttempts = *attempts
+		}
+	})
 	device, err := xray.OpenDevice(*tun, addresses)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
 	defer device.Close()
-	adapter, err := xray.New(cfg, device, addresses)
+	adapter, err := xray.NewFixed(cfg, device, addresses, xray.Options{MSSMTU: *mssMTU})
 	if err == nil {
 		err = adapter.Run(ctx)
 	}

@@ -100,6 +100,7 @@ func New(config Config) (*Client, error) {
 	}
 	order := failover.Order(len(cfg.Endpoints), shuffle)
 	cfg.TLS, cfg.Credentials, cfg.Control.Key, cfg.DataCiphers = nil, nil, nil, nil
+	cfg.Authentication = Authentication{}
 	cfg.EndpointControls = nil
 	return &Client{config: cfg, handshakes: handshakes, order: order}, nil
 }
@@ -172,10 +173,14 @@ func (c *Client) operationError(ctx context.Context, op string) error {
 	return nil
 }
 
-func (c *Client) dial(ctx context.Context, index int) (tunnel.PacketConn, error) {
+func (c *Client) dial(ctx context.Context, index, visit int) (tunnel.PacketConn, error) {
 	endpoint := c.config.Endpoints[index]
-	dialCtx, cancelDial := context.WithTimeout(ctx, c.config.ConnectTimeout)
-	conn, err := c.config.Dialer.DialPacket(dialCtx, endpoint.Network, endpoint.address())
+	timeout := endpoint.ConnectTimeout
+	if timeout == 0 {
+		timeout = c.config.ConnectTimeout
+	}
+	dialCtx, cancelDial := context.WithTimeout(ctx, timeout)
+	conn, network, err := c.connectSocket(dialCtx, endpoint, visit)
 	if dialCtx.Err() != nil {
 		err = dialCtx.Err()
 	}
@@ -206,6 +211,7 @@ func (c *Client) dial(ctx context.Context, index int) (tunnel.PacketConn, error)
 	c.mu.Unlock()
 
 	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, c.config.HandshakeTimeout)
+	endpoint.Network = network
 	session, err := c.handshakes[index](handshakeCtx, endpoint, conn)
 	if handshakeCtx.Err() != nil {
 		err = handshakeCtx.Err()
@@ -247,7 +253,11 @@ func (c *Client) Close() error {
 			run.cancel()
 		}
 		if active != nil {
-			if err := active.link.Close(); err != nil {
+			closeLink := active.link.Close
+			if graceful, ok := active.link.(interface{ CloseGracefully() error }); ok {
+				closeLink = graceful.CloseGracefully
+			}
+			if err := closeLink(); err != nil {
 				c.closeErr = &Error{Op: "close", Code: CodeNetwork}
 			}
 		}
@@ -261,6 +271,7 @@ func (c *Client) Close() error {
 		c.mu.Lock()
 		c.handshakes = nil
 		c.config.Dialer = nil
+		c.config.Resolver = nil
 		c.state = StateClosed
 		var code ErrorCode
 		if c.closeErr != nil {

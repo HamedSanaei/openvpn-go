@@ -26,6 +26,15 @@ type Endpoint struct {
 	// VerifyX509Name is an optional exact certificate identity or an
 	// additional common-name prefix check.
 	VerifyX509Name X509Name
+	// LocalAddress and LocalPort bind the built-in socket. Unset values
+	// allow the OS to choose the source address and ephemeral port.
+	LocalAddress netip.Addr
+	LocalPort    uint16
+	// ConnectTimeout, TunnelMTU and ExplicitExitNotify override or extend
+	// client defaults for this remote. A zero timeout or MTU inherits.
+	ConnectTimeout     time.Duration
+	TunnelMTU          int
+	ExplicitExitNotify bool
 }
 
 // Validated returns an endpoint with defaults applied and its identity checked.
@@ -45,6 +54,10 @@ func (e Endpoint) address() string {
 type Config struct {
 	Endpoints []Endpoint
 	Dialer    transport.Dialer
+	Resolver  Resolver
+	// ResolveRetry is the DNS retry budget within ConnectTimeout. Zero makes
+	// one lookup. ResolveUntilDialDeadline uses the entire dial budget.
+	ResolveRetry time.Duration
 	// RemoteRandom shuffles all endpoint candidates once during New.
 	RemoteRandom bool
 	// Retry controls endpoint failover and reconnect during Run.
@@ -56,6 +69,12 @@ type Config struct {
 	TLS *TLSConfig
 	// Credentials supplies username/password authentication when configured.
 	Credentials *Credentials
+	// Authentication delegates credential acquisition and optional interaction.
+	Authentication Authentication
+	// ExplicitExitNotify opts into bounded, authenticated shutdown on UDP.
+	ExplicitExitNotify bool
+	// TunnelMTU caps the inner IP packet size. Zero accepts the peer or frame limit.
+	TunnelMTU int
 	// Control selects outer control-channel protection.
 	Control ControlProtection
 	// EndpointControls optionally supplies one control setting per endpoint,
@@ -75,6 +94,9 @@ type Config struct {
 	// RekeyInterval sets the interval for client-initiated data rekey.
 	// Zero uses one hour. The peer may also initiate a rekey.
 	RekeyInterval time.Duration
+	// DisableTimedRekey disables only timer-driven client rekeys. Peer
+	// requests and data-channel key usage limits still require rekeying.
+	DisableTimedRekey bool
 	// MaxPacketSize caps a complete transport or tunnel packet. Zero uses
 	// transport.DefaultPacketSize. A custom Dialer must enforce this limit
 	// in its transport adapter.
@@ -98,6 +120,12 @@ func (cfg Config) validated() (Config, error) {
 		if err := cfg.Endpoints[i].normalize(); err != nil {
 			return Config{}, err
 		}
+		if cfg.Dialer != nil && cfg.Endpoints[i].hasLocalBind() {
+			return Config{}, configError("local bind with custom dialer")
+		}
+	}
+	if cfg.ResolveRetry < ResolveUntilDialDeadline || cfg.ResolveRetry > 2*time.Minute {
+		return Config{}, configError("resolution retry")
 	}
 
 	if cfg.ConnectTimeout < 0 || cfg.ConnectTimeout > 2*time.Minute {
@@ -115,9 +143,12 @@ func (cfg Config) validated() (Config, error) {
 	if !cfg.Retry.normalize(len(cfg.Endpoints)) {
 		return Config{}, configError("retry policy")
 	}
-	if cfg.RekeyInterval == 0 {
+	if cfg.DisableTimedRekey && cfg.RekeyInterval != 0 {
+		return Config{}, configError("rekey interval")
+	}
+	if cfg.RekeyInterval == 0 && !cfg.DisableTimedRekey {
 		cfg.RekeyInterval = time.Hour
-	} else if cfg.RekeyInterval < time.Second || cfg.RekeyInterval > 24*time.Hour {
+	} else if !cfg.DisableTimedRekey && (cfg.RekeyInterval < time.Second || cfg.RekeyInterval > 24*time.Hour) {
 		return Config{}, configError("rekey interval")
 	}
 	if cfg.MaxPacketSize < 0 || cfg.MaxPacketSize > transport.MaxPacketSize {
@@ -125,6 +156,9 @@ func (cfg Config) validated() (Config, error) {
 	}
 	if cfg.MaxPacketSize == 0 {
 		cfg.MaxPacketSize = transport.DefaultPacketSize
+	}
+	if !tunnel.ValidMTU(cfg.TunnelMTU) {
+		return Config{}, configError("tunnel MTU")
 	}
 	if cfg.Dialer == nil {
 		cfg.Dialer = transport.SocketDialer{MaxPacketSize: cfg.MaxPacketSize}
@@ -139,10 +173,19 @@ func (e *Endpoint) normalize() error {
 	if e.Network == "" {
 		e.Network = "udp"
 	}
+	if e.ConnectTimeout < 0 || e.ConnectTimeout > 2*time.Minute || !tunnel.ValidMTU(e.TunnelMTU) {
+		return configError("endpoint timeout or MTU")
+	}
 	switch e.Network {
 	case "udp", "udp4", "udp6", "tcp", "tcp4", "tcp6":
 	default:
 		return configError("endpoint network")
+	}
+	e.LocalAddress = e.LocalAddress.Unmap()
+	if e.LocalAddress.IsValid() && (e.LocalAddress.IsMulticast() ||
+		strings.HasSuffix(e.Network, "4") && !e.LocalAddress.Is4() ||
+		strings.HasSuffix(e.Network, "6") && !e.LocalAddress.Is6()) {
+		return configError("local bind address")
 	}
 	if e.Port == 0 {
 		e.Port = 1194
@@ -150,9 +193,9 @@ func (e *Endpoint) normalize() error {
 
 	if addr, err := netip.ParseAddr(e.Host); err == nil {
 		switch {
-		case strings.HasSuffix(e.Network, "4") && !addr.Unmap().Is4():
+		case e.addressFamily() == "ip4" && !addr.Unmap().Is4():
 			return configError("endpoint address family")
-		case strings.HasSuffix(e.Network, "6") && addr.Unmap().Is4():
+		case e.addressFamily() == "ip6" && addr.Unmap().Is4():
 			return configError("endpoint address family")
 		}
 		if e.ServerName == "" {

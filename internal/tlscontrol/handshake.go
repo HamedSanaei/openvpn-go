@@ -26,12 +26,15 @@ type Link struct {
 }
 
 type Options struct {
-	TLS        *tls.Config
-	Network    string
-	Digest     string
-	Ciphers    []string
-	Auth       *Authentication
-	PushPolicy tunnel.PushPolicy
+	TLS         *tls.Config
+	Network     string
+	Digest      string
+	Ciphers     []string
+	Auth        *Authentication
+	PushPolicy  tunnel.PushPolicy
+	Interaction Interaction
+	ExitNotify  bool
+	TunnelMTU   int
 }
 
 func Establish(ctx context.Context, stream *control.Stream, opts Options, previous *Negotiation) (_ *Link, failure error) {
@@ -41,6 +44,9 @@ func Establish(ctx context.Context, stream *control.Stream, opts Options, previo
 	}
 	conn := tls.Client(stream.Conn(), opts.TLS.Clone())
 	if err := conn.HandshakeContext(ctx); err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		var verify *tls.CertificateVerificationError
 		if errors.As(err, &verify) || errors.Is(err, ErrCertificate) {
 			return nil, ErrCertificate
@@ -67,7 +73,11 @@ func Establish(ctx context.Context, stream *control.Stream, opts Options, previo
 	}
 
 	reader := bufio.NewReaderSize(conn, 4096)
-	if err := writeKeyMethod(conn, opts.Network, opts.Digest, opts.Ciphers, opts.Auth.credentials()); err != nil {
+	user, err := opts.Auth.forHandshake(ctx, opts.Interaction.Credentials)
+	if err != nil {
+		return nil, err
+	}
+	if err := writeKeyMethodOptions(conn, opts.Network, opts.Digest, opts.Ciphers, user, opts); err != nil {
 		return nil, ctxError(ctx, err)
 	}
 	if err := readKeyMethod(reader); err != nil {
@@ -82,8 +92,8 @@ func Establish(ctx context.Context, stream *control.Stream, opts Options, previo
 		}
 		info = *previous
 	} else {
-		push := pushState{allowed: opts.Ciphers, policy: opts.PushPolicy}
-		if err := readPush(ctx, conn, reader, &push); err != nil {
+		push := pushState{allowed: opts.Ciphers, policy: opts.PushPolicy, allowExit: opts.ExitNotify}
+		if err := readPushInteractive(ctx, conn, reader, &push, opts.Interaction); err != nil {
 			clear(push.token)
 			return nil, ctxError(ctx, err)
 		}
@@ -121,21 +131,39 @@ func streamError(stream *control.Stream, err error) error {
 }
 
 func readPush(ctx context.Context, conn net.Conn, reader *bufio.Reader, push *pushState) error {
+	return readPushInteractive(ctx, conn, reader, push, Interaction{})
+}
+
+func readPushInteractive(ctx context.Context, conn net.Conn, reader *bufio.Reader, push *pushState, interaction Interaction) error {
 	var commands commandReader
 	defer func() { clear(commands.partial) }()
-	for ctx.Err() == nil {
-		if _, err := conn.Write([]byte("PUSH_REQUEST\x00")); err != nil {
+	pending := pendingAuth{Interaction: interaction}
+	defer pending.close()
+	current := ctx
+	for current.Err() == nil {
+		if deadline, ok := current.Deadline(); ok {
+			if !time.Now().Before(deadline) {
+				return context.DeadlineExceeded
+			}
+			if err := conn.SetWriteDeadline(deadline); err != nil {
+				return err
+			}
+		}
+		if err := current.Err(); err != nil {
 			return err
 		}
+		if _, err := conn.Write([]byte("PUSH_REQUEST\x00")); err != nil {
+			return ctxError(current, err)
+		}
 		next := time.Now().Add(pushRetry)
-		if deadline, ok := ctx.Deadline(); ok && deadline.Before(next) {
+		if deadline, ok := current.Deadline(); ok && deadline.Before(next) {
 			next = deadline
 		}
 		if err := conn.SetReadDeadline(next); err != nil {
 			return err
 		}
 
-		for ctx.Err() == nil {
+		for current.Err() == nil {
 			message, err := commands.read(reader)
 			if err != nil {
 				var timeout net.Error
@@ -144,6 +172,34 @@ func readPush(ctx context.Context, conn net.Conn, reader *bufio.Reader, push *pu
 				}
 				return err
 			}
+			handled, response, err := pending.handle(ctx, message)
+			if handled {
+				clear(message)
+				if err != nil {
+					return err
+				}
+				if len(response) != 0 {
+					deadline, _ := pending.ctx.Deadline()
+					err = conn.SetWriteDeadline(deadline)
+					if err == nil {
+						err = pending.ctx.Err()
+					}
+					if err == nil {
+						_, err = conn.Write(response)
+					}
+					clear(response)
+					if err != nil {
+						return ctxError(pending.ctx, err)
+					}
+				}
+				current = pending.ctx
+				if deadline, _ := current.Deadline(); deadline.Before(next) {
+					if err := conn.SetReadDeadline(deadline); err != nil {
+						return err
+					}
+				}
+				continue
+			}
 			complete, err := push.add(message)
 			clear(message)
 			if err != nil || complete {
@@ -151,7 +207,7 @@ func readPush(ctx context.Context, conn net.Conn, reader *bufio.Reader, push *pu
 			}
 		}
 	}
-	return ctx.Err()
+	return current.Err()
 }
 
 func ctxError(ctx context.Context, fallback error) error {

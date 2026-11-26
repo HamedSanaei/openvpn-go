@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/hamedsanaei/openvpn-go/internal/crypt"
@@ -15,6 +16,10 @@ import (
 const keyMethod = 2
 
 func writeKeyMethod(w io.Writer, network, digest string, ciphers []string, user Credentials) error {
+	return writeKeyMethodOptions(w, network, digest, ciphers, user, Options{})
+}
+
+func writeKeyMethodOptions(w io.Writer, network, digest string, ciphers []string, user Credentials, cfg Options) error {
 	// Key method 2 includes legacy entropy fields even when both peers
 	// negotiate data-channel keying material via the TLS exporter.
 	message := make([]byte, 5+48+32+32, 5+48+32+32+4*maxKeyString)
@@ -38,12 +43,25 @@ func writeKeyMethod(w io.Writer, network, digest string, ciphers []string, user 
 	if ciphers[0] == crypt.AES128GCM {
 		keySize = "128"
 	}
-	options := "V4,dev-type tun,link-mtu 1555,tun-mtu 1500,proto " + proto +
+	mtu := cfg.TunnelMTU
+	if mtu == 0 {
+		mtu = 1500
+	}
+	mtuText := strconv.Itoa(mtu)
+	options := "V4,dev-type tun,link-mtu " + strconv.Itoa(mtu+55) + ",tun-mtu " + mtuText + ",proto " + proto +
 		",cipher " + ciphers[0] + ",auth " + digest + ",keysize " + keySize + ",key-method 2,tls-client"
 
 	// Bit 1 advertises DATA_V2. Bit 3 selects the TLS exporter when both
 	// peers support it. Address floating and dynamic wrapping are omitted.
-	peer := "IV_PROTO=10\nIV_CIPHERS=" + strings.Join(ciphers, ":") + "\n"
+	flags := 10
+	extra := cfg.Interaction.peerInfo()
+	if extra != "" {
+		flags |= 1 << 4
+	}
+	if cfg.ExitNotify {
+		flags |= 1 << 7
+	}
+	peer := "IV_PROTO=" + strconv.Itoa(flags) + "\nIV_CIPHERS=" + strings.Join(ciphers, ":") + "\n" + extra
 	for _, field := range []string{options, user.Username, user.Password, peer} {
 		if field == "" {
 			message = binary.BigEndian.AppendUint16(message, 0)

@@ -28,6 +28,10 @@ type Options struct {
 	// AllowPasswordOnly authorizes a verified TLS profile with auth-user-pass
 	// and no client certificate or key.
 	AllowPasswordOnly bool
+	// Authentication authorizes caller-managed credentials and interaction.
+	Authentication client.Authentication
+	// Identity supplies a matching key for a profile with cert and no key.
+	Identity KeyIdentity
 }
 
 // Parse reads a bounded profile and returns a validated configuration in
@@ -49,7 +53,7 @@ func Parse(r io.Reader, opts Options) (client.Config, []Diagnostic, error) {
 		return client.Config{}, nil, (location{}).diagnostic(CodeLimit)
 	}
 	p := parser{
-		opts: opts, cfg: client.Config{TLS: &client.TLSConfig{}},
+		opts: opts, cfg: client.Config{TLS: &client.TLSConfig{}, Authentication: opts.Authentication},
 		filesLeft: maxFileBytes, loaded: make(map[*material][]byte),
 	}
 	if err := p.read(bytes.TrimPrefix(data, []byte("\xef\xbb\xbf")), nil); err != nil {
@@ -65,14 +69,17 @@ func Parse(r io.Reader, opts Options) (client.Config, []Diagnostic, error) {
 }
 
 type parser struct {
-	opts            Options
-	cfg             client.Config
-	identity        client.X509Name
-	versionLocation location
-	warnings        []Diagnostic
-	tlsClient       bool
-	pull            bool
-	device          bool
+	opts              Options
+	cfg               client.Config
+	identity          client.X509Name
+	versionLocation   location
+	warnings          []Diagnostic
+	tlsClient         bool
+	pull              bool
+	device            bool
+	noCache           location
+	attemptsPerRemote int
+	attemptsLocation  location
 
 	defaults connection
 	remotes  []remote
@@ -80,9 +87,10 @@ type parser struct {
 	block    *connection
 	blockLoc location
 
-	ca, cert, key, auth *material
-	loaded              map[*material][]byte
-	filesLeft           int
+	ca, cert, key, auth, crl *material
+	pins                     []*material
+	loaded                   map[*material][]byte
+	filesLeft                int
 }
 
 func (p *parser) read(remaining []byte, report *Report) error {
@@ -225,6 +233,15 @@ func (p *parser) finish() error {
 	}
 	if err := p.endpoints(); err != nil {
 		return err
+	}
+	if p.attemptsPerRemote != 0 {
+		p.cfg.Retry.MaxAttempts = len(p.cfg.Endpoints) * p.attemptsPerRemote
+		if p.cfg.Retry.MaxAttempts > 1024 {
+			return p.attemptsLocation.diagnostic(CodeLimit)
+		}
+	}
+	if p.noCache.line != 0 && p.auth != nil && p.opts.Authentication.Credentials == nil {
+		return p.noCache.diagnostic(CodeConflict)
 	}
 	return p.loadTLS()
 }

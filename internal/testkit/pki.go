@@ -4,11 +4,14 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -27,6 +30,7 @@ type PKI struct {
 	CA     []byte
 	Server Identity
 	Client Identity
+	issuer *ecdsa.PrivateKey
 }
 
 func NewPKI(t testing.TB) PKI {
@@ -40,7 +44,7 @@ func NewPKIWithServer(t testing.TB, edit func(*x509.Certificate)) PKI {
 	root := certificate(1, "Test OpenVPN CA")
 	root.IsCA = true
 	root.BasicConstraintsValid = true
-	root.KeyUsage = x509.KeyUsageCertSign
+	root.KeyUsage = x509.KeyUsageCertSign | x509.KeyUsageCRLSign
 
 	ca := sign(t, root, root, rootKey, rootKey)
 	server := certificate(2, TestServerName)
@@ -60,7 +64,33 @@ func NewPKIWithServer(t testing.TB, edit func(*x509.Certificate)) PKI {
 		CA:     ca.Certificate,
 		Server: sign(t, server, root, key(t), rootKey),
 		Client: sign(t, client, root, key(t), rootKey),
+		issuer: rootKey,
 	}
+}
+
+func (p PKI) ServerFingerprint() string {
+	block, _ := pem.Decode(p.Server.Certificate)
+	return strings.ReplaceAll(fmt.Sprintf("% X", sha256.Sum256(block.Bytes)), " ", ":")
+}
+
+func (p PKI) CRL(t testing.TB, now time.Time, revoked bool) []byte {
+	t.Helper()
+	block, _ := pem.Decode(p.CA)
+	root, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := &x509.RevocationList{
+		Number: big.NewInt(1), ThisUpdate: now.Add(-time.Minute), NextUpdate: now.Add(time.Minute),
+	}
+	if revoked {
+		list.RevokedCertificateEntries = []x509.RevocationListEntry{{SerialNumber: big.NewInt(2), RevocationTime: now.Add(-time.Minute)}}
+	}
+	raw, err := x509.CreateRevocationList(rand.Reader, list, root, p.issuer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "X509 CRL", Bytes: raw})
 }
 
 func certificate(serial int64, name string) *x509.Certificate {

@@ -55,6 +55,7 @@ func (s *Session) run(active *tlscontrol.Link) {
 		s.opts.TLS.Auth.Clear()
 		s.mu.Lock()
 		s.channel = nil
+		s.link = nil
 		s.mu.Unlock()
 		for len(s.inbound) > 0 {
 			select {
@@ -83,6 +84,9 @@ func (s *Session) run(active *tlscontrol.Link) {
 		}
 		// OpenVPN processes control ACKs only on the primary key ID once a
 		// soft reset begins. The previous data key is still usable.
+		s.mu.Lock()
+		s.link = nil
+		s.mu.Unlock()
 		active.Close()
 		stream, err := s.mux.StartRekey(id, first)
 		if err != nil {
@@ -128,6 +132,7 @@ func (s *Session) run(active *tlscontrol.Link) {
 			err := s.channel.Promote(result.id, result.keys, time.Now().Add(rekeyOverlap))
 			if err == nil {
 				s.info = result.link.Info
+				s.link = result.link
 				s.keyID = result.id
 			}
 			s.mu.Unlock()
@@ -150,7 +155,7 @@ func (s *Session) run(active *tlscontrol.Link) {
 				s.terminal = err
 				return
 			}
-			if pending == nil && !now.Before(nextRekey) {
+			if s.opts.RekeyInterval > 0 && pending == nil && !now.Before(nextRekey) {
 				if err := start(control.Reset{}); err != nil {
 					s.terminal = err
 					return

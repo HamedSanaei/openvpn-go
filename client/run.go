@@ -215,6 +215,9 @@ func forward(ctx context.Context, dst, src tunnel.PacketConn, packet []byte, rea
 			return forwardError("forward", err, readsSession)
 		}
 		if err := dst.WritePacket(ctx, packet[:n]); err != nil {
+			if !readsSession && errors.Is(err, tunnel.ErrMTUExceeded) {
+				continue
+			}
 			return forwardError("write packet", err, !readsSession)
 		}
 		traffic.Add(n)

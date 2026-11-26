@@ -1,8 +1,12 @@
 package profile
 
 import (
+	"net/netip"
+	"time"
+
 	"github.com/hamedsanaei/openvpn-go/client"
 	"github.com/hamedsanaei/openvpn-go/internal/control"
+	"github.com/hamedsanaei/openvpn-go/tunnel"
 )
 
 type remote struct {
@@ -11,9 +15,18 @@ type remote struct {
 }
 
 type connection struct {
-	network string
-	port    uint16
-	remote  remote
+	network        string
+	port           uint16
+	remote         remote
+	localAddress   netip.Addr
+	localPort      uint16
+	portLocal      uint16
+	bindMode       string
+	localBindSet   bool
+	localSourceSet bool
+	timeout        time.Duration
+	mtu            int
+	exit           bool
 
 	protection      *material
 	direction       client.KeyDirection
@@ -33,6 +46,7 @@ func (p *parser) openConnection(loc location) error {
 	}
 	block := p.defaults
 	block.localProtection, block.localDirection = false, false
+	block.localBindSet, block.localSourceSet = false, false
 	p.block, p.blockLoc = &block, loc
 	return nil
 }
@@ -71,6 +85,59 @@ func (p *parser) applyConnection(loc location, args []string) error {
 			return loc.diagnostic(CodeValue)
 		}
 		c.port = uint16(n)
+		if loc.name == "port" {
+			c.portLocal = uint16(n)
+		}
+	case "bind", "nobind":
+		if c.localBindSet && c.bindMode != loc.name ||
+			loc.name == "nobind" && c.localSourceSet {
+			return loc.diagnostic(CodeConflict)
+		}
+		c.bindMode, c.localBindSet = loc.name, true
+		if c.bindMode == "nobind" {
+			c.localAddress, c.localPort = netip.Addr{}, 0
+		}
+	case "local":
+		ip, err := netip.ParseAddr(args[0])
+		if err != nil || ip.IsMulticast() {
+			return loc.diagnostic(CodeValue)
+		}
+		if c.localBindSet && c.bindMode == "nobind" {
+			return loc.diagnostic(CodeConflict)
+		}
+		c.localAddress = ip.Unmap()
+		c.localSourceSet = true
+	case "lport":
+		n, ok := uintValue(args[0], 16)
+		if !ok || n == 0 {
+			return loc.diagnostic(CodeValue)
+		}
+		if c.localBindSet && c.bindMode == "nobind" {
+			return loc.diagnostic(CodeConflict)
+		}
+		c.localPort = uint16(n)
+		c.localSourceSet = true
+	case "connect-timeout":
+		timeout, ok := seconds(args[0], 1, 120)
+		if !ok {
+			return loc.diagnostic(CodeValue)
+		}
+		c.timeout = timeout
+	case "tun-mtu":
+		n, ok := uintValue(args[0], 16)
+		if !ok || n == 0 || !tunnel.ValidMTU(int(n)) {
+			return loc.diagnostic(CodeValue)
+		}
+		c.mtu = int(n)
+	case "explicit-exit-notify":
+		c.exit = true
+		if len(args) != 0 {
+			n, ok := uintValue(args[0], 8)
+			if !ok {
+				return loc.diagnostic(CodeValue)
+			}
+			c.exit = n != 0
+		}
 	case "key-direction":
 		direction, ok := keyDirection(args[0])
 		if !ok {
@@ -132,7 +199,7 @@ func (p *parser) endpoints() error {
 			if e.Network == "" {
 				e.Network = p.defaults.network
 			}
-			if err := p.appendEndpoint(e, r.loc); err != nil {
+			if err := p.appendEndpoint(e, r.loc, p.defaults); err != nil {
 				return err
 			}
 		}
@@ -144,7 +211,7 @@ func (p *parser) endpoints() error {
 	for _, c := range p.blocks {
 		e := c.remote.endpoint
 		e.Port, e.Network = c.port, c.network
-		if err := p.appendEndpoint(e, c.remote.loc); err != nil {
+		if err := p.appendEndpoint(e, c.remote.loc, c); err != nil {
 			return err
 		}
 		protection, err := p.loadProtection(c)
@@ -156,8 +223,16 @@ func (p *parser) endpoints() error {
 	return nil
 }
 
-func (p *parser) appendEndpoint(e client.Endpoint, loc location) error {
+func (p *parser) appendEndpoint(e client.Endpoint, loc location, c connection) error {
 	e.VerifyX509Name = p.identity
+	e.LocalAddress, e.LocalPort = c.localAddress, c.localPort
+	e.ConnectTimeout, e.TunnelMTU, e.ExplicitExitNotify = c.timeout, c.mtu, c.exit
+	if c.bindMode == "bind" && e.LocalPort == 0 {
+		e.LocalPort = c.portLocal
+		if e.LocalPort == 0 {
+			e.LocalPort = 1194
+		}
+	}
 	checked, err := e.Validated()
 	if err != nil {
 		return loc.diagnostic(CodeValue)
