@@ -3,6 +3,7 @@
 package interop_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -31,7 +33,11 @@ func TestXrayEgressOpenVPN26(t *testing.T) {
 		serverIP     = "192.0.2.2"
 		tunnelIP     = "10.49.0.2"
 		echoIP       = "10.49.0.1"
+		tunnelIPv6   = "fd49:67::1000"
+		echoIPv6     = "fd49:67::1"
+		echoDomain   = "echo.vpn.test"
 		port         = 18089
+		dnsPort      = 18090
 	)
 	xray := os.Getenv("XRAY_INTEROP_BIN")
 	if xray == "" {
@@ -60,17 +66,26 @@ func TestXrayEgressOpenVPN26(t *testing.T) {
 	testIP(t, "tuntap", "add", "dev", clientDevice, "mode", "tun")
 	t.Cleanup(func() { exec.Command("ip", "link", "del", clientDevice).Run() })
 	testIP(t, "address", "add", tunnelIP+"/32", "dev", clientDevice)
+	testIP(t, "-6", "address", "add", tunnelIPv6+"/64", "dev", clientDevice, "nodad", "noprefixroute")
 	testIP(t, "link", "set", clientDevice, "up")
 	testIP(t, "route", "add", echoIP+"/32", "dev", clientDevice, "src", tunnelIP)
 
+	testIP(t, "-6", "route", "add", echoIPv6+"/128", "dev", clientDevice, "src", tunnelIPv6)
 	startVPN := func() func() {
-		stop := f.launch(t, 1194, "tcp", "tls", false, "--dev", serverDevice, "--local", serverIP, "--keepalive", "1", "4")
+		stop := f.launch(t, 1194, "tcp", "tls", false, "--dev", serverDevice, "--local", serverIP, "--keepalive", "1", "4",
+			"--server-ipv6", "fd49:67::/64")
 		testIP(t, "-n", serverNS, "address", "add", echoIP+"/24", "dev", serverDevice)
+		testIP(t, "-n", serverNS, "-6", "address", "add", echoIPv6+"/64", "dev", serverDevice, "nodad")
 		testIP(t, "-n", serverNS, "link", "set", serverDevice, "up")
 		return stop
 	}
 	stop := startVPN()
 	startNamespaceEcho(t, serverNS, port)
+	startNamespaceService(t, serverNS, "TestXrayNamespaceEcho",
+		"XRAY_TEST_ECHO_PORT="+strconv.Itoa(port), "XRAY_TEST_ECHO_HOST="+echoIPv6)
+	startNamespaceService(t, serverNS, "TestXrayNamespaceDNS",
+		"XRAY_TEST_DNS_BIND="+net.JoinHostPort(echoIP, strconv.Itoa(dnsPort)),
+		"XRAY_TEST_DNS_AAAA="+echoIPv6)
 
 	text := "client\ndev tun\nproto tcp4-client\nremote " + serverIP + " 1194\nremote-cert-tls server\nverify-x509-name " +
 		testkit.TestServerName + " name\n" + profilePKI(pki)
@@ -80,7 +95,7 @@ func TestXrayEgressOpenVPN26(t *testing.T) {
 	}
 	cfg.Retry = client.RetryPolicy{MaxAttempts: client.UnlimitedAttempts, InitialBackoff: 25 * time.Millisecond}
 	cfg.HandshakeTimeout = 3 * time.Second
-	addresses := xrayadapter.Addresses{IPv4: netip.MustParseAddr(tunnelIP)}
+	addresses := xrayadapter.Addresses{IPv4: netip.MustParseAddr(tunnelIP), IPv6: netip.PrefixFrom(netip.MustParseAddr(tunnelIPv6), 64)}
 	device, err := xrayadapter.OpenDevice(clientDevice, addresses)
 	if err != nil {
 		t.Fatal(err)
@@ -97,10 +112,13 @@ func TestXrayEgressOpenVPN26(t *testing.T) {
 	go func() { ended <- adapter.Run(ctx) }()
 	awaitAdapter(t, adapter, ended, 1)
 
-	listen := startXray(t, xray, clientDevice, echoIP, port)
-	for _, network := range []string{"tcp4", "udp4"} {
-		probeXray(t, network, listen, "before reconnect")
+	dns := netip.AddrPortFrom(netip.MustParseAddr(echoIP), dnsPort)
+	listeners := map[string]string{
+		"IPv4": startXray(t, xray, clientDevice, echoIP, port, netip.AddrPort{}),
+		"IPv6": startXray(t, xray, clientDevice, echoIPv6, port, netip.AddrPort{}),
+		"DNS":  startXray(t, xray, clientDevice, echoDomain, port, dns),
 	}
+	probeXrayBatch(t, listeners, "before reconnect")
 	stop()
 	deadline := time.Now().Add(6 * time.Second)
 	for adapter.Stats().Disconnects == 0 && time.Now().Before(deadline) {
@@ -111,9 +129,8 @@ func TestXrayEgressOpenVPN26(t *testing.T) {
 	}
 	startVPN()
 	awaitAdapter(t, adapter, ended, 2)
-	for _, network := range []string{"tcp4", "udp4"} {
-		probeXray(t, network, listen, "after reconnect")
-	}
+	probeXrayBatch(t, listeners, "after reconnect")
+	assertXrayRejectsFallback(t, xray, clientDevice, "localhost", "tcp6", dns)
 	if stats := adapter.Stats(); stats.Reconnects != 1 || stats.PacketsSent == 0 || stats.PacketsReceived == 0 {
 		t.Fatalf("missing recovered traffic: %+v", stats)
 	}
@@ -126,29 +143,39 @@ func TestXrayEgressOpenVPN26(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("adapter workers did not stop")
 	}
-	assertXrayRejectsMissingDevice(t, xray)
+	assertXrayRejectsFallback(t, xray, "m7-nonexistent", "127.0.0.1", "tcp4", netip.AddrPort{})
 }
 
-func assertXrayRejectsMissingDevice(t *testing.T, xray string) {
+func assertXrayRejectsFallback(t *testing.T, xray, device, destination, network string, dns netip.AddrPort) {
 	t.Helper()
-	target, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	local := net.IPv4(127, 0, 0, 1)
+	if network == "tcp6" {
+		local = net.IPv6loopback
+	}
+	target, err := net.ListenTCP(network, &net.TCPAddr{IP: local})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer target.Close()
-	address := startXray(t, xray, "m7-nonexistent", "127.0.0.1", target.Addr().(*net.TCPAddr).Port)
+	address := startXray(t, xray, device, destination, target.Addr().(*net.TCPAddr).Port, dns)
 	conn, err := net.DialTimeout("tcp4", address, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn.Close()
 	conn.SetWriteDeadline(time.Now().Add(time.Second))
-	io.WriteString(conn, "binding must fail")
+	if _, err := io.WriteString(conn, "route must fail"); err != nil {
+		t.Fatal(err)
+	}
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := conn.Read(make([]byte, 1)); !errors.Is(err, io.EOF) && !errors.Is(err, syscall.ECONNRESET) {
+		t.Fatalf("Xray did not close the rejected request: %v", err)
+	}
 	target.SetDeadline(time.Now().Add(500 * time.Millisecond))
 	leaked, err := target.Accept()
 	if leaked != nil {
 		leaked.Close()
-		t.Fatal("Xray tried the unbound route after the selected interface was missing")
+		t.Fatalf("Xray reached %s through a fallback route", destination)
 	}
 	var timeout net.Error
 	if !errors.As(err, &timeout) || !timeout.Timeout() {
@@ -165,12 +192,18 @@ func testIP(t *testing.T, args ...string) {
 
 func startNamespaceEcho(t *testing.T, ns string, port int) {
 	t.Helper()
+	startNamespaceService(t, ns, "TestXrayNamespaceEcho", "XRAY_TEST_ECHO_PORT="+strconv.Itoa(port))
+}
+
+func startNamespaceService(t *testing.T, ns, test string, variables ...string) {
+	t.Helper()
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.CommandContext(t.Context(), "ip", "netns", "exec", ns, exe, "-test.run", "^TestXrayNamespaceEcho$")
-	cmd.Env = append(os.Environ(), "XRAY_TEST_ECHO_PORT="+strconv.Itoa(port))
+	cmd := exec.CommandContext(t.Context(), "ip", "netns", "exec", ns, exe, "-test.run", "^"+test+"$")
+	cmd.Env = append(os.Environ(), variables...)
+	cmd.Stderr = os.Stderr
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -184,7 +217,7 @@ func startNamespaceEcho(t *testing.T, ns string, port int) {
 		buf := make([]byte, len("ready\n"))
 		_, err := io.ReadFull(out, buf)
 		if err == nil && string(buf) != "ready\n" {
-			err = errors.New("echo child did not start")
+			err = errors.New("namespace service did not start")
 		}
 		ready <- err
 	}()
@@ -194,7 +227,7 @@ func startNamespaceEcho(t *testing.T, ns string, port int) {
 			t.Fatal(err)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("echo child did not become ready")
+		t.Fatal("namespace service did not become ready")
 	}
 }
 
@@ -203,13 +236,17 @@ func TestXrayNamespaceEcho(t *testing.T) {
 	if port == "" {
 		t.Skip("run by the isolated Xray interoperability test")
 	}
-	addr := "0.0.0.0:" + port
-	tcp, err := net.Listen("tcp4", addr)
+	host, family := "0.0.0.0", "4"
+	if value := os.Getenv("XRAY_TEST_ECHO_HOST"); value != "" {
+		host, family = value, "6"
+	}
+	addr := net.JoinHostPort(host, port)
+	tcp, err := net.Listen("tcp"+family, addr)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tcp.Close()
-	udp, err := net.ListenPacket("udp4", addr)
+	udp, err := net.ListenPacket("udp"+family, addr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +275,7 @@ func TestXrayNamespaceEcho(t *testing.T) {
 	}
 }
 
-func startXray(t *testing.T, executable, device, target string, port int) string {
+func startXray(t *testing.T, executable, device, target string, port int, dns netip.AddrPort) string {
 	t.Helper()
 	local := localPort(t, "tcp")
 	example, err := os.ReadFile("../../integrations/xray/openvpn-outbound.json")
@@ -257,10 +294,24 @@ func startXray(t *testing.T, executable, device, target string, port int) string
 	conf := map[string]any{
 		"log": map[string]string{"loglevel": "warning"},
 		"inbounds": []any{map[string]any{
-			"listen": "127.0.0.1", "port": local, "protocol": "dokodemo-door",
+			"listen": "127.0.0.1", "port": local, "protocol": "dokodemo-door", "tag": "test-in",
 			"settings": map[string]any{"address": target, "port": port, "network": "tcp,udp"},
 		}},
 		"outbounds": []any{outbound},
+	}
+	if dns.IsValid() {
+		outbound.StreamSettings["sockopt"]["domainStrategy"] = "ForceIPv6"
+		conf["dns"] = map[string]any{
+			"tag": "vpn-dns", "disableCache": true, "disableFallback": true, "queryStrategy": "UseIPv6",
+			"servers": []any{map[string]any{"address": dns.Addr().String(), "port": dns.Port()}},
+		}
+		conf["outbounds"] = []any{map[string]string{"tag": "blocked", "protocol": "blackhole"}, outbound}
+		conf["routing"] = map[string]any{
+			"domainStrategy": "AsIs",
+			"rules": []any{map[string]any{
+				"type": "field", "inboundTag": []string{"test-in", "vpn-dns"}, "outboundTag": "openvpn",
+			}},
+		}
 	}
 	raw, err := json.Marshal(conf)
 	if err != nil {
@@ -271,10 +322,23 @@ func startXray(t *testing.T, executable, device, target string, port int) string
 		t.Fatal(err)
 	}
 	cmd := exec.CommandContext(t.Context(), executable, "run", "-config", name)
+	log, err := os.Create(filepath.Join(filepath.Dir(name), "xray.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+	cmd.Stdout, cmd.Stderr = log, log
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
+	t.Cleanup(func() {
+		cmd.Process.Kill()
+		cmd.Wait()
+		if t.Failed() {
+			diagnostics, _ := os.ReadFile(log.Name())
+			t.Logf("Xray %s diagnostics:\n%s", target, diagnostics)
+		}
+	})
 	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(int(local)))
 	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); {
 		if conn, err := net.DialTimeout("tcp4", address, 50*time.Millisecond); err == nil {
@@ -303,19 +367,88 @@ func awaitAdapter(t *testing.T, adapter *xrayadapter.Adapter, done <-chan error,
 	t.Fatalf("expected %d successful connections: %+v", connections, adapter.Stats())
 }
 
-func probeXray(t *testing.T, network, address, payload string) {
+func probeXrayBatch(t *testing.T, listeners map[string]string, phase string) {
 	t.Helper()
+	results := make(chan error, len(listeners)*2)
+	for target, address := range listeners {
+		for _, network := range []string{"tcp4", "udp4"} {
+			go func() { results <- probeXray(network, address, phase+" "+target+" "+network) }()
+		}
+	}
+	for range cap(results) {
+		if err := <-results; err != nil {
+			t.Error(err)
+		}
+	}
+	if t.Failed() {
+		t.FailNow()
+	}
+}
+
+func probeXray(network, address, payload string) error {
 	conn, err := net.DialTimeout(network, address, time.Second)
 	if err != nil {
-		t.Fatal(err)
+		return fmt.Errorf("%s: %w", payload, err)
 	}
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(3 * time.Second))
 	if _, err := io.WriteString(conn, payload); err != nil {
-		t.Fatal(err)
+		return fmt.Errorf("%s: %w", payload, err)
 	}
 	response := make([]byte, len(payload))
-	if _, err := io.ReadFull(conn, response); err != nil || string(response) != payload {
-		t.Fatalf("Xray %s echo failed: %v", network, err)
+	if _, err := io.ReadFull(conn, response); err != nil {
+		return fmt.Errorf("%s: %w", payload, err)
+	}
+	if string(response) != payload {
+		return fmt.Errorf("%s: unexpected response %q", payload, response)
+	}
+	return nil
+}
+
+func TestXrayNamespaceDNS(t *testing.T) {
+	bind := os.Getenv("XRAY_TEST_DNS_BIND")
+	if bind == "" {
+		t.Skip("run by the isolated Xray interoperability test")
+	}
+	answer := netip.MustParseAddr(os.Getenv("XRAY_TEST_DNS_AAAA")).As16()
+	socket, err := net.ListenPacket("udp4", bind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer socket.Close()
+	fmt.Println("ready")
+	// These are the only questions sent by the fixture. Additional EDNS
+	// records from the client are omitted from the synthetic response.
+	questions := [][]byte{
+		[]byte("\x04echo\x03vpn\x04test\x00\x00\x1c\x00\x01"),
+		[]byte("\x09localhost\x00\x00\x1c\x00\x01"),
+	}
+	buffer := make([]byte, 4096)
+	for {
+		n, source, err := socket.ReadFrom(buffer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n < 12 || buffer[4] != 0 || buffer[5] != 1 {
+			continue
+		}
+		for i, question := range questions {
+			if !bytes.HasPrefix(buffer[12:n], question) {
+				continue
+			}
+			response := []byte{buffer[0], buffer[1], 0x81, 0x80, 0, 1, 0, 0, 0, 0, 0, 0}
+			response = append(response, question...)
+			if i == 0 {
+				response[7] = 1
+				response = append(response, 0xc0, 0x0c, 0, 28, 0, 1, 0, 0, 0, 0, 0, 16)
+				response = append(response, answer[:]...)
+			} else {
+				response[3] = 0x83
+			}
+			if _, err := socket.WriteTo(response, source); err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
 	}
 }

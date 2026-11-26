@@ -130,17 +130,7 @@ type fixture struct {
 
 func makeFixture(t *testing.T, binary string, pki testkit.PKI) fixture {
 	t.Helper()
-	f := fixture{binary: binary, dir: t.TempDir()}
-	write := func(name string, data []byte, mode os.FileMode) {
-		t.Helper()
-		if err := os.WriteFile(filepath.Join(f.dir, name), data, mode); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write("ca.pem", pki.CA, 0600)
-	write("server.pem", pki.Server.Certificate, 0600)
-	write("server.key", pki.Server.PrivateKey, 0600)
-	write("verify-user", []byte("#!/bin/sh\n{ IFS= read -r user; IFS= read -r pass; } < \"$1\"\n[ \"$user\" = "+username+" ] && [ \"$pass\" = "+password+" ]\n"), 0700)
+	f := makePKIFixture(t, binary, pki)
 	for _, args := range [][]string{
 		{"--genkey", "secret", "shared.key"},
 		{"--genkey", "tls-crypt-v2-server", "wrap.key"},
@@ -155,6 +145,22 @@ func makeFixture(t *testing.T, binary string, pki testkit.PKI) fixture {
 	return f
 }
 
+func makePKIFixture(t *testing.T, binary string, pki testkit.PKI) fixture {
+	t.Helper()
+	f := fixture{binary: binary, dir: t.TempDir()}
+	write := func(name string, data []byte, mode os.FileMode) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(f.dir, name), data, mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("ca.pem", pki.CA, 0600)
+	write("server.pem", pki.Server.Certificate, 0600)
+	write("server.key", pki.Server.PrivateKey, 0600)
+	write("verify-user", []byte("#!/bin/sh\n{ IFS= read -r user; IFS= read -r pass; } < \"$1\"\n[ \"$user\" = "+username+" ] && [ \"$pass\" = "+password+" ]\n"), 0700)
+	return f
+}
+
 func (f fixture) start(t *testing.T, network, mode string, passwordAuth bool, extra ...string) uint16 {
 	t.Helper()
 	port := localPort(t, network)
@@ -164,6 +170,11 @@ func (f fixture) start(t *testing.T, network, mode string, passwordAuth bool, ex
 
 func (f fixture) launch(t *testing.T, port uint16, network, mode string, passwordAuth bool, extra ...string) func() {
 	t.Helper()
+	stop, _ := f.launchArgs(t, serverArgs(port, network, mode, passwordAuth, extra...))
+	return stop
+}
+
+func serverArgs(port uint16, network, mode string, passwordAuth bool, extra ...string) []string {
 	proto := "udp4"
 	if network == "tcp" {
 		proto = "tcp4-server"
@@ -191,7 +202,11 @@ func (f fixture) launch(t *testing.T, port uint16, network, mode string, passwor
 	if passwordAuth {
 		args = append(args, "--script-security", "2", "--auth-user-pass-verify", "./verify-user", "via-file")
 	}
-	args = append(args, extra...)
+	return append(args, extra...)
+}
+
+func (f fixture) launchArgs(t *testing.T, args []string) (stopServer func(), logPath string) {
+	t.Helper()
 	binary := f.binary
 	if f.namespace != "" {
 		args = append([]string{"netns", "exec", f.namespace, binary}, args...)
@@ -229,7 +244,7 @@ func (f fixture) launch(t *testing.T, port uint16, network, mode string, passwor
 			t.Fatal(err)
 		}
 		if bytes.Contains(output, []byte("Initialization Sequence Completed")) {
-			return stop
+			return stop, log.Name()
 		}
 		if bytes.Contains(output, []byte("Exiting due to fatal error")) {
 			t.Fatal("OpenVPN exited during startup")
@@ -237,7 +252,7 @@ func (f fixture) launch(t *testing.T, port uint16, network, mode string, passwor
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("OpenVPN server did not start")
-	return nil
+	return nil, ""
 }
 
 func localPort(t *testing.T, network string) uint16 {

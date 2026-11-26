@@ -112,6 +112,7 @@ interface connects to the local packet source and sink.
 - tunnel/: packet-oriented tunnel interfaces.
 - internal/: protocol, control/data channels, cryptography, sessions and failover.
 - integrations/xray/: Linux egress adapter and 3x-ui configuration example.
+- integrations/netstack/: [optional unprivileged TCP, UDP and DNS adapter](integrations/netstack/README.md) in a separate Go module.
 - tests/interop/: real OpenVPN interoperability scenarios.
 - docs/: requirements, architecture, security, clean-room process and roadmap.
 
@@ -158,7 +159,7 @@ profile locally with `go run ./cmd/ovpn-inspect client.ovpn`.
 
 Use Go 1.26.11, the version pinned in `go.mod`. Use a supported C compiler
 for the race detector. The interoperability suites use pinned OpenVPN
-Community 2.6.22 and 2.6.23 peers in isolated Linux test networks.
+Community 2.6.22, 2.6.23 and 2.7.9 peers in isolated Linux test networks.
 [Go downloads](https://go.dev/dl/) · [Compatibility matrix](docs/COMPATIBILITY_MATRIX.md) · [Interop test instructions](tests/interop/README.md)
 
 ```sh

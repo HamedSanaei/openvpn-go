@@ -41,7 +41,7 @@ ovpn-xray -profile /etc/openvpn/client.ovpn -root /etc/openvpn/material \
 `-attempts=-1` opts in to unlimited cancellable retries. Otherwise
 the default recovery budget visits every profile candidate once.
 Use `-ipv6` with the expected host prefix when you also provision IPv6
-addresses and routes. The tested Xray data-path example uses IPv4.
+addresses and routes.
 
 ## Configure 3x-ui
 
@@ -67,10 +67,63 @@ as `AsIs` and place these rules ahead of broader matches. Use a
 ]
 ~~~
 
-Domain routing needs a separately configured DNS path through the
-tunnel. The example blocks unmatched targets and uses the normal
-Xray socket bind failure as an outbound error. Review that the
-`via-vpn` inbound and its matches precede other fallback rules.
+### IPv6 and DNS inside the tunnel
+
+For a dual-stack peer, provision the assigned IPv6 prefix and routing
+policy for `ovpn0`. Add `-ipv6 fd49:67::1000/64` to the adapter command
+when using the test prefix below.
+
+~~~sh
+sudo ip -6 address add fd49:67::1000/64 dev ovpn0 noprefixroute
+sudo ip -6 route add default dev ovpn0 src fd49:67::1000 table 400
+sudo ip -6 rule add priority 10400 oif ovpn0 lookup 400
+~~~
+
+Set the Xray resolver to an address and port reachable inside your VPN.
+This example resolves names to IPv6 and routes the resolver's UDP traffic
+through the same interface as the selected application inbound. Merge the
+objects into the corresponding sections of the Xray template.
+
+~~~json
+{
+  "dns": {
+    "tag": "vpn-dns",
+    "queryStrategy": "UseIPv6",
+    "disableFallback": true,
+    "servers": [{"address": "10.49.0.1", "port": 53}]
+  },
+  "outbounds": [
+    {"tag": "ovpn-blocked", "protocol": "blackhole"},
+    {
+      "tag": "openvpn",
+      "protocol": "freedom",
+      "streamSettings": {
+        "sockopt": {"interface": "ovpn0", "domainStrategy": "ForceIPv6"}
+      }
+    }
+  ],
+  "routing": {
+    "domainStrategy": "AsIs",
+    "rules": [
+      {
+        "type": "field",
+        "inboundTag": ["via-vpn", "vpn-dns"],
+        "outboundTag": "openvpn"
+      }
+    ]
+  }
+}
+~~~
+
+`ForceIPv6` makes DNS failure terminal for domain destinations. Put the
+VPN rule above broader matches. A dedicated Xray instance can use
+`ovpn-blocked` as the default outbound to drop unmapped flows. In a shared
+instance, keep the existing default for unrelated inbounds and ensure both
+VPN tags always match the VPN rule. An unavailable interface fails the
+socket setup.
+[Xray socket options](https://xtls.github.io/en/config/transports/sockopt.html) · [Xray DNS](https://xtls.github.io/en/config/dns.html)
+
+### Lifecycle
 
 Send SIGTERM to the adapter to cancel dial, backoff and forwarding.
 The command closes its TUN handle after the client joins its workers.
@@ -88,8 +141,10 @@ send resolver traffic through that intended path.
 
 ## Verify
 
-The isolated test runs stock Xray with the example outbound, sends TCP
-and UDP through OpenVPN to an echo process in a second network
-namespace, restarts the OpenVPN peer and checks both protocols again.
+The isolated stock Xray test sends concurrent TCP and UDP requests to
+IPv4 literals, IPv6 literals and an AAAA name from an in-tunnel resolver.
+It repeats the six flows after restarting OpenVPN. Reachable loopback
+listeners detect unwanted fallback after DNS failure or an unavailable
+bound interface.
 See the [integration test](../../tests/interop/xray_test.go) and
 [interop commands](../../tests/interop/README.md).

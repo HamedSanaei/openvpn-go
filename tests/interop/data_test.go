@@ -133,13 +133,13 @@ func interopPeer(t *testing.T) string {
 	t.Helper()
 	path := os.Getenv("OPENVPN_INTEROP_BIN")
 	if path == "" {
-		t.Skip("set OPENVPN_INTEROP_BIN to a pinned OpenVPN 2.6 test binary")
+		t.Skip("set OPENVPN_INTEROP_BIN to a pinned modern OpenVPN test binary")
 	}
 	version := os.Getenv("OPENVPN_INTEROP_VERSION")
 	switch version {
 	case "":
 		version = "2.6.23"
-	case "2.6.22", "2.6.23":
+	case "2.6.22", "2.6.23", "2.7.9":
 	default:
 		t.Fatal("unsupported reference peer version")
 	}
