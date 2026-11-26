@@ -137,6 +137,24 @@ func (p *pushState) option(name string, arg []byte) error {
 				return ErrNegotiation
 			}
 		}
+	case "explicit-exit-notify":
+		// Legacy exit retries are optional. Only an authenticated
+		// cc-exit flag can select reliable control-channel notification.
+		if len(arg) != 0 {
+			if _, err := strconv.ParseUint(string(arg), 10, 8); err != nil {
+				return ErrNegotiation
+			}
+		}
+	case "socket-flags":
+		if string(arg) != "TCP_NODELAY" {
+			return ErrNegotiation
+		}
+	case "sndbuf", "rcvbuf":
+		// The application owns transport socket settings. Validate the
+		// supplied byte count without allocating or resizing buffers.
+		if _, err := strconv.ParseUint(string(arg), 10, 31); err != nil {
+			return ErrNegotiation
+		}
 	case "auth-token":
 		if len(p.token) != 0 || len(arg) == 0 || !validKeyString(string(arg)) {
 			return ErrNegotiation

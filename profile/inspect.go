@@ -36,6 +36,12 @@ type Report struct {
 // limits. It never opens references, interprets inline material or dials a
 // peer. Parse still validates required directives and referenced material.
 func Inspect(r io.Reader) (Report, error) {
+	return InspectWithOptions(r, Options{})
+}
+
+// InspectWithOptions classifies a profile under the configured import policy.
+// It uses the profile syntax options and does not load files or credentials.
+func InspectWithOptions(r io.Reader, opts Options) (Report, error) {
 	if r == nil {
 		return Report{}, (location{}).diagnostic(CodeRead)
 	}
@@ -47,7 +53,7 @@ func Inspect(r io.Reader) (Report, error) {
 	if len(raw) > maxProfile {
 		return Report{}, (location{}).diagnostic(CodeLimit)
 	}
-	p := parser{cfg: client.Config{TLS: &client.TLSConfig{}}}
+	p := parser{opts: Options{ProtonVPNServerName: opts.ProtonVPNServerName}, cfg: client.Config{TLS: &client.TLSConfig{}}}
 	report := Report{Entries: []CapabilityEntry{}}
 	err = p.read(bytes.TrimPrefix(raw, []byte("\xef\xbb\xbf")), &report)
 	slices.SortStableFunc(report.Entries, func(a, b CapabilityEntry) int { return cmp.Compare(a.Line, b.Line) })

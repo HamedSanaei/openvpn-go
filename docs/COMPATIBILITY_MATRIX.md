@@ -126,6 +126,15 @@ backend of each build and retains both 2.6 peers.
 Epoch framing and DCO remain outside the supported profile.
 [Epoch evaluation](EPOCH_DATA.md) · [Live tests](../tests/interop/data_test.go)
 
+## Proton VPN manual exports
+
+An authorized lab verified all twelve supplied exports over TCP or UDP
+with the opt-in provider import. The sessions used TLS 1.3, AES-256-GCM,
+TLS exporter key derivation and `DATA_V2`. Gateway traffic and reconnect
+passed on every exported candidate. An isolated TUN passed UDP DNS and
+HTTPS on both transports. The evidence covers one IPv4 server
+and the explicitly provisioned identity. [Import and test details](EXTERNAL_INTEROP.md#proton-vpn)
+
 ## Evidence records
 
 M2 passed all 20 baseline control scenarios over TLS 1.2, with

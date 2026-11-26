@@ -28,6 +28,10 @@ type Options struct {
 	// AllowPasswordOnly authorizes a verified TLS profile with auth-user-pass
 	// and no client certificate or key.
 	AllowPasswordOnly bool
+	// ProtonVPNServerName enables the Proton VPN manual import policy.
+	// Supply the exact certificate common name from a trusted provider
+	// source. The profile cannot set or override this value.
+	ProtonVPNServerName string
 	// Authentication authorizes caller-managed credentials and interaction.
 	Authentication client.Authentication
 	// Identity supplies a matching key for a profile with cert and no key.
@@ -80,6 +84,7 @@ type parser struct {
 	noCache           location
 	attemptsPerRemote int
 	attemptsLocation  location
+	protonHints       map[string]location
 
 	defaults connection
 	remotes  []remote
@@ -189,7 +194,7 @@ func (p *parser) read(remaining []byte, report *Report) error {
 	if p.block != nil {
 		return report.record(p.blockLoc, p.blockLoc.diagnostic(CodeSyntax), false)
 	}
-	return nil
+	return p.checkProtonDNSHooks(report)
 }
 
 func (p *parser) readDirective(line string, number int) (location, error) {
@@ -205,6 +210,9 @@ func (p *parser) readDirective(line string, number int) (location, error) {
 		return location{}, nil
 	}
 	rule, supported := directives[loc.name]
+	if !supported && p.opts.ProtonVPNServerName != "" {
+		rule, supported = protonDirectives[loc.name]
+	}
 	if !supported {
 		return loc, loc.diagnostic(CodeUnsupported)
 	}
@@ -230,6 +238,9 @@ func (p *parser) finish() error {
 	}
 	if !tlscontrol.ValidVersions(p.cfg.TLS.MinVersion, p.cfg.TLS.MaxVersion) {
 		return p.versionLocation.diagnostic(CodeConflict)
+	}
+	if err := p.setProtonServerIdentity(); err != nil {
+		return err
 	}
 	if err := p.endpoints(); err != nil {
 		return err

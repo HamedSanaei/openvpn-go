@@ -76,6 +76,22 @@ func TestNegotiationPolicyOpenVPN26(t *testing.T) {
 			t.Fatalf("cipher mismatch: %v, %+v", err, c.Stats())
 		}
 	})
+	t.Run("optional_transport_hints", func(t *testing.T) {
+		for _, network := range []string{"tcp", "udp"} {
+			t.Run(network, func(t *testing.T) {
+				port, echo := startDataPeer(t, f, network, "tls-crypt", true, "1.3", "AES-256-GCM",
+					"--push", "explicit-exit-notify", "--push", "socket-flags TCP_NODELAY",
+					"--push", "sndbuf 524288", "--push", "rcvbuf 524288")
+				cfg := f.config(pki, network, "tls-crypt", port, true)
+				c, app := connectData(t, cfg)
+				info, ok := c.ControlInfo()
+				if !ok || info.DataCipher != "AES-256-GCM" {
+					t.Fatal("missing negotiated AEAD")
+				}
+				roundtrip(t, app, echo, info.TunnelIP.AsSlice(), []byte("authenticated transport hints"))
+			})
+		}
+	})
 	t.Run("honor_ping_exit", func(t *testing.T) {
 		port := f.start(t, "tcp", "tls", false, "--push", "ping-exit 1")
 		cfg := f.config(pki, "tcp", "tls", port, false)
