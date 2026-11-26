@@ -37,7 +37,9 @@ copy_text() { sed 's/\r$//' "$1" > "$2"; }
 copy_text LICENSE "$stage/LICENSE"
 copy_text CHANGELOG.md "$stage/CHANGELOG.md"
 copy_text docs/sbom.spdx.json "$stage/sbom.spdx.json"
-copy_text "$(go env GOROOT)/LICENSE" "$stage/licenses/Go.LICENSE"
+goroot=$(go env GOROOT)
+copy_text "$goroot/LICENSE" "$stage/licenses/Go.LICENSE"
+copy_text "$goroot/PATENTS" "$stage/licenses/Go.PATENTS"
 for namepart in crypto sys; do
     moddir=$(go list -m -f '{{.Dir}}' "golang.org/x/$namepart")
     copy_text "$moddir/LICENSE" "$stage/licenses/x-$namepart.LICENSE"

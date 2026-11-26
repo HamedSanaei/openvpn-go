@@ -40,6 +40,43 @@ The build and observed results are in the
 [compatibility matrix](../../docs/COMPATIBILITY_MATRIX.md#evidence-records).
 The ordinary unit suite runs without a server.
 
+## Compare OpenVPN 3 Core with OpenVPN Go
+
+On Ubuntu 24.04 with Go on PATH, install these test-only build dependencies.
+
+~~~sh
+sudo apt-get install --no-install-recommends build-essential cmake ninja-build pkg-config \
+  iproute2 libasio-dev libcap-dev libcap-ng-dev libfmt-dev liblz4-dev liblzo2-dev \
+  libjsoncpp-dev libssl-dev libxxhash-dev python3
+~~~
+
+Build the external Core CLI from the pinned release archive and run it
+against the same Community server as OpenVPN Go. Build directories belong
+outside the Go module. Use an isolated Linux host with `/dev/net/tun` and
+permission to create network and mount namespaces.
+
+~~~sh
+lab="$(mktemp -d)"
+server="$(bash tests/interop/build-peer.sh 2.6.23 "$lab/server")"
+core="$(bash tests/interop/build-openvpn3.sh "$lab/core")"
+core_sha="$(cut -d ' ' -f1 "$lab/core/ovpncli.sha256")"
+go mod download
+sudo env PATH="$PATH" GOTOOLCHAIN=local GOMODCACHE="$(go env GOMODCACHE)" GOPROXY=off \
+  OPENVPN_INTEROP_BIN="$server" OPENVPN3_INTEROP_BIN="$core" \
+  OPENVPN3_INTEROP_SHA256="$core_sha" OPENVPN3_COMPARISON_JSON="$lab/comparison.json" \
+  unshare --net --mount bash -c 'ip link set lo up && exec go test -race -count=1 -v -run "^TestOpenVPN3Differential$" ./tests/interop'
+~~~
+
+The job reports results and the two executable hashes as
+`openvpn3-conformance`. Exit status is nonzero on an unexpected outcome
+or a failed expected match. TLS versions, negotiated ciphers and transport
+come from the respective client observations. Traffic is verified using
+a real UDP round trip through the server's TUN. The Go side uses the
+public packet API. Core uses a kernel TUN in a second network namespace.
+The harness generates its own profiles, PKI and credentials.
+For local runs, read the root-owned report with `sudo cat "$lab/comparison.json"`.
+[Results and reference pins](../../docs/COMPATIBILITY_MATRIX.md#openvpn-3-core-differential-reference)
+
 `bash tests/interop/build-peer.sh 2.6.22 /path/to/disposable/build`
 builds the second pinned version and prints its executable path.
 

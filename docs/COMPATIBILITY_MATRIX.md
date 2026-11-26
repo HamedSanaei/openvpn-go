@@ -36,6 +36,29 @@ formats, and Access Server or other OpenVPN releases without recorded results.
 IPv6 transport and IPv6 tunnel traffic are focused tests, independent of the
 IPv4 matrix. [Project scope](REQUIREMENTS.md)
 
+## OpenVPN 3 Core differential reference
+
+The differential harness uses the upstream OpenVPN 3 Core `ovpncli` from
+release `3.11.8`, commit `4f3bdef73245d4ee9e8216c5d65baccc9568f6ef`.
+Each run builds the external CLI from the SHA-256-pinned release source and
+verifies the resulting binary against its recorded digest before use.
+The harness also records the Community 2.6.23 server executable digest.
+Core and OpenVPN Go use the same generated profile for each case.
+[Core release](https://github.com/OpenVPN/openvpn3/tree/release/3.11.8) · [Test instructions](../tests/interop/README.md#compare-openvpn-3-core-with-openvpn-go)
+
+| Observed case | Result |
+|---|---|
+| UDP, TLS 1.2 and AES-128-GCM | Matching negotiation and bidirectional UDP payload |
+| TCP, TLS 1.3, AES-256-GCM, tls-auth and valid password | Matching negotiation and bidirectional UDP payload |
+| UDP, TLS 1.3, ChaCha20-Poly1305 and tls-crypt | Matching negotiation and bidirectional UDP payload |
+| UDP, TLS 1.3, AES-256-GCM and tls-crypt-v2 with forced cookie | Matching negotiation and bidirectional UDP payload |
+| Wrong certificate name, wrong CA and wrong password | Both reject each profile with the corresponding failure category |
+| Profile `connect-retry-max` | Core connects and passes traffic. The Go profile parser rejects the directive and exposes the retry limit through the caller's `RetryPolicy`. |
+
+The report establishes the results for these generated cases. Add a case
+for each new behavior before expanding compatibility claims.
+[Differential tests](../tests/interop/openvpn3_test.go) · [Hardening workflow](../.github/workflows/hardening.yml)
+
 ## Candidate coverage for older servers and MikroTik
 
 These candidates extend the compatibility investigation. The 2.6.23 baseline

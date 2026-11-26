@@ -32,44 +32,123 @@ jobs:
       GOTOOLCHAIN: local
       RELEASE_OS: ${{ matrix.target.os }}
       RELEASE_ARCH: ${{ matrix.target.arch }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
       - name: Build and verify reproducibility
+        id: package
         shell: bash
         run: |
           first="$(bash tools/build-release.sh v0.1.0-beta "$RELEASE_OS" "$RELEASE_ARCH" dist)"
           second="$(bash tools/build-release.sh v0.1.0-beta "$RELEASE_OS" "$RELEASE_ARCH" "$RUNNER_TEMP/reproduction")"
           cmp "$first" "$second"
-      - uses: actions/upload-artifact@v4
+          archive="$(basename "$first")"
+          (cd dist && sha256sum "$archive" > "$archive.sha256")
+          echo "path=$first" >> "$GITHUB_OUTPUT"
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: ${{ steps.package.outputs.path }}
+      - name: Attest the package SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: ${{ steps.package.outputs.path }}
+          sbom-path: docs/sbom.spdx.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: beta-${{ matrix.target.os }}-${{ matrix.target.arch }}
-          path: dist/*.tar.gz
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
           if-no-files-found: error
 
-  publish:
-    if: inputs.publish && github.ref == 'refs/tags/v0.1.0-beta'
+  candidate:
     needs: build
     runs-on: ubuntu-24.04
-    environment: beta-release
-    concurrency: beta-release
     permissions:
-      contents: write
+      contents: read
+      attestations: read
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: beta-*
           path: dist
           merge-multiple: true
+      - name: Independently verify checksums and attestations
+        shell: bash
+        run: |
+          cp docs/sbom.spdx.json dist/
+          cd dist
+          : > SHA256SUMS
+          for target in darwin-arm64 linux-amd64 linux-arm64 windows-amd64; do
+            name="openvpn-go-v0.1.0-beta-$target"
+            archive="$name.tar.gz"
+            sha256sum "$archive" | cmp - "$archive.sha256"
+            cat "$archive.sha256" >> SHA256SUMS
+            tar -xOf "$archive" "$name/sbom.spdx.json" | cmp - sbom.spdx.json
+            for predicate in 'https://slsa.dev/provenance/v1' 'https://spdx.dev/Document'; do
+              gh attestation verify "$archive" --repo "$GITHUB_REPOSITORY" \
+                --source-digest "$GITHUB_SHA" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+                --deny-self-hosted-runners --predicate-type "$predicate"
+            done
+          done
+          sha256sum sbom.spdx.json >> SHA256SUMS
+          rm -- ./*.tar.gz.sha256
+          printf 'Commit `%s`\n\nManifest SHA-256 `%s`\n' "$GITHUB_SHA" \
+            "$(sha256sum SHA256SUMS | cut -d ' ' -f1)" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verified-beta-candidate
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    if: inputs.publish && github.ref == 'refs/tags/v0.1.0-beta'
+    needs: candidate
+    runs-on: ubuntu-24.04
+    environment: beta-release
+    concurrency: beta-release
+    permissions:
+      actions: read
+      contents: write
+      issues: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: verified-beta-candidate
+          path: dist
+      - name: Verify two independent approvals
+        shell: bash
+        env:
+          SECURITY_REVIEWER_ID: ${{ vars.BETA_SECURITY_REVIEWER_ID }}
+          PROVENANCE_REVIEWER_ID: ${{ vars.BETA_PROVENANCE_REVIEWER_ID }}
+        run: |
+          (cd dist && sha256sum --check --strict SHA256SUMS)
+          gh api "repos/$GITHUB_REPOSITORY/environments/beta-release" > "$RUNNER_TEMP/beta-environment.json"
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/issues/3/comments?per_page=100" > "$RUNNER_TEMP/beta-reviews.json"
+          python3 tools/release_approvals.py "$RUNNER_TEMP/beta-environment.json" \
+            "$RUNNER_TEMP/beta-reviews.json" dist/SHA256SUMS > dist/RELEASE_APPROVALS.json
       - name: Publish the prerelease
         shell: bash
         run: |
-          (cd dist && sha256sum ./*.tar.gz > SHA256SUMS)
-          gh release create v0.1.0-beta dist/*.tar.gz dist/SHA256SUMS \
+          gh release create v0.1.0-beta dist/*.tar.gz dist/sbom.spdx.json dist/SHA256SUMS dist/RELEASE_APPROVALS.json \
             --verify-tag --prerelease --title 'v0.1.0-beta' --notes-file CHANGELOG.md

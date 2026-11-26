@@ -15,13 +15,63 @@ defaults:
     shell: bash
 
 jobs:
+  openvpn3:
+    name: OpenVPN 3 Core differential conformance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build pinned test references
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential cmake ninja-build pkg-config \
+            iproute2 libasio-dev libcap-dev libcap-ng-dev libfmt-dev liblz4-dev liblzo2-dev \
+            libjsoncpp-dev libssl-dev libxxhash-dev
+          peer="$(bash tests/interop/build-peer.sh 2.6.23 "$RUNNER_TEMP/openvpn")"
+          core="$(bash tests/interop/build-openvpn3.sh "$RUNNER_TEMP/openvpn3")"
+          echo "OPENVPN_INTEROP_BIN=$peer" >> "$GITHUB_ENV"
+          echo "OPENVPN3_INTEROP_BIN=$core" >> "$GITHUB_ENV"
+          echo "OPENVPN3_INTEROP_SHA256=$(cut -d ' ' -f1 "$RUNNER_TEMP/openvpn3/ovpncli.sha256")" >> "$GITHUB_ENV"
+      - name: Compare isolated client sessions
+        run: |
+          go mod download
+          mkdir -p evidence
+          "$OPENVPN3_INTEROP_BIN" --version > evidence/openvpn3-version.txt
+          "$OPENVPN_INTEROP_BIN" --version > evidence/server-version.txt
+          report="$RUNNER_TEMP/openvpn3-comparison.json"
+          sudo env PATH="$PATH" GOTOOLCHAIN=local GOMODCACHE="$(go env GOMODCACHE)" GOPROXY=off \
+            OPENVPN_INTEROP_BIN="$OPENVPN_INTEROP_BIN" OPENVPN3_INTEROP_BIN="$OPENVPN3_INTEROP_BIN" \
+            OPENVPN3_INTEROP_SHA256="$OPENVPN3_INTEROP_SHA256" OPENVPN3_COMPARISON_JSON="$report" \
+            unshare --net --mount bash -c 'ip link set lo up && exec go test -race -count=1 -timeout 3m -v -run "^TestOpenVPN3Differential$" ./tests/interop' \
+            | tee evidence/openvpn3-tests.txt
+      - name: Collect comparison on pass or failure
+        if: always()
+        run: |
+          report="$RUNNER_TEMP/openvpn3-comparison.json"
+          if sudo test -f "$report"; then
+            sudo cat "$report" > evidence/openvpn3-comparison.json
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: openvpn3-conformance
+          path: evidence/
+
   xray:
     name: Xray 26.10.21 egress
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
@@ -42,7 +92,7 @@ jobs:
             OPENVPN_INTEROP_BIN="$OPENVPN_INTEROP_BIN" XRAY_INTEROP_BIN="$XRAY_INTEROP_BIN" \
             unshare --net sh -c 'ip link set lo up && exec go test -race -json -count=1 -timeout 3m -run "^TestXrayEgressOpenVPN26$" ./tests/interop' \
             | tee evidence/xray-interop.jsonl
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: xray-interop
           path: evidence/
@@ -58,8 +108,10 @@ jobs:
     env:
       OPENVPN_INTEROP_VERSION: ${{ matrix.version }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
@@ -79,7 +131,7 @@ jobs:
             OPENVPN_INTEROP_BIN="$OPENVPN_INTEROP_BIN" OPENVPN_INTEROP_VERSION="$OPENVPN_INTEROP_VERSION" \
             unshare --net sh -c 'ip link set lo up && exec go test -race -json -count=1 -timeout 5m ./tests/interop' \
             | tee evidence/interop.jsonl
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: interop-${{ matrix.version }}
           path: evidence/
@@ -96,14 +148,16 @@ jobs:
       FUZZ_TIME: 2m
       FUZZ_TARGET: ${{ matrix.target }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
       - name: Run fuzz target
         run: sh tests/fuzz/run.sh "$FUZZ_TARGET" | tee fuzz.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: fuzz-${{ matrix.target }}
@@ -114,8 +168,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
@@ -131,7 +187,7 @@ jobs:
         run: |
           make bench | tee evidence/benchmarks.txt
           python3 tools/check_benchmarks.py evidence/benchmarks.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: release-audit

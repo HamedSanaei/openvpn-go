@@ -11,14 +11,16 @@ references beside the affected requirement or behavior.
 | Protocol references | OpenVPN's public wire draft, 2.6 manual and official generated protocol documentation | Technical references for wire facts | [Wire draft](https://openvpn.github.io/openvpn-rfc/openvpn-wire-protocol.html) · [Manual](https://openvpn.net/community-docs/community-articles/openvpn-2-6-manual/) · [Protocol documentation](https://build.openvpn.net/doxygen/network_protocol.html) |
 | OpenVPN 2.6.23 | Official tag `v2.6.23`, commit `49620843c487a7fee58e3030b7c88681c115e24e` | External reference peer. Tagged materials corroborate protocol facts where the draft is incomplete. | [Exact release](https://github.com/OpenVPN/openvpn/releases/tag/v2.6.23) · [Compatibility matrix](COMPATIBILITY_MATRIX.md) |
 | OpenVPN 2.6.22 | Signed release `v2.6.22`, commit `c9b790f5b9e8ebca5da38c22f479c31bb8d33686` | Isolated interoperability peer. Source archive SHA-256 is pinned in the build script. | [Exact release](https://github.com/OpenVPN/openvpn/releases/tag/v2.6.22) · [Build script](../tests/interop/build-peer.sh) |
+| OpenVPN 3 Core 3.11.8 | Release commit `4f3bdef73245d4ee9e8216c5d65baccc9568f6ef`, source archive SHA-256 `522faf3f7485117423a9c398606062105c4453c11d4d5ebab45e7c209cc3a9ef` | AGPL-3.0-only or MPL-2.0 upstream. The upstream executable runs as an external test client. Source and binary stay in the lab, and only normalized results and binary digests appear in test evidence. | [Upstream terms](https://github.com/OpenVPN/openvpn3/blob/4f3bdef73245d4ee9e8216c5d65baccc9568f6ef/LICENSE.md) · [Build script](../tests/interop/build-openvpn3.sh) |
 | Xray-core 26.10.21 | Official Linux amd64 release, commit `1b1647cd9ddf0abc34b981d4611fc03bcac1ca74` | External interoperability peer. Its binary and assets stay outside the Go release archive. | [Exact release](https://github.com/XTLS/Xray-core/releases/tag/v26.10.21) · [Digest and setup](../tests/interop/build-xray-peer.sh) |
 | 3x-ui target | Checkout revision `e50f949a04174e26de247b40baa2e260415174e9` | Configuration boundary reference. The adapter consumes its stock Xray outbound shape. | [Integration ADR](adr/0007-xray-linux-egress.md) |
 | TLS and exporter standards | RFC 5705 and RFC 8446 | Specifications for protocol behavior | [RFC 5705](https://www.rfc-editor.org/info/rfc5705) · [RFC 8446](https://www.rfc-editor.org/info/rfc8446) |
 | Go and standard library | Official Go 1.26.11, Windows and Linux amd64 archives verified against published SHA-256 values | BSD-3-Clause for the Go project. Review the toolchain's bundled notices when distributing artifacts. | [Go downloads](https://go.dev/dl/) · [Go license](https://go.dev/LICENSE) |
-| GitHub Actions | Existing `actions/checkout@v4` and `actions/setup-go@v5` references | MIT, CI tooling | [checkout v4 license](https://github.com/actions/checkout/blob/v4/LICENSE) · [setup-go v5 license](https://github.com/actions/setup-go/blob/v5/LICENSE) |
+| GitHub Actions | Checkout v4 at `11d5960a326750d5838078e36cf38b85af677262` and setup-go v5 at `40f1582b2485089dde7abd97c1529aa768e1baff` | MIT, CI tooling | [Checkout license](https://github.com/actions/checkout/blob/11d5960a326750d5838078e36cf38b85af677262/LICENSE) · [Setup-go license](https://github.com/actions/setup-go/blob/40f1582b2485089dde7abd97c1529aa768e1baff/LICENSE) |
 | actionlint | `github.com/rhysd/actionlint` v1.7.11 | MIT, local M0 workflow validation tool | [Release](https://github.com/rhysd/actionlint/releases/tag/v1.7.11) · [License](https://github.com/rhysd/actionlint/blob/v1.7.11/LICENSE.txt) |
 | Govulncheck | `golang.org/x/vuln` v1.10.0 | BSD-3-Clause, dependency and standard-library analysis tool | [Command and version](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck@v1.10.0) |
-| GitHub artifact actions | `actions/upload-artifact@v4` and `actions/download-artifact@v4` | MIT, CI evidence and prerelease package transport | [Upload license](https://github.com/actions/upload-artifact/blob/v4/LICENSE) · [Download license](https://github.com/actions/download-artifact/blob/v4/LICENSE) |
+| GitHub artifact actions | Upload v4 at `ea165f8d65b6e75b540449e92b4886f43607fa02` and download v4 at `d3f86a106a0bac45b974a628896c90dbdf5c8093` | MIT, CI evidence and prerelease package transport | [Upload license](https://github.com/actions/upload-artifact/blob/ea165f8d65b6e75b540449e92b4886f43607fa02/LICENSE) · [Download license](https://github.com/actions/download-artifact/blob/d3f86a106a0bac45b974a628896c90dbdf5c8093/LICENSE) |
+| GitHub artifact attestation | Attest v4 at `1e69f48acb82d1966a394da916b4c1698aa569d6` | MIT, release build and SPDX attestation in CI | [Attestation action license](https://github.com/actions/attest/blob/1e69f48acb82d1966a394da916b4c1698aa569d6/LICENSE) |
 
 Protocol citations identify interoperable behavior. Keep upstream code,
 expressive text, and tests out of project code and fixtures unless a
@@ -101,6 +103,11 @@ The unit and fuzz suites also use independently constructed Static Key V1
 and wrapped-key syntax fixtures. These fixtures are solely test data and
 contain no deployed keys or user credentials.
 [Profile parser fixtures](../profile/parse_test.go) · [Interop profiles](../tests/interop/profile_test.go)
+
+The Core comparison reuses the project's test PKI and OpenVPN key
+generation, then passes one generated profile to both clients. The UDP
+probe uses a project-authored payload and runs on isolated interfaces.
+[Differential lab](../tests/interop/openvpn3_test.go)
 
 For each new fixture, record
 the path, origin, generator and revision, synthetic inputs, intended
