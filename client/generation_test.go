@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"net"
 	"net/netip"
 	"strings"
 	"sync/atomic"
@@ -19,9 +20,19 @@ import (
 type metadataLink struct {
 	transport.PacketConn
 	negotiated tlscontrol.Negotiation
+	done       chan struct{}
 }
 
 func (l metadataLink) Info() (tlscontrol.Negotiation, uint8) { return l.negotiated, 0 }
+func (l metadataLink) Done() <-chan struct{}                 { return l.done }
+func (l metadataLink) Err() error {
+	select {
+	case <-l.done:
+		return net.ErrClosed
+	default:
+		return nil
+	}
+}
 
 type observedTunnel struct {
 	tunnel.PacketConn
@@ -54,9 +65,10 @@ func TestRunConfiguredGatesBothGenerationsAndRollsBack(t *testing.T) {
 				{IPv4: netip.MustParsePrefix("10.2.0.7/24"), IPv6: netip.MustParsePrefix("fd02::7/64"),
 					GatewayIPv4: netip.MustParseAddr("10.2.0.1"), GatewayIPv6: netip.MustParseAddr("fd02::1"), MTU: 1320},
 			}
+			ended := []chan struct{}{make(chan struct{}), make(chan struct{})}
 			for i := range snapshots {
 				c.handshakes[i] = func(_ context.Context, _ Endpoint, raw transport.PacketConn) (tunnel.PacketConn, error) {
-					return metadataLink{raw, tlscontrol.Negotiation{PeerID: uint32(i + 3), Tunnel: snapshots[i]}}, nil
+					return metadataLink{raw, tlscontrol.Negotiation{PeerID: uint32(i + 3), Tunnel: snapshots[i]}, ended[i]}, nil
 				}
 			}
 			ctx, cancel := context.WithCancel(t.Context())
@@ -122,6 +134,15 @@ func TestRunConfiguredGatesBothGenerationsAndRollsBack(t *testing.T) {
 					t.Fatalf("packet after acknowledgement = %v, %v", got[:n], err)
 				}
 				if i == 0 {
+					// The control session can notify its watchers a little
+					// before a forwarding read returns the transport error.
+					close(ended[i])
+					synctest.Wait()
+					select {
+					case <-rollbacks:
+						t.Fatal("session notification masked the forwarding error")
+					default:
+					}
 					peer.Close()
 					if <-rollbacks != 1 {
 						t.Fatal("first generation not rolled back")

@@ -131,7 +131,10 @@ func (c *Client) forwardGeneration(ctx context.Context, device tunnel.PacketConn
 	if generationCtx.Err() != nil {
 		return forwardingError{err: &Error{Op: "configure tunnel", Code: CodeNetwork}, fromSession: true}
 	}
-	return c.forwardSession(generationCtx, device, active.link, inbound, outbound)
+	// Loss cancels the configurator and its DNS sockets immediately.
+	// Packet forwarding observes the session's own error so a canceled
+	// device read cannot hide a reconnectable transport loss.
+	return c.forwardSession(ctx, device, active.link, inbound, outbound)
 }
 
 func (c *Client) endSession(ctx context.Context, active *connection, result forwardingError) (forwardingError, error) {
