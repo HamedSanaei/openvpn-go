@@ -27,6 +27,12 @@ together before publication.
 | MTU | `tun-mtu` from 68 to 65535. When IPv6 is assigned, the minimum is 1280. The application sets its device MTU and selects a client packet-size limit that accommodates it. |
 | DNS | Numeric `dhcp-option DNS` and `DNS6`, `DOMAIN`, `ADAPTER_DOMAIN_SUFFIX` and `DOMAIN-SEARCH`, plus `dns search-domains` and indexed `dns server` settings. Legacy operating-system hints such as `block-outside-dns` have no host effect. |
 
+Authenticated `socket-flags TCP_NODELAY`, numeric `sndbuf` and `rcvbuf`
+are validated transport hints. Socket flags and buffer sizes are owned by
+the dialer. The optional legacy `explicit-exit-notify` retry count is
+validated, and reliable exit notification still depends on the
+authenticated `cc-exit` protocol flag.
+
 DNS groups are ordered by index and each group can supply multiple
 IPv4/IPv6 endpoints, split domains, transport, DNSSEC mode and a TLS
 server name. Indexed server addresses replace legacy DHCP DNS addresses.
