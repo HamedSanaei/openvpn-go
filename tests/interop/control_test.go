@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,15 +26,8 @@ import (
 const username = "interop-user"
 const password = "interop-password"
 
-func TestControlOpenVPN2623(t *testing.T) {
-	binary := os.Getenv("OPENVPN_INTEROP_BIN")
-	if binary == "" {
-		t.Skip("set OPENVPN_INTEROP_BIN to the pinned OpenVPN 2.6.23 binary")
-	}
-	output, err := exec.CommandContext(t.Context(), binary, "--version").Output()
-	if err != nil || !bytes.HasPrefix(output, []byte("OpenVPN 2.6.23 ")) {
-		t.Fatalf("expected OpenVPN 2.6.23: %v", err)
-	}
+func TestControlOpenVPN26(t *testing.T) {
+	binary := interopPeer(t)
 	pki := testkit.NewPKI(t)
 	fixture := makeFixture(t, binary, pki)
 	for _, network := range []string{"udp", "tcp"} {
@@ -129,8 +123,9 @@ func connect(t *testing.T, cfg client.Config) client.ControlInfo {
 }
 
 type fixture struct {
-	binary string
-	dir    string
+	binary    string
+	dir       string
+	namespace string
 }
 
 func makeFixture(t *testing.T, binary string, pki testkit.PKI) fixture {
@@ -163,6 +158,12 @@ func makeFixture(t *testing.T, binary string, pki testkit.PKI) fixture {
 func (f fixture) start(t *testing.T, network, mode string, passwordAuth bool, extra ...string) uint16 {
 	t.Helper()
 	port := localPort(t, network)
+	f.launch(t, port, network, mode, passwordAuth, extra...)
+	return port
+}
+
+func (f fixture) launch(t *testing.T, port uint16, network, mode string, passwordAuth bool, extra ...string) func() {
+	t.Helper()
 	proto := "udp4"
 	if network == "tcp" {
 		proto = "tcp4-server"
@@ -191,7 +192,12 @@ func (f fixture) start(t *testing.T, network, mode string, passwordAuth bool, ex
 		args = append(args, "--script-security", "2", "--auth-user-pass-verify", "./verify-user", "via-file")
 	}
 	args = append(args, extra...)
-	cmd := exec.CommandContext(t.Context(), f.binary, args...)
+	binary := f.binary
+	if f.namespace != "" {
+		args = append([]string{"netns", "exec", f.namespace, binary}, args...)
+		binary = "ip"
+	}
+	cmd := exec.CommandContext(t.Context(), binary, args...)
 	cmd.Dir = f.dir
 	log, err := os.CreateTemp(f.dir, "server-log-")
 	if err != nil {
@@ -204,9 +210,12 @@ func (f fixture) start(t *testing.T, network, mode string, passwordAuth bool, ex
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
-	t.Cleanup(func() {
+	stop := sync.OnceFunc(func() {
 		cmd.Process.Kill()
 		<-done
+	})
+	t.Cleanup(func() {
+		stop()
 		if t.Failed() {
 			output, _ := os.ReadFile(log.Name())
 			t.Logf("OpenVPN server diagnostics:\n%s", output)
@@ -220,7 +229,7 @@ func (f fixture) start(t *testing.T, network, mode string, passwordAuth bool, ex
 			t.Fatal(err)
 		}
 		if bytes.Contains(output, []byte("Initialization Sequence Completed")) {
-			return port
+			return stop
 		}
 		if bytes.Contains(output, []byte("Exiting due to fatal error")) {
 			t.Fatal("OpenVPN exited during startup")
@@ -228,7 +237,7 @@ func (f fixture) start(t *testing.T, network, mode string, passwordAuth bool, ex
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("OpenVPN server did not start")
-	return 0
+	return nil
 }
 
 func localPort(t *testing.T, network string) uint16 {

@@ -25,8 +25,8 @@ import (
 
 const dataDevice = "tun-m3"
 
-func TestDataOpenVPN2623(t *testing.T) {
-	binaryPath := dataPeer(t)
+func TestDataOpenVPN26(t *testing.T) {
+	binaryPath := interopPeer(t)
 	pki := testkit.NewPKI(t)
 	f := makeFixture(t, binaryPath, pki)
 	for _, network := range []string{"udp", "tcp"} {
@@ -56,8 +56,8 @@ func TestDataOpenVPN2623(t *testing.T) {
 	}
 }
 
-func TestDataIPv6OpenVPN2623(t *testing.T) {
-	binaryPath := dataPeer(t)
+func TestDataIPv6OpenVPN26(t *testing.T) {
+	binaryPath := interopPeer(t)
 	pki := testkit.NewPKI(t)
 	f := makeFixture(t, binaryPath, pki)
 	port := f.start(t, "udp", "tls", false, "--dev", dataDevice, "--proto", "udp6", "--local", "::1",
@@ -79,8 +79,8 @@ func TestDataIPv6OpenVPN2623(t *testing.T) {
 	roundtrip(t, app, echo, info.TunnelIPv6.Addr().AsSlice(), []byte("IPv6 through IPv6"))
 }
 
-func TestDataRekeyOpenVPN2623(t *testing.T) {
-	binaryPath := dataPeer(t)
+func TestDataRekeyOpenVPN26(t *testing.T) {
+	binaryPath := interopPeer(t)
 	pki := testkit.NewPKI(t)
 	f := makeFixture(t, binaryPath, pki)
 	for _, test := range []struct {
@@ -129,15 +129,23 @@ func TestDataRekeyOpenVPN2623(t *testing.T) {
 	}
 }
 
-func dataPeer(t *testing.T) string {
+func interopPeer(t *testing.T) string {
 	t.Helper()
 	path := os.Getenv("OPENVPN_INTEROP_BIN")
 	if path == "" {
-		t.Skip("set OPENVPN_INTEROP_BIN to the pinned OpenVPN 2.6.23 binary")
+		t.Skip("set OPENVPN_INTEROP_BIN to a pinned OpenVPN 2.6 test binary")
+	}
+	version := os.Getenv("OPENVPN_INTEROP_VERSION")
+	switch version {
+	case "":
+		version = "2.6.23"
+	case "2.6.22", "2.6.23":
+	default:
+		t.Fatal("unsupported reference peer version")
 	}
 	output, err := exec.CommandContext(t.Context(), path, "--version").Output()
-	if err != nil || !bytes.HasPrefix(output, []byte("OpenVPN 2.6.23 ")) {
-		t.Fatalf("expected OpenVPN 2.6.23: %v", err)
+	if err != nil || !bytes.HasPrefix(output, []byte("OpenVPN "+version+" ")) {
+		t.Fatalf("expected OpenVPN %s: %v", version, err)
 	}
 	return path
 }
@@ -160,9 +168,14 @@ func startDataPeer(t *testing.T, f fixture, network, mode string, auth bool, ver
 
 func configureTestLink(t *testing.T, address string, flags ...string) {
 	t.Helper()
+	configureLink(t, dataDevice, address, flags...)
+}
+
+func configureLink(t *testing.T, device, address string, flags ...string) {
+	t.Helper()
 	for _, command := range [][]string{
-		append([]string{"address", "add", address, "dev", dataDevice}, flags...),
-		{"link", "set", "dev", dataDevice, "up"},
+		append([]string{"address", "add", address, "dev", device}, flags...),
+		{"link", "set", "dev", device, "up"},
 	} {
 		if output, err := exec.CommandContext(t.Context(), "ip", command...).CombinedOutput(); err != nil {
 			t.Fatalf("prepare isolated server TUN: %v: %s", err, output)

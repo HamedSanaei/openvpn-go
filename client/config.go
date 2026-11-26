@@ -11,7 +11,8 @@ import (
 	"github.com/hamedsanaei/openvpn-go/transport"
 )
 
-const maxEndpoints = 64
+// MaxEndpoints limits the number of configured remote candidates.
+const MaxEndpoints = 64
 
 // Endpoint identifies a remote and its expected server identity.
 // Network defaults to udp and accepts tcp, udp4, udp6, tcp4 and tcp6.
@@ -21,6 +22,17 @@ type Endpoint struct {
 	Host       string
 	Port       uint16
 	ServerName string
+	// VerifyX509Name is an optional exact certificate identity or an
+	// additional common-name prefix check.
+	VerifyX509Name X509Name
+}
+
+// Validated returns an endpoint with defaults applied and its identity checked.
+func (e Endpoint) Validated() (Endpoint, error) {
+	if err := e.normalize(); err != nil {
+		return Endpoint{}, err
+	}
+	return e, nil
 }
 
 func (e Endpoint) address() string {
@@ -28,11 +40,14 @@ func (e Endpoint) address() string {
 }
 
 // Config configures a Client. New copies and validates the endpoint list.
-// The first endpoint is used for the initial connection attempt. Subsequent endpoints retain
-// their own transport and identity settings for the failover stage.
+// Endpoints retain their transport and identity settings through failover.
 type Config struct {
 	Endpoints []Endpoint
 	Dialer    transport.Dialer
+	// RemoteRandom shuffles all endpoint candidates once during New.
+	RemoteRandom bool
+	// Retry controls endpoint failover and reconnect during Run.
+	Retry RetryPolicy
 
 	// TLS supplies the trust anchors and client key pair for Connect.
 	TLS *TLSConfig
@@ -40,6 +55,12 @@ type Config struct {
 	Credentials *Credentials
 	// Control selects outer control-channel protection.
 	Control ControlProtection
+	// EndpointControls optionally supplies one control setting per endpoint,
+	// in the same order as Endpoints. Each entry replaces Control in full.
+	EndpointControls []ControlProtection
+	// AuthDigest sets the advertised OpenVPN auth digest and the default
+	// tls-auth digest. A tls-auth Control.Digest takes precedence.
+	AuthDigest string
 	// DataCiphers restricts negotiation to the listed supported AEAD ciphers.
 	// An empty list permits all built-in AEAD ciphers.
 	DataCiphers []string
@@ -58,8 +79,11 @@ type Config struct {
 }
 
 func (cfg Config) validated() (Config, error) {
-	if len(cfg.Endpoints) == 0 || len(cfg.Endpoints) > maxEndpoints {
+	if len(cfg.Endpoints) == 0 || len(cfg.Endpoints) > MaxEndpoints {
 		return Config{}, configError("endpoints")
+	}
+	if len(cfg.EndpointControls) != 0 && len(cfg.EndpointControls) != len(cfg.Endpoints) {
+		return Config{}, configError("endpoint control settings")
 	}
 	cfg.Endpoints = slices.Clone(cfg.Endpoints)
 	for i := range cfg.Endpoints {
@@ -80,6 +104,9 @@ func (cfg Config) validated() (Config, error) {
 	if cfg.HandshakeTimeout == 0 {
 		cfg.HandshakeTimeout = time.Minute
 	}
+	if !cfg.Retry.normalize(len(cfg.Endpoints)) {
+		return Config{}, configError("retry policy")
+	}
 	if cfg.RekeyInterval == 0 {
 		cfg.RekeyInterval = time.Hour
 	} else if cfg.RekeyInterval < time.Second || cfg.RekeyInterval > 24*time.Hour {
@@ -98,6 +125,9 @@ func (cfg Config) validated() (Config, error) {
 }
 
 func (e *Endpoint) normalize() error {
+	if err := e.VerifyX509Name.Validate(); err != nil {
+		return err
+	}
 	if e.Network == "" {
 		e.Network = "udp"
 	}

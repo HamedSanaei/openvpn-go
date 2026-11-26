@@ -60,4 +60,8 @@ func TestAuthenticatedKeepaliveAndInvalidData(t *testing.T) {
 	if err := s.maintain(authenticated.Add(time.Second)); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("liveness timeout = %v", err)
 	}
+	s.info.PingExit = true
+	if err := s.maintain(authenticated.Add(time.Second)); !errors.Is(err, tlscontrol.ErrPeerStopped) {
+		t.Fatalf("peer-requested exit = %v", err)
+	}
 }

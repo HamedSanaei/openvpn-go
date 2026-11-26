@@ -1,5 +1,5 @@
-// Package profile will parse and validate OpenVPN client profiles.
+// Package profile parses and validates OpenVPN TLS client profiles.
 //
-// Parsing is separate from dialing. Unsupported security-sensitive directives
-// must be reported explicitly; parsing must never execute profile scripts.
+// Parse returns configuration for client.New without dialing or executing
+// commands. File references require an explicitly authorized resolver.
 package profile

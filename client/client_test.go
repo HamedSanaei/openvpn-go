@@ -103,7 +103,7 @@ func TestConnectionDeadlines(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		c.handshake = acceptTestSession
+		c.handshakes[0] = acceptTestSession
 		before := time.Now()
 		err = c.Connect(t.Context())
 		if !errors.Is(err, context.DeadlineExceeded) || time.Since(before) != cfg.ConnectTimeout {
@@ -118,7 +118,7 @@ func TestConnectionDeadlines(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		c.handshake = func(ctx context.Context, _ Endpoint, raw transport.PacketConn) (tunnel.PacketConn, error) {
+		c.handshakes[0] = func(ctx context.Context, _ Endpoint, raw transport.PacketConn) (tunnel.PacketConn, error) {
 			_, err := raw.ReadPacket(ctx, make([]byte, 32))
 			return nil, err
 		}
@@ -175,7 +175,7 @@ func TestCloseDiscardsHandshakeResultAfterCancellation(t *testing.T) {
 		owned := &countedConn{PacketConn: raw}
 		c := createTestClient(t, dialWith(owned))
 		handshaking := make(chan struct{})
-		c.handshake = func(ctx context.Context, endpoint Endpoint, _ transport.PacketConn) (tunnel.PacketConn, error) {
+		c.handshakes[0] = func(ctx context.Context, endpoint Endpoint, _ transport.PacketConn) (tunnel.PacketConn, error) {
 			if endpoint.ServerName != "vpn.example" {
 				t.Errorf("handshake identity = %q", endpoint.ServerName)
 			}
@@ -210,7 +210,7 @@ func TestRunForwardsPacketsAndCloseJoinsWorkers(t *testing.T) {
 		c := createTestClient(t, dialWith(owned))
 		assertCode(t, c.Run(ctx, device), CodeNotConnected)
 
-		c.handshake = acceptTestSession
+		c.handshakes[0] = acceptTestSession
 		attemptCtx, cancel := context.WithCancel(ctx)
 		if err := c.Connect(attemptCtx); err != nil {
 			t.Fatal(err)
@@ -271,7 +271,7 @@ func TestRunCancellationReleasesSession(t *testing.T) {
 		device, _ := testkit.PacketPipe(0, 64)
 		owned := &countedConn{PacketConn: session}
 		c := createTestClient(t, dialWith(owned))
-		c.handshake = acceptTestSession
+		c.handshakes[0] = acceptTestSession
 		if err := c.Connect(t.Context()); err != nil {
 			t.Fatal(err)
 		}
@@ -293,7 +293,7 @@ func createTestClient(t *testing.T, dialer transport.Dialer) *Client {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.handshake = func(context.Context, Endpoint, transport.PacketConn) (tunnel.PacketConn, error) {
+	c.handshakes[0] = func(context.Context, Endpoint, transport.PacketConn) (tunnel.PacketConn, error) {
 		return nil, &Error{Op: "handshake", Code: CodeUnavailable}
 	}
 	return c

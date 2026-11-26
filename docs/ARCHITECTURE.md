@@ -31,8 +31,9 @@ openvpn-go/
 
 ## Dependency direction
 
-- client may depend on profile, transport, tunnel and internal packages.
-- profile may depend on standard library parsing/validation helpers only.
+- client depends on transport, tunnel and internal packages.
+- profile returns client configuration and shares validators with the
+  internal packages. The client has no dependency on the profile grammar.
 - transport defines the packet transport port; concrete UDP/TCP adapters implement it.
 - tunnel defines the packet source/sink supplied by the caller.
 - internal packages may depend on one another according to the protocol flow, but must not import integrations.
@@ -101,9 +102,9 @@ flowchart TD
 | Entry point | Contract |
 |---|---|
 | `client.New(Config)` | Validate and copy the endpoints, apply packet and timeout defaults, and prepare an idle client without network I/O. |
-| `Client.Connect(ctx)` | Dial the first configured endpoint with a separate dial deadline, then pass the owned transport to the internal handshake with its own deadline. On success the authenticated session owns that transport. A failed attempt closes the transport and permits another call. |
+| `Client.Connect(ctx)` | Try endpoints in candidate order under the retry policy. Each attempt has distinct dial and handshake deadlines. An authenticated session takes ownership of its transport. |
 | `Client.State()`, `Client.ActiveEndpoint()` and `Client.ControlInfo()` | Concurrent-safe snapshots. Only an authenticated session publishes the active endpoint and its negotiated settings. |
-| `Client.Run(ctx, tunnel.PacketConn)` | Start one bidirectional forwarding run on an authenticated session. Two bounded packet buffers support one worker per direction. Join both workers on exit and release the session. The embedding application owns its tunnel and may reuse it after the call. |
+| `Client.Run(ctx, tunnel.PacketConn)` | Start one bidirectional forwarding run on an authenticated session. Two bounded packet buffers support one worker per direction. Join both workers before reconnecting or returning. The embedding application retains ownership of its tunnel. |
 | `Client.Close()` | Cancel in-flight dial, handshake and forwarding, release the owned session, join operations and permanently close the client. Concurrent Close calls share one result. |
 | `client.Error` | Return a redacted operation and error code. Use `errors.As` to inspect the code and `errors.Is` for canceled, timed-out or closed operations. |
 | `transport.SocketDialer` | Provide native UDP datagrams or TCP length-framed packets. Both use a 16 KiB default limit. An oversized TCP input closes the stream. UDP drops the offending datagram and preserves the next boundary. |
@@ -142,9 +143,33 @@ stream stops when the replacement starts. The session sends with the current
 data key until the replacement completes its reliable control flight, then
 publishes the new key and retains the prior receive key for up to 30 seconds.
 The key ID sequence advances from 0 through 7 and wraps to 1. Key use is
-bounded before packet-ID exhaustion. M4 adds profile parsing and M5 adds
-endpoint selection.
+bounded before packet-ID exhaustion.
 [Data channel](../internal/data/channel.go) · [Rekey lifecycle](../internal/session/rekey.go)
+
+## M4 profile configuration
+
+The profile parser accepts an input stream and optional caller-authorized
+references. It resolves syntax and connection precedence before loading
+materials, validates the material and produces a `client.Config` with
+structured diagnostics. Client construction pairs each endpoint with
+its own verified TLS settings and prepared control protection. Initial
+remote randomization orders their original indexes so the endpoint and
+handshake stay paired. [Profile contract](PROFILE.md)
+
+## M5 lifecycle
+
+The client coordinates one connection or forwarding operation at a time.
+Each retry uses the next candidate and a fresh authenticated link.
+The forwarding operation joins both workers and releases the old link
+before reconnecting. A new connection gets its own TLS, key and token
+state. Recoverable I/O failures and terminal protocol failures retain
+separate redacted causes across the control bridge.
+
+A lifecycle mutex serializes ownership transfers, snapshots and the
+fixed-size event journal. Packet counters use atomics. `Close` removes the
+active session under the mutex, cancels retry and forwarding contexts,
+closes the owned session and joins the active operation outside the mutex.
+[Retry, custom transport and observability contracts](LIFECYCLE.md)
 
 ## Design constraints
 

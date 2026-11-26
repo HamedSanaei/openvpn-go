@@ -3,8 +3,11 @@ package client
 import (
 	"context"
 	"errors"
+	"math/rand/v2"
 	"sync"
 
+	"github.com/hamedsanaei/openvpn-go/internal/failover"
+	"github.com/hamedsanaei/openvpn-go/internal/observability"
 	"github.com/hamedsanaei/openvpn-go/transport"
 	"github.com/hamedsanaei/openvpn-go/tunnel"
 )
@@ -19,6 +22,7 @@ const (
 	StateConnected
 	StateClosing
 	StateClosed
+	StateBackoff
 )
 
 func (s ClientState) String() string {
@@ -35,6 +39,8 @@ func (s ClientState) String() string {
 		return "closing"
 	case StateClosed:
 		return "closed"
+	case StateBackoff:
+		return "backoff"
 	default:
 		return "unknown"
 	}
@@ -45,6 +51,11 @@ type operation struct {
 	done   chan struct{}
 }
 
+type connection struct {
+	link            tunnel.PacketConn
+	index, position int
+}
+
 // A handshake returns an authenticated IP packet session. A returned session
 // takes ownership of the transport. Connect closes the transport directly if
 // no session is returned.
@@ -53,14 +64,20 @@ type handshakeFunc func(context.Context, Endpoint, transport.PacketConn) (tunnel
 // Client owns the authenticated session and coordinates its lifecycle.
 // Construct a Client with New and use it through a pointer.
 type Client struct {
-	config    Config
-	handshake handshakeFunc
+	config     Config
+	handshakes []handshakeFunc
+	order      []int
 
 	mu      sync.Mutex
 	state   ClientState
 	attempt *operation
 	run     *operation
-	session tunnel.PacketConn
+	active  *connection
+
+	stats  Stats
+	events observability.History[Event]
+	sent   observability.Traffic
+	recv   observability.Traffic
 
 	closeOnce sync.Once
 	closeErr  error
@@ -72,121 +89,123 @@ func New(config Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	handshake, err := prepareHandshake(cfg)
+	handshakes, err := prepareHandshakes(cfg)
 	if err != nil {
 		return nil, err
 	}
+	var shuffle func(int, func(int, int))
+	if cfg.RemoteRandom {
+		shuffle = rand.Shuffle
+	}
+	order := failover.Order(len(cfg.Endpoints), shuffle)
 	cfg.TLS, cfg.Credentials, cfg.Control.Key, cfg.DataCiphers = nil, nil, nil, nil
-	return &Client{config: cfg, handshake: handshake}, nil
+	cfg.EndpointControls = nil
+	return &Client{config: cfg, handshakes: handshakes, order: order}, nil
 }
 
 // State returns a concurrent-safe lifecycle snapshot.
 func (c *Client) State() ClientState {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.observeSession()
-	return c.state
+	return c.stateSnapshot()
 }
 
 // ActiveEndpoint reports the remote of an authenticated session, if one exists.
 func (c *Client) ActiveEndpoint() (Endpoint, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.observeSession()
-	if c.state != StateConnected {
+	active := c.liveConnection()
+	if active == nil {
 		return Endpoint{}, false
 	}
-	return c.config.Endpoints[0], true
+	return c.config.Endpoints[active.index], true
 }
 
-// Connect starts one bounded connection attempt. It returns success only after
-// TLS has authenticated the peer and data-channel keys are ready. The caller's context bounds the attempt. The authenticated control
-// session outlives that context until it disconnects or Close is called.
+// Connect starts an attempt sequence in candidate order. The context bounds
+// dialing, TLS and retry delays. A successful authenticated session outlives
+// that context until it disconnects, Run finishes or Close is called.
 func (c *Client) Connect(ctx context.Context) error {
 	c.mu.Lock()
-	c.observeSession()
-	switch c.state {
-	case StateClosing, StateClosed:
+	active := c.liveConnection()
+	if err := c.operationError(ctx, "connect"); err != nil {
 		c.mu.Unlock()
-		return &Error{Op: "connect", Code: CodeClosed}
-	case StateDialing, StateHandshaking, StateConnected:
+		return err
+	}
+	if c.attempt != nil || c.run != nil || active != nil {
 		c.mu.Unlock()
 		return &Error{Op: "connect", Code: CodeBusy}
 	}
-	if c.run != nil {
-		c.mu.Unlock()
-		return &Error{Op: "connect", Code: CodeBusy}
-	}
-	if err := ctx.Err(); err != nil {
-		c.mu.Unlock()
-		return &Error{Op: "connect", Code: contextCode(err, CodeNetwork)}
-	}
-	if c.handshake == nil {
+	if len(c.handshakes) == 0 || c.handshakes[0] == nil {
 		c.mu.Unlock()
 		return configError("TLS")
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	attempt := &operation{cancel: cancel, done: make(chan struct{})}
 	c.attempt = attempt
-	c.state = StateDialing
 	c.mu.Unlock()
-	defer c.finishAttempt(attempt)
+	defer c.finish(attempt, &c.attempt)
 
-	session, err := c.connect(ctx, c.config.Endpoints[0])
-	c.mu.Lock()
-	if c.state == StateClosing {
-		err = &Error{Op: "connect", Code: CodeClosed}
-	} else if ctx.Err() != nil {
-		err = &Error{Op: "connect", Code: contextCode(ctx.Err(), CodeNetwork)}
-	}
-	if err == nil {
-		c.session = session
-		c.state = StateConnected
-	}
-	c.mu.Unlock()
-
-	if err != nil && session != nil {
-		session.Close()
-	}
+	_, err := c.establish(ctx, 0, false, "")
 	return err
 }
 
-func (c *Client) finishAttempt(attempt *operation) {
-	attempt.cancel()
+func (c *Client) finish(op *operation, slot **operation) {
+	op.cancel()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.attempt = nil
-	if c.state == StateDialing || c.state == StateHandshaking {
+	*slot = nil
+	if c.active == nil && c.state != StateClosing && c.state != StateClosed {
 		c.state = StateIdle
 	}
-	close(attempt.done)
+	close(op.done)
 }
 
-func (c *Client) connect(ctx context.Context, endpoint Endpoint) (tunnel.PacketConn, error) {
+// operationError must be called with c.mu held.
+func (c *Client) operationError(ctx context.Context, op string) error {
+	if c.state == StateClosing || c.state == StateClosed {
+		return &Error{Op: op, Code: CodeClosed}
+	}
+	if err := ctx.Err(); err != nil {
+		return &Error{Op: op, Code: contextCode(err, CodeCanceled)}
+	}
+	return nil
+}
+
+func (c *Client) dial(ctx context.Context, index int) (tunnel.PacketConn, error) {
+	endpoint := c.config.Endpoints[index]
 	dialCtx, cancelDial := context.WithTimeout(ctx, c.config.ConnectTimeout)
 	conn, err := c.config.Dialer.DialPacket(dialCtx, endpoint.Network, endpoint.address())
 	if dialCtx.Err() != nil {
 		err = dialCtx.Err()
 	}
+	if conn == nil && err == nil {
+		err = transport.ErrInvalidConnection
+	}
 	cancelDial()
-	if err != nil || conn == nil {
+	if err != nil {
 		if conn != nil {
 			conn.Close()
 		}
-		return nil, &Error{Op: "dial", Code: contextCode(err, CodeNetwork)}
+		code := contextCode(err, CodeNetwork)
+		if errors.Is(err, transport.ErrInvalidPacketLimit) || errors.Is(err, transport.ErrUnsupportedNetwork) ||
+			errors.Is(err, transport.ErrInvalidConnection) {
+			code = CodeConfig
+		}
+		return nil, &Error{Op: "dial", Code: code}
 	}
 
 	c.mu.Lock()
-	if c.state == StateClosing || ctx.Err() != nil {
+	if err := c.operationError(ctx, "handshake"); err != nil {
 		c.mu.Unlock()
 		conn.Close()
-		return nil, &Error{Op: "handshake", Code: contextCode(ctx.Err(), CodeClosed)}
+		return nil, err
 	}
 	c.state = StateHandshaking
+	c.record(EventHandshaking, index, "", 0)
 	c.mu.Unlock()
 
 	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, c.config.HandshakeTimeout)
-	session, err := c.handshake(handshakeCtx, endpoint, conn)
+	session, err := c.handshakes[index](handshakeCtx, endpoint, conn)
 	if handshakeCtx.Err() != nil {
 		err = handshakeCtx.Err()
 	}
@@ -213,9 +232,11 @@ func (c *Client) connect(ctx context.Context, endpoint Endpoint) (tunnel.PacketC
 func (c *Client) Close() error {
 	c.closeOnce.Do(func() {
 		c.mu.Lock()
+		c.liveConnection()
 		c.state = StateClosing
-		attempt, run, session := c.attempt, c.run, c.session
-		c.session = nil
+		c.record(EventClosing, -1, "", 0)
+		attempt, run, active := c.attempt, c.run, c.active
+		c.active = nil
 		c.mu.Unlock()
 
 		if attempt != nil {
@@ -224,8 +245,8 @@ func (c *Client) Close() error {
 		if run != nil {
 			run.cancel()
 		}
-		if session != nil {
-			if err := session.Close(); err != nil {
+		if active != nil {
+			if err := active.link.Close(); err != nil {
 				c.closeErr = &Error{Op: "close", Code: CodeNetwork}
 			}
 		}
@@ -237,7 +258,14 @@ func (c *Client) Close() error {
 		}
 
 		c.mu.Lock()
+		c.handshakes = nil
+		c.config.Dialer = nil
 		c.state = StateClosed
+		var code ErrorCode
+		if c.closeErr != nil {
+			code = CodeNetwork
+		}
+		c.record(EventClosed, -1, code, 0)
 		c.mu.Unlock()
 	})
 	return c.closeErr

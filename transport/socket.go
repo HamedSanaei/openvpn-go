@@ -18,6 +18,23 @@ type SocketDialer struct {
 
 // DialPacket opens a socket for one endpoint.
 func (d SocketDialer) DialPacket(ctx context.Context, network, address string) (PacketConn, error) {
+	return socketDialer{SocketDialer: d}.DialPacket(ctx, network, address)
+}
+
+// WithDialContext uses dial to open an already connected socket or proxy
+// stream for the selected remote. A nil function uses net.Dialer. TCP
+// requires stream semantics and UDP requires datagram semantics. The dial
+// must honor context cancellation, and the connection must support deadlines.
+func (d SocketDialer) WithDialContext(dial func(context.Context, string, string) (net.Conn, error)) Dialer {
+	return socketDialer{SocketDialer: d, dial: dial}
+}
+
+type socketDialer struct {
+	SocketDialer
+	dial func(context.Context, string, string) (net.Conn, error)
+}
+
+func (d socketDialer) DialPacket(ctx context.Context, network, address string) (PacketConn, error) {
 	limit := d.MaxPacketSize
 	if limit < 0 || limit > MaxPacketSize {
 		return nil, ErrInvalidPacketLimit
@@ -32,10 +49,22 @@ func (d SocketDialer) DialPacket(ctx context.Context, network, address string) (
 		return nil, ErrUnsupportedNetwork
 	}
 
-	var dialer net.Dialer
-	conn, err := dialer.DialContext(ctx, network, address)
+	dial := d.dial
+	if dial == nil {
+		dial = (&net.Dialer{}).DialContext
+	}
+	conn, err := dial(ctx, network, address)
+	if ctx.Err() != nil {
+		err = ctx.Err()
+	}
 	if err != nil {
+		if conn != nil {
+			conn.Close()
+		}
 		return nil, err
+	}
+	if conn == nil {
+		return nil, ErrInvalidConnection
 	}
 
 	switch network {

@@ -1,0 +1,95 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "OpenVPN Go runtime dependency inventory",
+  "documentNamespace": "https://github.com/hamedsanaei/openvpn-go/sbom/7be119f2eac1ccc36071473a738e1d8861ac4d19d74f13336c47bd840e78bd65",
+  "creationInfo": {
+    "created": "2026-11-26T00:00:00Z",
+    "creators": [
+      "Tool: openvpn-go release-audit"
+    ]
+  },
+  "packages": [
+    {
+      "name": "github.com/hamedsanaei/openvpn-go",
+      "SPDXID": "SPDXRef-Project",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "Go standard library and runtime",
+      "SPDXID": "SPDXRef-Go",
+      "downloadLocation": "https://go.dev/dl/#go1.26.11",
+      "filesAnalyzed": false,
+      "licenseConcluded": "BSD-3-Clause",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "versionInfo": "go1.26.11"
+    },
+    {
+      "name": "golang.org/x/crypto",
+      "SPDXID": "SPDXRef-Go-crypto",
+      "downloadLocation": "https://proxy.golang.org/golang.org/x/crypto/@v/v0.59.0.zip",
+      "filesAnalyzed": false,
+      "licenseConcluded": "BSD-3-Clause",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "versionInfo": "v0.59.0",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/golang.org/x/crypto@v0.59.0"
+        }
+      ]
+    },
+    {
+      "name": "golang.org/x/sys",
+      "SPDXID": "SPDXRef-Go-sys",
+      "downloadLocation": "https://proxy.golang.org/golang.org/x/sys/@v/v0.50.0.zip",
+      "filesAnalyzed": false,
+      "licenseConcluded": "BSD-3-Clause",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "versionInfo": "v0.50.0",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:golang/golang.org/x/sys@v0.50.0"
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Project"
+    },
+    {
+      "spdxElementId": "SPDXRef-Project",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Go"
+    },
+    {
+      "spdxElementId": "SPDXRef-Project",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Go-crypto"
+    },
+    {
+      "spdxElementId": "SPDXRef-Project",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Go-sys"
+    },
+    {
+      "spdxElementId": "SPDXRef-Go-crypto",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Go-sys"
+    }
+  ]
+}

@@ -26,7 +26,13 @@ This project is being developed as an independent implementation from public pro
 - Add interoperability tests for changes that affect the wire protocol.
 - Run gofmt, go test ./..., go test -race ./... and go vet ./....
 - Update docs/REQUIREMENTS.md and docs/TASKS.md when behavior or scope changes.
+- For dependency changes, update the reviewed inventory and run the audit
+  before requesting review. [Supply-chain checks](docs/HARDENING.md#supply-chain-and-review)
 
 ## Contribution certification
 
 External contributors must sign off each commit with `git commit --signoff` under the project's MIT contribution policy. Maintainers verify the sign-off and the provenance disclosure during review. The sign-off represents the contributor's certification that they have the right to submit the contribution. [Developer Certificate of Origin 1.1](https://developercertificate.org/)
+
+Independent security, license and provenance reviews refer to the exact
+candidate revision. Retain the review record with the release evidence.
+[Release policy](docs/RELEASE.md)

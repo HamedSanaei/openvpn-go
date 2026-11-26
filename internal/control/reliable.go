@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"math"
 	"slices"
 	"time"
@@ -154,7 +155,7 @@ func (d *driver) enqueue(ctx context.Context, op wire.Opcode, payload []byte) er
 
 func (d *driver) transmit(ctx context.Context, item *flight) error {
 	if item.sends > maxRetransmits {
-		return ErrReliable
+		return errors.Join(ErrReliable, ErrRetransmit)
 	}
 	p := wire.ControlPacket{Header: wire.Header{Opcode: item.opcode}, ID: item.id, Payload: item.payload}
 	if p.Opcode == wire.WrappedKey {

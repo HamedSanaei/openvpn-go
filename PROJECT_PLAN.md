@@ -2,7 +2,7 @@
 
 This is the working entry point for the new independent OpenVPN client library.
 
-- **Status** · M3 complete. M4 is the next implementation milestone.
+- **Status** · M6 engineering checks and M7 candidate integration passed. Independent review and release approval are pending.
 - **Module** · `github.com/hamedsanaei/openvpn-go`
 - **License** · [MIT](LICENSE)
 - **SPDX-License-Identifier** · MIT
@@ -32,4 +32,7 @@ records the engineering evidence and the source reference is frozen in the
 [provenance ledger](docs/PROVENANCE.md). The [M1 exit checks](docs/MILESTONES.md#m1--foundation-and-public-api) record
 the implemented foundation. The [M2 exit checks](docs/MILESTONES.md#m2--control-channel-and-tls) record
 control interoperability. The [M3 exit checks](docs/MILESTONES.md#m3--data-channel-and-cryptography) record
-tunnel traffic and rekey. Continue with [M4](docs/TASKS.md#m4--profile-parser).
+tunnel traffic and rekey. The [M4 exit checks](docs/MILESTONES.md#m4--profile-parser-and-configuration)
+record profile parsing and connection evidence. The [M5 exit checks](docs/MILESTONES.md#m5--failover-reconnect-and-observability)
+record failover, reconnect and observability evidence. The [M6 results](docs/HARDENING.md)
+and [M7 release policy](docs/RELEASE.md) record verification and the remaining independent sign-offs.

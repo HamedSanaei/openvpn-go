@@ -60,6 +60,24 @@ type key struct {
 	mac   []byte
 }
 
+// ValidAuthDigest reports whether an auth digest is supported.
+func ValidAuthDigest(digest string) bool { return authDigest(digest) != nil }
+
+func authDigest(digest string) func() hash.Hash {
+	switch digest {
+	case "", "SHA1":
+		return sha1.New
+	case "SHA256":
+		return sha256.New
+	case "SHA384":
+		return sha512.New384
+	case "SHA512":
+		return sha512.New
+	default:
+		return nil
+	}
+}
+
 // NewProtection prepares control keys and owns its copy of the parsed material.
 func NewProtection(mode Mode, direction Direction, digest string, encoded []byte) (Protection, error) {
 	if len(encoded) > 16*1024 {
@@ -75,19 +93,8 @@ func NewProtection(mode Mode, direction Direction, digest string, encoded []byte
 	p := Protection{mode: mode}
 	switch mode {
 	case TLSAuth:
-		switch digest {
-		case "", "SHA1":
-			p.digest = sha1.New
-		case "SHA256":
-			p.digest = sha256.New
-		case "SHA384":
-			p.digest = sha512.New384
-		case "SHA512":
-			p.digest = sha512.New
-		default:
-			return Protection{}, ErrProtection
-		}
-		if direction > Direction1 {
+		p.digest = authDigest(digest)
+		if p.digest == nil || direction > Direction1 {
 			return Protection{}, ErrProtection
 		}
 	case TLSCrypt, TLSCryptV2:

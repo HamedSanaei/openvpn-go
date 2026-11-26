@@ -113,6 +113,16 @@ func (s *Session) Info() (tlscontrol.Negotiation, uint8) {
 
 func (s *Session) Done() <-chan struct{} { return s.done }
 
+// Err returns the stable shutdown cause once the session has finished.
+func (s *Session) Err() error {
+	select {
+	case <-s.done:
+		return s.terminal
+	default:
+		return nil
+	}
+}
+
 func (s *Session) Close() error {
 	s.cancel()
 	<-s.done

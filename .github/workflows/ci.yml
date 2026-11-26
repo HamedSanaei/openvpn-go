@@ -10,9 +10,35 @@ permissions:
   contents: read
 
 jobs:
+  platform-tests:
+    name: Core tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04-arm, windows-2025, macos-15]
+    env:
+      GOTOOLCHAIN: local
+      CGO_ENABLED: "0"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify platform and run tests
+        run: |
+          go env GOOS GOARCH GOVERSION
+          go build ./...
+          go test -timeout 5m ./...
+
   test:
     name: Go test and static checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    needs: platform-tests
     env:
       GOTOOLCHAIN: local
     steps:
@@ -33,3 +59,5 @@ jobs:
         run: go test -race ./...
       - name: Vet
         run: go vet ./...
+      - name: Decoder fuzz smoke tests
+        run: make fuzz-smoke

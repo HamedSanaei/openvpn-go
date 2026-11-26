@@ -18,6 +18,7 @@ type Negotiation struct {
 
 	PingInterval time.Duration
 	PingTimeout  time.Duration
+	PingExit     bool
 	TunnelIP     netip.Addr
 	TunnelIPv6   netip.Prefix
 }
@@ -117,7 +118,11 @@ func (p *pushState) option(name string, arg []byte) error {
 		if name == "ping" {
 			p.PingInterval = value
 		} else {
-			p.PingTimeout = value
+			exit := name == "ping-exit"
+			if p.PingTimeout != 0 && p.PingExit != exit {
+				return ErrNegotiation
+			}
+			p.PingTimeout, p.PingExit = value, exit
 		}
 	case "tun-ipv6":
 		if len(arg) != 0 {

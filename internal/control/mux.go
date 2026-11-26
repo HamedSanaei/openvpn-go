@@ -104,7 +104,11 @@ func (m *Mux) RelayReset(reset Reset) {
 func (m *Mux) start(id uint8, local, peer wire.SessionID, prepend []byte) (*Stream, error) {
 	l := &lane{mux: m, id: id, input: make(chan []byte, windowSize), closed: make(chan struct{})}
 	m.mu.Lock()
-	if m.ctx.Err() != nil || m.lanes[id] != nil {
+	if m.ctx.Err() != nil {
+		m.mu.Unlock()
+		return nil, ErrTransport
+	}
+	if m.lanes[id] != nil {
 		m.mu.Unlock()
 		return nil, ErrReliable
 	}

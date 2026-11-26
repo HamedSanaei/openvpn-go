@@ -30,6 +30,11 @@ type PKI struct {
 }
 
 func NewPKI(t testing.TB) PKI {
+	return NewPKIWithServer(t, nil)
+}
+
+// NewPKIWithServer allows tests to change the server template before signing.
+func NewPKIWithServer(t testing.TB, edit func(*x509.Certificate)) PKI {
 	t.Helper()
 	rootKey := key(t)
 	root := certificate(1, "Test OpenVPN CA")
@@ -43,6 +48,9 @@ func NewPKI(t testing.TB) PKI {
 	server.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
 	server.DNSNames = []string{TestServerName}
 	server.IPAddresses = []net.IP{net.IPv4(127, 0, 0, 1)}
+	if edit != nil {
+		edit(server)
+	}
 
 	client := certificate(3, "OpenVPN test client")
 	client.KeyUsage = x509.KeyUsageDigitalSignature
