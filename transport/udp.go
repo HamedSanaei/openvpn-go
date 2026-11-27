@@ -11,11 +11,11 @@ type udpConn struct {
 }
 
 func (c *udpConn) ReadPacket(ctx context.Context, dst []byte) (int, error) {
-	finish, err := c.start(ctx, c.readGate, c.conn.SetReadDeadline)
+	op, err := c.start(ctx, &c.read)
 	if err != nil {
 		return 0, err
 	}
-	defer finish()
+	defer op.finish()
 
 	// A buffer large enough for a full UDP datagram lets us distinguish
 	// oversize packets from short caller buffers across socket platforms.
@@ -39,11 +39,11 @@ func (c *udpConn) WritePacket(ctx context.Context, packet []byte) error {
 	if err := c.checkSize(len(packet)); err != nil {
 		return err
 	}
-	finish, err := c.start(ctx, c.writeGate, c.conn.SetWriteDeadline)
+	op, err := c.start(ctx, &c.write)
 	if err != nil {
 		return err
 	}
-	defer finish()
+	defer op.finish()
 
 	n, err := c.conn.Write(packet)
 	if err != nil {

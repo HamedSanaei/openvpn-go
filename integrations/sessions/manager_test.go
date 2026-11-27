@@ -3,6 +3,8 @@ package sessions
 import (
 	"context"
 	"errors"
+	"math"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,6 +18,57 @@ import (
 type trackedDevice struct {
 	tunnel.PacketConn
 	count *atomic.Int32
+}
+
+func TestExplicitResourceBudgetBeyondLegacyLimit(t *testing.T) {
+	const leases = 65
+	limits := Limits{Sessions: leases + 1, PacketBytes: (leases + 1) * transport.DefaultPacketSize}
+	if _, err := New(limits); !errors.Is(err, ErrConfig) {
+		t.Fatalf("unexpected legacy constructor result: %v", err)
+	}
+	m, err := NewWithResources(limits, ResourceLimits{BufferBytes: 128 << 20, FileDescriptors: 2 * leases})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	pki := testkit.NewPKI(t)
+	cfg := client.Config{Endpoints: []client.Endpoint{{Host: "127.0.0.1"}}, ReceiveQueueSize: 4,
+		TLS: &client.TLSConfig{CA: pki.CA, Certificate: pki.Client.Certificate, PrivateKey: pki.Client.PrivateKey}}
+	device := func(ctx context.Context) (tunnel.PacketConn, client.TunnelConfigurer, error) {
+		<-ctx.Done()
+		return nil, nil, ctx.Err()
+	}
+	adapter := AdapterReservation{BufferBytes: 2048, FileDescriptors: 1}
+	var first *Lease
+	for index := range leases {
+		lease, err := m.StartWithResources(t.Context(), strconv.Itoa(index), cfg, adapter, device)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if index == 0 {
+			first = lease
+		}
+	}
+	if _, err := m.Start(t.Context(), "overflow", cfg, device); !errors.Is(err, ErrCapacity) {
+		t.Fatalf("descriptor admission: %v", err)
+	}
+	if u := m.Usage(); u.Sessions != leases || u.FileDescriptors != 2*leases || u.BufferBytes <= int64(u.PacketBytes) {
+		t.Fatalf("reserved usage: %+v", u)
+	}
+	first.Stop()
+	if _, err := first.Wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.StartWithResources(t.Context(), "overflow-bytes", cfg, AdapterReservation{BufferBytes: math.MaxInt64}, device); !errors.Is(err, ErrConfig) {
+		t.Fatalf("invalid estimate: %v", err)
+	}
+	if _, err := m.StartWithResources(t.Context(), "overflow", cfg, adapter, device); err != nil {
+		t.Fatal(err)
+	}
+	m.Close()
+	if u := m.Usage(); u != (Usage{}) {
+		t.Fatalf("reservations remained after close: %+v", u)
+	}
 }
 
 func (d trackedDevice) Close() error { d.count.Add(1); return d.PacketConn.Close() }

@@ -1,10 +1,13 @@
 package profile
 
 import (
-	"github.com/hamedsanaei/openvpn-go/client"
-	"github.com/hamedsanaei/openvpn-go/internal/testkit"
+	"context"
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/hamedsanaei/openvpn-go/client"
+	"github.com/hamedsanaei/openvpn-go/internal/testkit"
 )
 
 func TestSoftEtherExplicitCompatibility(t *testing.T) {
@@ -47,5 +50,64 @@ func TestSoftEtherExplicitCompatibility(t *testing.T) {
 		if _, _, err := Parse(strings.NewReader(stock+ca), opts); err == nil {
 			t.Fatal("unsupported stock export accepted")
 		}
+	}
+}
+
+func TestSoftEtherInteractiveOptionsConflict(t *testing.T) {
+	pki := testkit.NewPKI(t)
+	base := "client\ndev tun\nremote-cert-tls server\nverify-x509-name vpn.example.test name\nauth-user-pass\n" + section("ca", pki.CA)
+	const directive = "compat-fixed-aead-v1 AES-256-GCM\n"
+	provider := func(context.Context) (client.Credentials, error) {
+		t.Fatal("configuration invoked the credential provider")
+		return client.Credentials{}, nil
+	}
+	for _, scope := range []struct{ name, endpoints string }{
+		{"top-level", "remote vpn.example.test\n" + directive},
+		{"connection-block", "<connection>\nremote vpn.example.test\n" + directive + "</connection>\n"},
+	} {
+		t.Run(scope.name, func(t *testing.T) {
+			text := base + scope.endpoints
+			options := Options{AllowPasswordOnly: true, Authentication: client.Authentication{Credentials: provider}}
+			cfg, _, err := Parse(strings.NewReader(text), options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c, err := client.New(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.Close()
+			for _, tc := range []struct {
+				name string
+				auth client.Authentication
+			}{
+				{"passive", client.Authentication{AllowPassivePending: true}},
+				{"challenge", client.Authentication{Challenge: func(context.Context, client.Challenge) (string, error) { return "", nil }}},
+				{"web", client.Authentication{WebAuth: func(context.Context, string) error { return nil }}},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					auth := tc.auth
+					auth.Credentials = provider
+					options.Authentication = auth
+					_, _, err := Parse(strings.NewReader(text), options)
+					var diagnostic *Diagnostic
+					line := 1 + strings.Count(text[:strings.Index(text, directive)], "\n")
+					if !errors.As(err, &diagnostic) || *diagnostic != (Diagnostic{CodeConflict, line, "compat-fixed-aead-v1"}) {
+						t.Fatalf("unexpected conflict diagnostic: %v", err)
+					}
+					direct := cfg
+					direct.Authentication = auth
+					if c, err := client.New(direct); err == nil {
+						c.Close()
+						t.Fatal("direct configuration bypassed the policy")
+					}
+					modern := strings.Replace(text, directive, "", 1)
+					parsed, _, err := Parse(strings.NewReader(modern), options)
+					if err != nil || !parsed.Authentication.Interactive() {
+						t.Fatalf("modern interaction lost: %v", err)
+					}
+				})
+			}
+		})
 	}
 }

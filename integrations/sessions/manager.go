@@ -4,9 +4,11 @@ package sessions
 import (
 	"context"
 	"errors"
+	"math"
 	"sync"
 
 	"github.com/hamedsanaei/openvpn-go/client"
+	"github.com/hamedsanaei/openvpn-go/internal/control"
 	"github.com/hamedsanaei/openvpn-go/transport"
 	"github.com/hamedsanaei/openvpn-go/tunnel"
 )
@@ -25,28 +27,51 @@ type Limits struct {
 	PacketBytes int
 }
 
+// ResourceLimits caps estimated packet-buffer bytes and optionally file
+// descriptors. TLS, kernel sockets, stacks and other heap are outside this
+// estimate. One descriptor is reserved for each transport.
+type ResourceLimits struct {
+	BufferBytes     int64
+	FileDescriptors int
+}
+
+// AdapterReservation adds declared adapter bounds to the core estimate.
+type AdapterReservation struct {
+	BufferBytes     int64
+	FileDescriptors int
+}
+
+// Usage reports reservations for leases until their cleanup completes.
+type Usage struct {
+	Sessions        int
+	PacketBytes     int
+	BufferBytes     int64
+	FileDescriptors int
+}
+
 // DeviceFactory opens a distinct tunnel and scoped configurator for one lease.
 // The manager owns each returned device, including on a partial failure.
 type DeviceFactory func(context.Context) (tunnel.PacketConn, client.TunnelConfigurer, error)
 
 type Manager struct {
-	mu       sync.Mutex
-	limits   Limits
-	leases   map[string]*Lease
-	reserved int
-	closed   bool
-	workers  sync.WaitGroup
+	mu        sync.Mutex
+	limits    Limits
+	leases    map[string]*Lease
+	resources ResourceLimits
+	usage     Usage
+	closed    bool
+	workers   sync.WaitGroup
 }
 
 type Lease struct {
-	id     string
-	size   int
-	cancel context.CancelFunc
-	done   chan struct{}
-	mu     sync.Mutex
-	client *client.Client
-	result client.ErrorCode
-	final  client.Stats
+	id       string
+	reserved Usage
+	cancel   context.CancelFunc
+	done     chan struct{}
+	mu       sync.Mutex
+	client   *client.Client
+	result   client.ErrorCode
+	final    client.Stats
 }
 
 type Status struct {
@@ -57,16 +82,37 @@ type Status struct {
 }
 
 func New(limits Limits) (*Manager, error) {
-	if limits.Sessions < 1 || limits.Sessions > 64 || limits.PacketBytes < 1 ||
+	return newManager(limits, ResourceLimits{math.MaxInt64, math.MaxInt}, 64)
+}
+
+// NewWithResources permits up to 4,096 leases with an explicit buffer
+// reservation budget. A zero descriptor limit uses only the session bound.
+func NewWithResources(limits Limits, resources ResourceLimits) (*Manager, error) {
+	if resources.BufferBytes <= 0 || resources.FileDescriptors < 0 {
+		return nil, ErrConfig
+	}
+	if resources.FileDescriptors == 0 {
+		resources.FileDescriptors = math.MaxInt
+	}
+	return newManager(limits, resources, 4096)
+}
+
+func newManager(limits Limits, resources ResourceLimits, maxSessions int) (*Manager, error) {
+	if limits.Sessions < 1 || limits.Sessions > maxSessions || limits.PacketBytes < 1 ||
 		limits.PacketBytes > limits.Sessions*transport.MaxPacketSize {
 		return nil, ErrConfig
 	}
-	return &Manager{limits: limits, leases: make(map[string]*Lease)}, nil
+	return &Manager{limits: limits, resources: resources, leases: make(map[string]*Lease)}, nil
 }
 
 // Start reserves capacity, validates and copies config through client.New
 // and then prepares the tunnel asynchronously. ctx owns the lease lifetime.
 func (m *Manager) Start(ctx context.Context, id string, config client.Config, open DeviceFactory) (*Lease, error) {
+	return m.StartWithResources(ctx, id, config, AdapterReservation{}, open)
+}
+
+// StartWithResources starts a lease with separately estimated adapter usage.
+func (m *Manager) StartWithResources(ctx context.Context, id string, config client.Config, adapter AdapterReservation, open DeviceFactory) (*Lease, error) {
 	if !validID(id) || open == nil || config.MaxPacketSize < 0 || config.MaxPacketSize > transport.MaxPacketSize {
 		return nil, ErrConfig
 	}
@@ -77,6 +123,10 @@ func (m *Manager) Start(ctx context.Context, id string, config client.Config, op
 	if size == 0 {
 		size = transport.DefaultPacketSize
 	}
+	reservation, err := leaseUsage(config, size, adapter)
+	if err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	switch {
 	case m.closed:
@@ -85,14 +135,18 @@ func (m *Manager) Start(ctx context.Context, id string, config client.Config, op
 	case m.leases[id] != nil:
 		m.mu.Unlock()
 		return nil, ErrDuplicate
-	case len(m.leases) >= m.limits.Sessions || m.reserved+size > m.limits.PacketBytes:
+	case len(m.leases) >= m.limits.Sessions || reservation.PacketBytes > m.limits.PacketBytes-m.usage.PacketBytes ||
+		reservation.BufferBytes > m.resources.BufferBytes-m.usage.BufferBytes ||
+		reservation.FileDescriptors > m.resources.FileDescriptors-m.usage.FileDescriptors:
 		m.mu.Unlock()
 		return nil, ErrCapacity
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	lease := &Lease{id: id, size: size, cancel: cancel, done: make(chan struct{})}
+	lease := &Lease{id: id, reserved: reservation, cancel: cancel, done: make(chan struct{})}
 	m.leases[id] = lease
-	m.reserved += size
+	m.usage.PacketBytes += reservation.PacketBytes
+	m.usage.BufferBytes += reservation.BufferBytes
+	m.usage.FileDescriptors += reservation.FileDescriptors
 	m.workers.Add(1)
 	m.mu.Unlock()
 
@@ -149,10 +203,43 @@ func (m *Manager) finish(lease *Lease, c *client.Client, result client.ErrorCode
 	lease.client, lease.result = nil, result
 	m.mu.Lock()
 	delete(m.leases, lease.id)
-	m.reserved -= lease.size
+	m.usage.PacketBytes -= lease.reserved.PacketBytes
+	m.usage.BufferBytes -= lease.reserved.BufferBytes
+	m.usage.FileDescriptors -= lease.reserved.FileDescriptors
 	close(lease.done)
 	m.mu.Unlock()
 	lease.mu.Unlock()
+}
+
+func leaseUsage(cfg client.Config, size int, adapter AdapterReservation) (Usage, error) {
+	if adapter.BufferBytes < 0 || adapter.FileDescriptors < 0 || adapter.FileDescriptors == math.MaxInt {
+		return Usage{}, ErrConfig
+	}
+	queue := cfg.ReceiveQueueSize
+	if queue <= 0 || queue > control.MaxDataQueueSize {
+		queue = control.DefaultDataQueueSize
+	}
+	// Two packet queues, bounded working frames and native UDP scratch.
+	core := int64(2*queue+6)*int64(size) + transport.MaxPacketSize + 1
+	for _, endpoint := range cfg.Endpoints {
+		if endpoint.ExpressVPNFragmentSize != 0 {
+			core += 32 * (int64(size) + 1)
+			break
+		}
+	}
+	if adapter.BufferBytes > math.MaxInt64-core {
+		return Usage{}, ErrConfig
+	}
+	return Usage{PacketBytes: size, BufferBytes: core + adapter.BufferBytes, FileDescriptors: 1 + adapter.FileDescriptors}, nil
+}
+
+// Usage returns the current reservation totals.
+func (m *Manager) Usage() Usage {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	usage := m.usage
+	usage.Sessions = len(m.leases)
+	return usage
 }
 
 // Lookup returns the current lease for id. Completed leases remain readable

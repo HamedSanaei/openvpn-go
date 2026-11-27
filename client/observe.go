@@ -128,6 +128,7 @@ const (
 type AttemptPhase = observability.Phase
 
 const (
+	PhaseAdmission       = observability.PhaseAdmission
 	PhaseTransport       = observability.PhaseTransport
 	PhaseResetACK        = observability.PhaseResetACK
 	PhaseTLS             = observability.PhaseTLS

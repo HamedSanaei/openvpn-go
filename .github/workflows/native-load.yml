@@ -1,0 +1,85 @@
+name: Controlled native load comparison
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline:
+        description: Calibrated baseline commit SHA
+        type: string
+        required: true
+      transport:
+        type: choice
+        options: [udp, tcp]
+        default: udp
+      packets:
+        type: choice
+        options: [mixed, '64', '256', '1400']
+        default: mixed
+      sessions:
+        type: number
+        default: 64
+      loss_ppm:
+        description: Maximum median loss per million for the calibrated workload
+        type: number
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openvpn-native-load
+
+jobs:
+  native:
+    runs-on: [self-hosted, linux, openvpn-native]
+    timeout-minutes: 30
+    env:
+      GOTOOLCHAIN: local
+      OPENVPN_LOAD_NETWORK: ${{ inputs.transport }}
+      OPENVPN_LOAD_PACKETS: ${{ inputs.packets }}
+      OPENVPN_LOAD_SESSIONS: ${{ inputs.sessions }}
+      OPENVPN_LOAD_WINDOWS: '5'
+      OPENVPN_LOAD_SECONDS: '20'
+      OPENVPN_LOAD_WARMUP: '10'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: candidate
+          persist-credentials: false
+      - name: Validate baseline pin
+        env:
+          LOAD_BASELINE: ${{ inputs.baseline }}
+        run: '[[ "$LOAD_BASELINE" =~ ^[0-9a-f]{40}$ ]]'
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.baseline }}
+          path: baseline
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: candidate/go.mod
+          cache-dependency-path: candidate/go.sum
+      - name: Measure baseline and candidate
+        env:
+          LOAD_MAX_LOSS: ${{ inputs.loss_ppm }}
+        run: |
+          set -euo pipefail
+          candidate="$GITHUB_WORKSPACE/candidate"
+          export OPENVPN_LOAD_HARNESS="$candidate/tests/interop/native_load_test.go"
+          evidence="$RUNNER_TEMP/native-load-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -m 700 "$evidence"
+          echo "LOAD_EVIDENCE=$evidence" >> "$GITHUB_ENV"
+          peer=$(bash "$candidate/tests/interop/build-peer.sh" 2.6.23 "$evidence/peer")
+          (cd baseline && bash "$candidate/tests/interop/native-load.sh" "$peer" "$evidence/baseline")
+          (cd candidate && bash tests/interop/native-load.sh "$peer" "$evidence/candidate")
+          python3 "$candidate/tools/check_native_load.py" "$evidence/baseline" "$evidence/candidate" \
+            --max-loss-ppm "$LOAD_MAX_LOSS" | tee "$evidence/comparison.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always() && env.LOAD_EVIDENCE != ''
+        with:
+          name: native-load-samples
+          path: |
+            ${{ env.LOAD_EVIDENCE }}/*/environment.json
+            ${{ env.LOAD_EVIDENCE }}/*/metrics.jsonl
+            ${{ env.LOAD_EVIDENCE }}/*/metrics.jsonl.cleanup.json
+            ${{ env.LOAD_EVIDENCE }}/comparison.json

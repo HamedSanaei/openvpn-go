@@ -18,6 +18,7 @@ const (
 	CodeUnavailable    ErrorCode = "OpenVPN data channel unavailable"
 	CodeNotConnected   ErrorCode = "client is not connected"
 	CodeBusy           ErrorCode = "client operation already in progress"
+	CodeCapacity       ErrorCode = "handshake admission capacity exhausted"
 	CodeClosed         ErrorCode = "client is closed"
 	CodeCanceled       ErrorCode = "operation canceled"
 	CodeTimeout        ErrorCode = "operation timed out"

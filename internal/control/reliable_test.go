@@ -327,7 +327,7 @@ func TestDrainWaitsForAllWrittenControlRecords(t *testing.T) {
 				d.local = wire.SessionID{1}
 				remoteID := wire.SessionID{2}
 				peer := newCodec(Protection{}, 0)
-				s := startStream(d, 512, 64)
+				s := startStream(d, 512, 64, nil)
 				defer s.Close()
 				defer remote.Close()
 				send := func(op wire.Opcode, ids ...uint32) {

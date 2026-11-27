@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -141,12 +142,17 @@ func (s *Session) run(active *tlscontrol.Link) {
 		if first.KeyID != 0 && first.KeyID != id {
 			return nil
 		}
-		// OpenVPN processes control ACKs only on the primary key ID once a
-		// soft reset begins. The previous data key is still usable.
+		// A UDP peer may still be retransmitting its previous key exchange
+		// when we start locally. Keep that stream available to ACK the
+		// retransmission until the peer responds on the next key ID.
+		keepPrevious := first.KeyID == 0 && strings.HasPrefix(s.opts.TLS.Network, "udp")
 		s.mu.Lock()
 		s.link = nil
 		s.mu.Unlock()
-		active.Close()
+		previous := active
+		if !keepPrevious {
+			previous.Close()
+		}
 		report := RekeyResult{KeyID: id, PeerInitiated: first.KeyID != 0, Started: time.Now(), Phase: observability.PhaseResetACK}
 		stream, err := s.mux.StartRekey(id, first)
 		if err != nil {
@@ -155,14 +161,32 @@ func (s *Session) run(active *tlscontrol.Link) {
 			return rekeyError(err)
 		}
 		pending = stream
-		previous := active.Info
 		workers.Go(func() {
 			ctx, cancel := context.WithTimeout(s.ctx, s.opts.HandshakeLimit)
 			defer cancel()
 			progress := new(observability.Progress)
 			ctx = observability.WithProgress(ctx, progress)
 			result := replacement{stream: stream, report: report}
-			result.link, result.report.Err = tlscontrol.Establish(ctx, stream, s.opts.TLS, &previous)
+			if s.opts.AcquireHandshake != nil {
+				observability.Enter(ctx, observability.PhaseAdmission)
+				release, err := s.opts.AcquireHandshake(ctx)
+				if err != nil {
+					result.report.Err, result.report.Phase = err, progress.Phase
+					rekeyResults <- result
+					return
+				}
+				defer release()
+			}
+			if keepPrevious {
+				observability.Enter(ctx, observability.PhaseResetACK)
+				if err := stream.WaitReady(ctx); err != nil {
+					result.report.Err, result.report.Phase = err, progress.Phase
+					rekeyResults <- result
+					return
+				}
+				previous.Close()
+			}
+			result.link, result.report.Err = tlscontrol.Establish(ctx, stream, s.opts.TLS, &previous.Info)
 			if result.report.Err == nil {
 				observability.Enter(ctx, observability.PhaseKeyDerivation)
 				result.keys, result.report.Err = result.link.DataKeys()
