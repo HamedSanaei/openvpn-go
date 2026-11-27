@@ -43,6 +43,7 @@ type Mux struct {
 	peer    wire.SessionID
 	expect  uint8
 	txKey   uint8
+	ackLane *lane // Previous UDP lane can finish ACKs until the next reset is received.
 	readErr error
 }
 
@@ -140,6 +141,9 @@ func (m *Mux) start(id uint8, local, peer wire.SessionID, prepend []byte) (*Stre
 	if prepend != nil {
 		l.input <- prepend
 	}
+	if m.udp && id != 0 && prepend == nil {
+		m.ackLane = m.lanes[m.txKey]
+	}
 	m.lanes[id] = l
 	m.txKey = id
 	m.mu.Unlock()
@@ -149,7 +153,13 @@ func (m *Mux) start(id uint8, local, peer wire.SessionID, prepend []byte) (*Stre
 		d.ackLimit = 4
 	}
 	d.local, d.peer, d.keyID = local, peer, id
-	return startStream(d, m.limit, m.chunkSize), nil
+	return startStream(d, m.limit, m.chunkSize, func() {
+		m.mu.Lock()
+		if m.txKey == id && m.lanes[id] == l {
+			m.ackLane = nil
+		}
+		m.mu.Unlock()
+	}), nil
 }
 
 func (m *Mux) Data() <-chan []byte { return m.data }
@@ -184,8 +194,9 @@ func (m *Mux) write(ctx context.Context, packet []byte, control *lane) error {
 	if control != nil {
 		m.mu.Lock()
 		current := m.txKey == control.id && m.lanes[control.id] == control
+		previousACK := m.ackLane == control && len(packet) != 0 && wire.Opcode(packet[0]>>3) == wire.ACK
 		m.mu.Unlock()
-		if !current {
+		if !current && !previousACK {
 			return nil
 		}
 	}
@@ -301,6 +312,9 @@ func (l *lane) Close() error {
 		close(l.closed)
 		l.mux.mu.Lock()
 		l.mux.lanes[l.id] = nil
+		if l.mux.ackLane == l {
+			l.mux.ackLane = nil
+		}
 		l.mux.mu.Unlock()
 	})
 	return nil

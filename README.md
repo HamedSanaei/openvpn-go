@@ -1,6 +1,7 @@
 # OpenVPN Go
 
 An independent, modular Go implementation of the OpenVPN client protocol.
+A pure-Go OpenVPN client implementation with no CGO, OpenSSL, or external OpenVPN runtime dependency.
 
 > **Status:** M6 engineering checks and the M7 Xray adapter passed. The beta candidate awaits independent review and release approval.
 
@@ -11,6 +12,11 @@ Build a new implementation from public protocol documentation and independently 
 Applications can embed the OpenVPN client engine. The Linux 3x-ui/Xray
 adapter attaches a host TUN through the public client API.
 [Integration guide](integrations/xray/README.md)
+
+The runtime statement covers the protocol core. The optional Linux host
+network adapter uses `iproute2` and can use `resolvectl` for DNS. The
+interoperability lab uses OpenVPN Community, OpenVPN 3 Core and OpenSSL as
+external test tools. [Interop test guide](tests/interop/README.md)
 
 ## Design principles
 

@@ -10,11 +10,15 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"slices"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/hamedsanaei/openvpn-go/internal/testkit"
+	"github.com/hamedsanaei/openvpn-go/internal/wire"
+	"github.com/hamedsanaei/openvpn-go/transport"
 )
 
 // TestLossySessionSoak uses a seeded local datagram relay on both sides of
@@ -69,6 +73,14 @@ func TestLossySessionSoak(t *testing.T) {
 			cfg := fixture.config(pki, "udp", "tls", uint16(relay.Address().Port), false)
 			cfg.RekeyInterval = 2 * time.Second
 			c, app := connectData(t, cfg)
+			t.Cleanup(func() {
+				if t.Failed() {
+					for _, report := range c.RekeyReports() {
+						t.Logf("rekey generation=%d key=%d phase=%s duration=%s code=%s",
+							report.Generation, report.KeyID, report.Phase, report.Duration, report.Code)
+					}
+				}
+			})
 			info, ok := c.ControlInfo()
 			if !ok || !info.TunnelIP.Is4() {
 				t.Fatal("no authenticated address")
@@ -153,4 +165,62 @@ func TestLossySessionSoak(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUDPRekeyRecoversLostPreviousACK(t *testing.T) {
+	pki := testkit.NewPKI(t)
+	fixture := makePKIFixture(t, interopPeer(t), pki)
+	port, echo := startDataPeer(t, fixture, "udp", "tls", false, "1.2", "AES-256-GCM", "--reneg-sec", "0")
+	cfg := fixture.config(pki, "udp", "tls", port, false)
+	cfg.RekeyInterval = time.Second
+	var loss previousACKLoss
+	cfg.Dialer = testkit.DialerFunc(func(ctx context.Context, network, address string) (transport.PacketConn, error) {
+		conn, err := (transport.SocketDialer{}).DialPacket(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		loss.PacketConn = conn
+		return &loss, nil
+	})
+	c, app := connectData(t, cfg)
+	initial, ok := c.ControlInfo()
+	if !ok || !initial.TunnelIP.Is4() {
+		t.Fatal("initial generation was not authenticated")
+	}
+	waitForKeyID(t, c, 1)
+	if loss.dropped.Load() == 0 {
+		t.Fatal("the test did not lose the key-1 acknowledgement")
+	}
+	waitForKeyID(t, c, 2)
+	if !loss.lateACK.Load() || c.Stats().Connections != 1 {
+		t.Fatal("the previous control ACK was not recovered on the same connection")
+	}
+	roundtrip(t, app, echo, initial.TunnelIP.AsSlice(), []byte("authenticated data after the second rekey"))
+}
+
+type previousACKLoss struct {
+	transport.PacketConn
+	keyTwo  bool // Only the mux write gate accesses this flag.
+	dropped atomic.Uint64
+	lateACK atomic.Bool
+}
+
+func (p *previousACKLoss) WritePacket(ctx context.Context, packet []byte) error {
+	header, err := wire.ParseHeader(packet)
+	if err == nil && header.KeyID == 2 && header.Opcode == wire.SoftReset {
+		p.keyTwo = true
+	}
+	if err == nil && header.KeyID == 1 && header.Opcode == wire.ACK && len(packet) > wire.PrefixSize {
+		ack, err := wire.ParseControl(packet[:wire.PrefixSize], packet[wire.PrefixSize:])
+		// In the pinned TLS 1.2 fixture, server packet 3 ends the first
+		// rekey. Hold its ACK until after the next local reset is sent.
+		if err == nil && slices.Contains(ack.ACKs[:ack.ACKCount], uint32(3)) {
+			if !p.keyTwo {
+				p.dropped.Add(1)
+				return nil
+			}
+			p.lateACK.Store(true)
+		}
+	}
+	return p.PacketConn.WritePacket(ctx, packet)
 }

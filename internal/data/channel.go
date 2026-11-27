@@ -40,6 +40,7 @@ type Channel struct {
 	udp      bool
 	current  *generation
 	retiring *generation
+	nonce    [12]byte
 }
 
 func NewChannel(peerID uint32, udp bool, keys crypt.DataKeys) (*Channel, error) {
@@ -80,6 +81,12 @@ func (c *Channel) Retire(now time.Time) {
 }
 
 func (c *Channel) Seal(payload []byte) ([]byte, error) {
+	return c.SealInto(nil, payload)
+}
+
+// SealInto uses dst as scratch for the complete frame. The returned frame
+// replaces dst and may alias its capacity. dst must not alias payload.
+func (c *Channel) SealInto(dst, payload []byte) ([]byte, error) {
 	if len(payload) == 0 {
 		return nil, ErrPacket
 	}
@@ -93,15 +100,18 @@ func (c *Channel) Seal(payload []byte) ([]byte, error) {
 		prefix, pidOffset, aadOffset = 5, 1, 1
 	}
 	overhead := prefix + tagSize
-	packet := make([]byte, prefix, overhead+len(payload))
+	if cap(dst) < overhead+len(payload) {
+		dst = make([]byte, 0, overhead+len(payload))
+	}
+	packet := dst[:prefix]
 	if c.dataV1 {
 		packet[0] = byte(wire.DataV1)<<3 | g.id
 	} else {
 		binary.BigEndian.PutUint32(packet, uint32(uint8(wire.DataV2)<<3|g.id)<<24|c.peerID)
 	}
 	binary.BigEndian.PutUint32(packet[pidOffset:], g.sent)
-	iv := nonce(g.sent, g.keys.Send.ImplicitIV)
-	packet = g.keys.Send.AEAD.Seal(packet, iv[:], payload, packet[aadOffset:prefix])
+	c.setNonce(g.sent, g.keys.Send.ImplicitIV)
+	packet = g.keys.Send.AEAD.Seal(packet, c.nonce[:], payload, packet[aadOffset:prefix])
 	// Go's AEAD appends its tag. OpenVPN transmits it before ciphertext.
 	var tag [tagSize]byte
 	copy(tag[:], packet[len(packet)-tagSize:])
@@ -122,6 +132,16 @@ func (c *Channel) HasEpoch(epoch uint64) bool {
 
 // OpenWithEpoch returns the local identity of the authenticated receive key.
 func (c *Channel) OpenWithEpoch(packet []byte, now time.Time) ([]byte, uint64, error) {
+	return c.open(packet, now, false)
+}
+
+// OpenOwned consumes an owned frame. On success the plaintext aliases the
+// input. The frame header remains intact for authenticated fragment handling.
+func (c *Channel) OpenOwned(packet []byte, now time.Time) ([]byte, uint64, error) {
+	return c.open(packet, now, true)
+}
+
+func (c *Channel) open(packet []byte, now time.Time, owned bool) ([]byte, uint64, error) {
 	prefix, pidOffset, aadOffset := additionalSize, 4, 0
 	opcode := wire.DataV2
 	if c.dataV1 {
@@ -145,23 +165,27 @@ func (c *Channel) OpenWithEpoch(packet []byte, now time.Time) ([]byte, uint64, e
 	if pid > g.keys.PacketLimit || !g.replay.admissible(pid, c.udp, now) {
 		return nil, 0, ErrPacket
 	}
-	iv := nonce(pid, g.keys.Receive.ImplicitIV)
-	sealed := make([]byte, 0, len(packet)-prefix)
-	sealed = append(sealed, packet[overhead:]...)
-	sealed = append(sealed, packet[prefix:overhead]...)
-	plain, err := g.keys.Receive.AEAD.Open(sealed[:0], iv[:], sealed, packet[aadOffset:prefix])
+	var tag [tagSize]byte
+	copy(tag[:], packet[prefix:overhead])
+	sealed := packet[prefix:]
+	if !owned {
+		sealed = make([]byte, len(sealed))
+	}
+	n := copy(sealed, packet[overhead:])
+	copy(sealed[n:], tag[:])
+	c.setNonce(pid, g.keys.Receive.ImplicitIV)
+	plain, err := g.keys.Receive.AEAD.Open(sealed[:0], c.nonce[:], sealed, packet[aadOffset:prefix])
 	if err != nil {
+		clear(sealed)
 		return nil, 0, ErrPacket
 	}
 	g.replay.commit(pid, c.udp, now)
 	return plain, g.epoch, nil
 }
 
-func nonce(id uint32, implicit [8]byte) [12]byte {
-	var value [12]byte
-	binary.BigEndian.PutUint32(value[:4], id)
-	copy(value[4:], implicit[:])
-	return value
+func (c *Channel) setNonce(id uint32, implicit [8]byte) {
+	binary.BigEndian.PutUint32(c.nonce[:4], id)
+	copy(c.nonce[4:], implicit[:])
 }
 
 // OpenVPN keepalives are encrypted data packets with this exact payload.

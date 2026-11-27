@@ -13,11 +13,11 @@ type tcpConn struct {
 }
 
 func (c *tcpConn) ReadPacket(ctx context.Context, dst []byte) (int, error) {
-	finish, err := c.start(ctx, c.readGate, c.conn.SetReadDeadline)
+	op, err := c.start(ctx, &c.read)
 	if err != nil {
 		return 0, err
 	}
-	defer finish()
+	defer op.finish()
 
 	var header [2]byte
 	n, err := io.ReadFull(c.conn, header[:])
@@ -52,11 +52,11 @@ func (c *tcpConn) WritePacket(ctx context.Context, packet []byte) error {
 	if err := c.checkSize(len(packet)); err != nil {
 		return err
 	}
-	finish, err := c.start(ctx, c.writeGate, c.conn.SetWriteDeadline)
+	op, err := c.start(ctx, &c.write)
 	if err != nil {
 		return err
 	}
-	defer finish()
+	defer op.finish()
 
 	if c.frame == nil {
 		c.frame = make([]byte, 2+c.limit)

@@ -35,14 +35,14 @@ type Stream struct {
 	peer    wire.SessionID
 }
 
-func startStream(d *driver, limit, chunkSize int) *Stream {
+func startStream(d *driver, limit, chunkSize int, onReady func()) *Stream {
 	ctx, cancel := context.WithCancel(context.Background())
 	conn, bridge := net.Pipe()
 	s := &Stream{
 		conn: conn, cancel: cancel, ready: make(chan struct{}), stopped: make(chan struct{}),
 		done: make(chan struct{}), drain: make(chan drainRequest), writer: make(chan struct{}, 1), local: d.local,
 	}
-	go s.run(ctx, bridge, d, limit, chunkSize)
+	go s.run(ctx, bridge, d, limit, chunkSize, onReady)
 	return s
 }
 
@@ -145,7 +145,7 @@ func (s *Stream) Close() {
 	<-s.done
 }
 
-func (s *Stream) run(ctx context.Context, bridge net.Conn, d *driver, limit, chunkSize int) {
+func (s *Stream) run(ctx context.Context, bridge net.Conn, d *driver, limit, chunkSize int, onReady func()) {
 	incoming := make(chan []byte)
 	outgoing := make(chan []byte)
 	delivery := make(chan []byte)
@@ -206,6 +206,9 @@ func (s *Stream) run(ctx context.Context, bridge net.Conn, d *driver, limit, chu
 
 	s.err = d.loop(ctx, incoming, outgoing, delivery, s.drain, func() {
 		s.peer = d.peer
+		if onReady != nil {
+			onReady()
+		}
 		close(s.ready)
 	})
 	if errors.Is(s.err, context.Canceled) {

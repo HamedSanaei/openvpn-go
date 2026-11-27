@@ -251,7 +251,7 @@ func (p *parser) appendEndpoint(e client.Endpoint, loc location, c connection) e
 		return c.fixedLoc.diagnostic(CodeConflict)
 	}
 	if c.fixedDataV1 && (!p.cfg.TLS.RequireServerUsage || p.identity.Mode != client.X509CommonName ||
-		p.ca == nil || p.auth == nil) {
+		p.ca == nil || p.auth == nil || p.cfg.Authentication.Interactive()) {
 		return c.fixedLoc.diagnostic(CodeConflict)
 	}
 	e.FixedAEAD, e.FixedAEADDataV1 = c.fixedAEAD, c.fixedDataV1
