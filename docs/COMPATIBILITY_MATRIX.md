@@ -151,6 +151,10 @@ exporter and DATA_V2. Six further focused cases passed with
 AES-128-GCM, ChaCha20-Poly1305 or TLS 1.2. The opt-in importer requires
 administrator-confirmed server identity. Two client-initiated UDP
 rekeys passed; accelerated TCP rekey failed to preserve traffic.
+A follow-up verified two fresh DNS-hostname export cases and four
+public-chain TLS proxy cases, with four wrong-name rejections before
+forwarding. Direct AS IPv6 transport is outside the vendor's current
+support; inner IPv6 was not qualified on this lab.
 This is scoped qualification, not full Access Server certification.
 [Detailed evidence, reproduction and remaining modes](ACCESS_SERVER.md).
 

@@ -136,3 +136,58 @@ of supported settings are not qualified here. CBC, compression, TAP,
 static-key and unencrypted data modes remain outside the secure client
 policy. Do not interpret this record as support for every Access Server
 feature. Issue #17 remains open for other provider and AS qualification.
+
+## Additional DNS and public-chain TLS qualification
+
+Follow-up lab, 2026-11-27: the supplied publicly trusted wildcard
+certificate covers both administrator-provided DNS names. Fresh
+user-locked exports using the IPv4-resolving DNS name passed TCP and
+UDP data/reconnect (two cases). The VPN server identity remains the
+administrator-confirmed exact CN and the profile CA.
+
+Four more cases passed with the real public certificate and its full
+chain: two DNS identities, each over IPv4 and IPv6 loopback to an
+ephemeral HTTPS CONNECT fixture, forwarding exclusively to the IPv4
+Access Server TCP endpoint. Both VPN generations passed private
+IPv4 echo. Each corresponding wrong TLS name was rejected before
+forwarding any CONNECT to the VPN endpoint. The proxy uses system
+roots; the inner VPN separately uses its original CA and server
+identity. No production web TLS setting or VPN PKI was replaced.
+The key was used in place on the authorized lab and never committed.
+
+| Additional case | Result |
+|---|---|
+| DNS-hostname export, TCP and UDP | 2/2 verified |
+| Public TLS proxy certificate, two names x two loopback families | 4/4 verified |
+| Incorrect TLS proxy name | 4/4 rejected before forwarding |
+| Direct IPv6 Access Server transport | Not supported by AS 3.x according to the vendor |
+| Inner IPv6 live data | Not qualified: temporary AS IPv6 pool configuration failed at server restart and was restored |
+
+The vendor distinguishes [web TLS from VPN certificates](https://openvpn.net/as-docs/v3/tutorials/tutorial--lets-encrypt-ssl-certificate-access-server/)
+and [IPv6 transport from tunnel IPv6](https://openvpn.net/as-docs/v3/ipv6-support/).
+IPv6 loopback to the proxy is not evidence of direct IPv6 transport
+to Access Server or public IPv6 reachability. The additional ICMPv6
+probe accepts an explicit test-owned IPv6 echo destination and
+checks source/destination, pseudo-header checksum and random nonce.
+The synthetic regression covers the probe and the blocked IPv6
+policy; real Access Server inner IPv6 remains unqualified.
+
+Run the optional TLS proxy fixture on the authorized lab with the
+existing external-profile variables, selecting its TCP remote and
+a private IPv4 echo target. Set the following additional variables
+to local paths and the intended verified names (never put a key
+in the repository). The fixed target must match the resolved VPN
+TCP destination and the fixture binds only to loopback.
+
+```sh
+export OVPN_EXTERNAL_TLS_CERT=/private/lab/fullchain.pem
+export OVPN_EXTERNAL_TLS_KEY=/private/lab/privkey.pem
+export OVPN_EXTERNAL_TLS_NAME=administrator-confirmed.example
+export OVPN_EXTERNAL_TLS_TARGET=192.0.2.10:443
+/tmp/ovpn-interop.test -test.run '^TestExternalTLSProxyProfile$' -test.v -test.count=1
+```
+
+There are now 30 distinct verified positive scenarios across the
+initial matrix and these focused DNS/proxy tests (34 successful
+executions including the earlier repeated v2 cases); these are
+not a full Cartesian product or all product features.

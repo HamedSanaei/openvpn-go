@@ -183,7 +183,11 @@ func TestExternalCredentialsBounds(t *testing.T) {
 	}
 }
 
-func probeExternalProfile(ctx context.Context, name string) (result externalResult) {
+func probeExternalProfile(ctx context.Context, name string) externalResult {
+	return probeExternalProfileWithDialer(ctx, name, transport.SocketDialer{})
+}
+
+func probeExternalProfileWithDialer(ctx context.Context, name string, dialer transport.Dialer) (result externalResult) {
 	result = externalResult{Stage: "input"}
 	file, err := openExternalFile(name)
 	if err != nil {
@@ -277,7 +281,7 @@ func probeExternalProfile(ctx context.Context, name string) (result externalResu
 	if echoTarget != "" && echoTarget != "gateway" {
 		value := echoTarget
 		peer, err = netip.ParseAddr(value)
-		if err != nil || !peer.Is4() || !peer.IsGlobalUnicast() {
+		if err != nil || peer.Is4In6() || peer.Zone() != "" || !peer.IsGlobalUnicast() {
 			result.Code = "invalid_echo_address"
 			return result
 		}
@@ -290,7 +294,7 @@ func probeExternalProfile(ctx context.Context, name string) (result externalResu
 
 	var first transport.PacketConn
 	cfg.Dialer = testkit.DialerFunc(func(ctx context.Context, network, address string) (transport.PacketConn, error) {
-		link, err := (transport.SocketDialer{}).DialPacket(ctx, network, address)
+		link, err := dialer.DialPacket(ctx, network, address)
 		if err == nil && first == nil {
 			first = link
 		}
@@ -371,9 +375,9 @@ func externalError(err error) string {
 	return "operation_failed"
 }
 
-// When explicitly given a test-owned IPv4 echo target, exercise data on both
+// When explicitly given a test-owned IPv4 or IPv6 echo target, exercise data on both
 // sides of a transport interruption without creating an OS tunnel or routes.
-// An invalid peer requests the gateway of each authenticated generation.
+// An invalid peer requests the IPv4 gateway of each authenticated generation.
 func probeExternalData(ctx context.Context, c *client.Client, first transport.PacketConn, peer netip.Addr, rekeyCount int, budget time.Duration) (stage, code string, trips int) {
 	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
@@ -410,7 +414,7 @@ func probeExternalData(ctx context.Context, c *client.Client, first transport.Pa
 					return stage, "missing_ipv4_gateway", trips
 				}
 			}
-			if err := externalEcho(ctx, app, gen.Control.TunnelIP, target); err != nil {
+			if err := externalControlEcho(ctx, app, gen.Control, target); err != nil {
 				return stage, "echo_failed", trips
 			}
 		}
@@ -453,7 +457,7 @@ func probeExternalRekey(ctx context.Context, c *client.Client, app transport.Pac
 			if info.KeyID != previous%7+1 {
 				return "rekey", "unexpected_key_id", trips
 			}
-			if err := externalEcho(ctx, app, info.TunnelIP, peer); err != nil {
+			if err := externalControlEcho(ctx, app, info, peer); err != nil {
 				return "rekey", "echo_failed", trips
 			}
 			if c.Stats().Connections != 1 {
