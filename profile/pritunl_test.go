@@ -1,11 +1,12 @@
 package profile
 
 import (
-	"github.com/hamedsanaei/openvpn-go/client"
-	"github.com/hamedsanaei/openvpn-go/internal/testkit"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/hamedsanaei/openvpn-go/client"
+	"github.com/hamedsanaei/openvpn-go/internal/testkit"
 )
 
 func TestPritunlExportPolicy(t *testing.T) {
@@ -14,6 +15,7 @@ func TestPritunlExportPolicy(t *testing.T) {
 	opts := Options{PritunlServerName: testkit.TestServerName}
 	for _, tc := range []struct{ name, body string }{
 		{"AES256", base},
+		{"AES256 with an AEAD-only offer", strings.Replace(base, "data-ciphers AES-256-GCM:AES-256-CBC", "data-ciphers AES-256-GCM", 1)},
 		{"AES128", strings.ReplaceAll(base, "AES-256", "AES-128")},
 		{"ChaCha", strings.ReplaceAll(strings.ReplaceAll(base, "AES-256-GCM:AES-256-CBC", "CHACHA20-POLY1305"), "AES-256-CBC", "CHACHA20-POLY1305")},
 	} {
@@ -50,6 +52,9 @@ func TestPritunlExportPolicy(t *testing.T) {
 		base + "verify-x509-name wrong name\n",
 		base + "up /tmp/unsafe\n",
 		base + "reneg-sec 0\n",
+		base + "ignore-unknown-option block-outside-dns\n",
+		strings.Replace(base, "ignore-unknown-option block-outside-dns", "ignore-unknown-option script-security", 1),
+		strings.Replace(strings.Replace(base, "data-ciphers AES-256-GCM:AES-256-CBC", "data-ciphers AES-256-GCM", 1), "cipher AES-256-CBC", "cipher AES-128-GCM", 1),
 	} {
 		if _, _, err := Parse(strings.NewReader(body), opts); err == nil {
 			t.Fatal("unsafe or contradictory export accepted")

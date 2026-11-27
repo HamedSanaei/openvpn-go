@@ -4,13 +4,14 @@ package interop_test
 
 import (
 	"fmt"
-	"github.com/hamedsanaei/openvpn-go/client"
-	"github.com/hamedsanaei/openvpn-go/internal/testkit"
-	"github.com/hamedsanaei/openvpn-go/profile"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/hamedsanaei/openvpn-go/client"
+	"github.com/hamedsanaei/openvpn-go/internal/testkit"
+	"github.com/hamedsanaei/openvpn-go/profile"
 )
 
 // This tests a generated Pritunl-shaped profile against a native Community

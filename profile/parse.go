@@ -42,7 +42,8 @@ type Options struct {
 	// exact VPN server certificate common name supplied by the administrator.
 	// Legacy cipher hints never enable non-AEAD data negotiation.
 	AccessServerName string
-	// PritunlServerName authorizes a Pritunl export with the administrator-verified VPN certificate common name.
+	// PritunlServerName authorizes trusted Pritunl exports with an exact
+	// administrator-confirmed VPN server certificate common name.
 	PritunlServerName string
 	// Authentication authorizes caller-managed credentials and interaction.
 	Authentication client.Authentication
@@ -85,22 +86,23 @@ func Parse(r io.Reader, opts Options) (client.Config, []Diagnostic, error) {
 }
 
 type parser struct {
-	opts                Options
-	cfg                 client.Config
-	identity            client.X509Name
-	versionLocation     location
-	warnings            []Diagnostic
-	tlsClient           bool
-	pull                bool
-	device              bool
-	noCache             location
-	attemptsPerRemote   int
-	attemptsLocation    location
-	protonHints         map[string]location
-	express             expressOptions
-	accessNoCert        bool
-	pritunlSeen         map[string]location
-	pritunlLegacyCipher string
+	opts              Options
+	cfg               client.Config
+	identity          client.X509Name
+	versionLocation   location
+	warnings          []Diagnostic
+	tlsClient         bool
+	pull              bool
+	device            bool
+	noCache           location
+	attemptsPerRemote int
+	attemptsLocation  location
+	protonHints       map[string]location
+	express           expressOptions
+	accessNoCert      bool
+	pritunlSeen       map[string]location
+	pritunlHint       string
+	pritunlCBC        string
 
 	defaults connection
 	remotes  []remote
@@ -253,11 +255,13 @@ func (p *parser) readDirective(line string, number int) (location, error) {
 	if p.block != nil && !rule.connection {
 		return loc, loc.diagnostic(CodeScope)
 	}
-	if _, pritunl := pritunlDirectives[loc.name]; p.opts.PritunlServerName != "" && pritunl {
-		return loc, p.applyPritunl(loc, args)
-	}
 	if _, express := expressDirectives[loc.name]; p.opts.ExpressVPNManual && express {
 		return loc, p.applyExpress(loc, args)
+	}
+	if p.opts.PritunlServerName != "" {
+		if _, ok := pritunlDirectives[loc.name]; ok {
+			return loc, p.applyPritunl(loc, args)
+		}
 	}
 	return loc, p.apply(loc, args)
 }
@@ -278,10 +282,10 @@ func (p *parser) finish() error {
 	if err := p.setProtonServerIdentity(); err != nil {
 		return err
 	}
-	if err := p.finishAccessServer(); err != nil {
+	if err := p.finishPritunl(); err != nil {
 		return err
 	}
-	if err := p.finishPritunl(); err != nil {
+	if err := p.finishAccessServer(); err != nil {
 		return err
 	}
 	if err := p.finishExpress(); err != nil {

@@ -191,3 +191,5 @@ There are now 30 distinct verified positive scenarios across the
 initial matrix and these focused DNS/proxy tests (34 successful
 executions including the earlier repeated v2 cases); these are
 not a full Cartesian product or all product features.
+
+For the later accelerated rekey comparison with the bundled native client, see [additional server evidence](SERVER_INTEROP.md#access-server-accelerated-rekey-comparison-2026-11-27). The comparison does not qualify normal-interval TCP rekey.
