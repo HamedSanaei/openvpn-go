@@ -55,7 +55,7 @@ func InspectWithOptions(r io.Reader, opts Options) (Report, error) {
 	}
 	p := parser{opts: Options{
 		ProtonVPNServerName: opts.ProtonVPNServerName, ProtonVPNVerifyIP: opts.ProtonVPNVerifyIP,
-		ExpressVPNManual: opts.ExpressVPNManual,
+		ExpressVPNManual: opts.ExpressVPNManual, AccessServerName: opts.AccessServerName, AllowPasswordOnly: opts.AllowPasswordOnly,
 	}, cfg: client.Config{TLS: &client.TLSConfig{}}}
 	report := Report{Entries: []CapabilityEntry{}}
 	err = p.read(bytes.TrimPrefix(raw, []byte("\xef\xbb\xbf")), &report)

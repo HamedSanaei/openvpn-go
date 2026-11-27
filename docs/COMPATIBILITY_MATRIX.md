@@ -140,6 +140,24 @@ traffic and reconnect using numeric IP SAN verification. UDP DNS and
 HTTPS passed in a TUN namespace on both transports in each group.
 [Country and Secure Core evidence](EXTERNAL_INTEROP.md#country-and-secure-core-exports)
 
+## OpenVPN Access Server 3.2.4
+
+An authorized lab on Ubuntu 26.04 amd64 verified unchanged auto-login
+and user-locked exports with plain TLS, tls-auth, tls-crypt and
+tls-crypt-v2, plus modern server-locked v2 with explicit password-only
+policy and tls-crypt-v2, over TCP and UDP. All 18 base cases passed
+private IPv4 traffic and reconnect with TLS 1.3, AES-256-GCM, TLS
+exporter and DATA_V2. Six further focused cases passed with
+AES-128-GCM, ChaCha20-Poly1305 or TLS 1.2. The opt-in importer requires
+administrator-confirmed server identity. Two client-initiated UDP
+rekeys passed; accelerated TCP rekey failed to preserve traffic.
+A follow-up verified two fresh DNS-hostname export cases and four
+public-chain TLS proxy cases, with four wrong-name rejections before
+forwarding. Direct AS IPv6 transport is outside the vendor's current
+support; inner IPv6 was not qualified on this lab.
+This is scoped qualification, not full Access Server certification.
+[Detailed evidence, reproduction and remaining modes](ACCESS_SERVER.md).
+
 ## Evidence records
 
 M2 passed all 20 baseline control scenarios over TLS 1.2, with

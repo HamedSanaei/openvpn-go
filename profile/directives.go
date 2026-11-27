@@ -74,7 +74,7 @@ func knownLocation(name string, line int) location {
 	_, standard := directives[name]
 	_, proton := protonDirectives[name]
 	_, express := expressDirectives[name]
-	if !standard && !proton && !express && !unsupported[name] {
+	if !standard && !proton && !express && name != "push-peer-info" && !unsupported[name] {
 		name = ""
 	}
 	return location{line: line, name: name}
@@ -99,10 +99,23 @@ func (p *parser) apply(loc location, args []string) error {
 		}
 	case "remote-random":
 		p.cfg.RemoteRandom = true
-	case "setenv", "mssfix", "script-security", "up", "down", "block-outside-dns":
+	case "setenv":
+		if p.opts.AccessServerName != "" {
+			if !p.opts.AllowPasswordOnly || len(args) != 2 || args[0] != "CLIENT_CERT" || args[1] != "0" {
+				return loc.diagnostic(CodeUnsupported)
+			}
+			if p.accessNoCert {
+				return loc.diagnostic(CodeConflict)
+			}
+			p.accessNoCert = true
+			p.warn(loc)
+			return nil
+		}
+		return p.applyProtonHint(loc, args)
+	case "mssfix", "script-security", "up", "down", "block-outside-dns":
 		return p.applyProtonHint(loc, args)
 	case "compat-fixed-aead":
-		if p.opts.protonImportEnabled() || p.opts.ExpressVPNManual {
+		if p.opts.protonImportEnabled() || p.opts.ExpressVPNManual || p.opts.AccessServerName != "" {
 			return loc.diagnostic(CodeUnsupported)
 		}
 		return p.applyConnection(loc, args)
@@ -140,7 +153,16 @@ func (p *parser) apply(loc location, args []string) error {
 			return loc.diagnostic(CodeUnsupported)
 		}
 		p.cfg.AuthDigest = digest
+	case "push-peer-info":
+		// The core already emits its supported IV_PROTO/IV_CIPHERS.
+		// Do not invent platform/device identifiers or unsupported capabilities.
+		p.warn(loc)
 	case "data-ciphers", "cipher":
+		if p.opts.AccessServerName != "" && loc.name == "cipher" && args[0] == "AES-256-CBC" {
+			// Compatibility hint only. The negotiated data cipher is still AEAD-only.
+			p.warn(loc)
+			return nil
+		}
 		names := strings.SplitN(args[0], ":", 4)
 		if loc.name == "cipher" && len(names) != 1 {
 			return loc.diagnostic(CodeValue)
@@ -217,7 +239,11 @@ func (p *parser) apply(loc location, args []string) error {
 		}
 		p.cfg.HandshakeTimeout = value
 	case "reneg-sec":
-		value, ok := seconds(args[0], 0, 86400)
+		maximum := 86400
+		if p.opts.AccessServerName != "" {
+			maximum = 604800
+		}
+		value, ok := seconds(args[0], 0, maximum)
 		if !ok {
 			return loc.diagnostic(CodeValue)
 		}

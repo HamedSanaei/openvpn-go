@@ -281,6 +281,10 @@ func (s *Session) write(ctx context.Context, plain []byte) error {
 		s.mu.Unlock()
 		return net.ErrClosed
 	}
+	if s.info.Tunnel.BlockIPv6 && len(plain) != 0 && plain[0]>>4 == 6 {
+		s.mu.Unlock()
+		return tunnel.ErrInvalidPacket
+	}
 	var packets [][]byte
 	var err error
 	if s.fragments != nil {
@@ -331,7 +335,7 @@ func (s *Session) receive(wrapped []byte) {
 			packet = s.fragments.open(wrapped, packet, epoch, s.packetMTU, now)
 			keepalive = data.IsKeepalive(packet)
 		}
-		validIP = len(packet) <= s.packetMTU && data.IsIP(packet)
+		validIP = len(packet) <= s.packetMTU && data.IsIP(packet) && !(s.info.Tunnel.BlockIPv6 && packet[0]>>4 == 6)
 		if keepalive || validIP {
 			s.lastRecv = now
 		}

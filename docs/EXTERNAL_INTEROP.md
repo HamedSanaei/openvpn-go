@@ -155,26 +155,14 @@ exact available server version and the stage/code. A server version can be
 marked undisclosed when the provider does not expose it. List any tested
 profile edits as separate cases.
 
-A self-hosted Access Server lab used **3.2.4** (`3.2.4-f3c295a7-Ubuntu26`),
-with the official Linux amd64 container pinned to
-`docker.io/openvpn/openvpn-as@sha256:6b8252ead84638fb5d6bf1d617b07299d170c5102245675e3c1720bbeb9ac6e2`.
-Two exports were generated using a disposable local account and kept outside
-this repository. Both advertise TLS 1.3 and carry inline CA, certificate,
-key and `tls-crypt-v2` material. The original exports request
-`cipher AES-256-CBC`, which is outside this project's AEAD-only policy.
-
-| Access Server export | Go probe outcome | Traffic / reconnect |
-|---|---|---|
-| Auto-login | `parse:unsupported_directive` (`cipher`, policy-disabled) | Not attempted |
-| User-locked (`auth-user-pass`) | `parse:unsupported_directive` (`cipher`, policy-disabled) | Not attempted |
-
-The external Community reference attempts also failed to reach the lab
-listener (connection refused); no successful Access Server negotiation
-or transport interoperability is established by this run. The reported
-parser rejection is reproducible without network access. Reconfigure an
-AEAD-only lab and repeat with a new, separately identified export before
-claiming compatibility. No security policy was relaxed to accept these
-profiles. [Access Server image](https://hub.docker.com/r/openvpn/openvpn-as)
+The initial container lab recorded a strict-parser rejection of legacy
+`cipher AES-256-CBC` hints and an unreachable listener. A subsequent
+authorized bare-server lab with Access Server **3.2.4**
+(`3.2.4-f3c295a7-Ubuntu26`, Ubuntu 26.04 amd64) exercised unchanged
+user-locked and auto-login exports. The [Access Server qualification
+record](ACCESS_SERVER.md) describes the opt-in importer, verified traffic,
+reconnect, rekey observations and remaining gaps. The strict default
+still rejects the legacy declaration.
 
 | Provider | Export to test | Status |
 |---|---|---|
