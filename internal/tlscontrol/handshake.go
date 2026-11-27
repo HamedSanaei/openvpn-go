@@ -39,6 +39,7 @@ type Options struct {
 	ExitNotify        bool
 	TunnelMTU         int
 	FixedAEAD         string
+	AllowLZOStub      bool
 	ServerPollTimeout time.Duration
 }
 
@@ -115,7 +116,7 @@ func Establish(ctx context.Context, stream *control.Stream, opts Options, previo
 		info = *previous
 	} else {
 		observability.Enter(ctx, observability.PhasePush)
-		push := pushState{allowed: opts.Ciphers, policy: opts.PushPolicy, allowExit: opts.ExitNotify, fixedAEAD: opts.FixedAEAD}
+		push := pushState{allowed: opts.Ciphers, policy: opts.PushPolicy, allowExit: opts.ExitNotify, fixedAEAD: opts.FixedAEAD, allowLZOStub: opts.AllowLZOStub}
 		if err := readPushInteractive(ctx, conn, reader, &push, opts.Interaction); err != nil {
 			clear(push.token)
 			return nil, ctxError(ctx, err)

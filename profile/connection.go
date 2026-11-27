@@ -257,8 +257,16 @@ func (p *parser) appendEndpoint(e client.Endpoint, loc location, c connection) e
 		}
 	}
 	e.VerifyX509Name = p.identity
+	if p.opts.ExpressVPNManual {
+		e.ExpressVPNFragmentSize = p.express.fragment
+		e.ExplicitExitNotify = true
+		if c.protection == nil || c.protection.loc.name != "tls-auth" {
+			return (location{name: "tls-auth"}).diagnostic(CodeRequired)
+		}
+	}
 	e.LocalAddress, e.LocalPort = c.localAddress, c.localPort
-	e.ConnectTimeout, e.TunnelMTU, e.ExplicitExitNotify = c.timeout, c.mtu, c.exit
+	e.ConnectTimeout, e.TunnelMTU = c.timeout, c.mtu
+	e.ExplicitExitNotify = e.ExplicitExitNotify || c.exit
 	e.ServerPollTimeout = c.pollTimeout
 	if c.bindMode == "bind" && e.LocalPort == 0 {
 		e.LocalPort = c.portLocal

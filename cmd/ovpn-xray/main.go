@@ -35,9 +35,10 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 	authPath := flags.String("auth-file", "", "two-line OpenVPN credential file")
 	protonName := flags.String("protonvpn-server-name", "", "trusted exact Proton VPN certificate name")
 	protonVerifyIP := flags.Bool("protonvpn-verify-ip", false, "verify each Proton VPN numeric remote against its certificate IP SAN")
+	express := flags.Bool("expressvpn", false, "import a trusted ExpressVPN manual profile")
 	passwordOnly := flags.Bool("allow-password-only", false, "allow verified profiles without a client certificate")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *path == "" || *tun == "" || (*v4 == "" && *v6 == "") {
-		fmt.Fprintln(stderr, "Usage: ovpn-xray -profile client.ovpn -tun ovpn0 [-root directory] [-ipv4 addr] [-ipv6 prefix] [-attempts n] [-mss-mtu n] [-allow-password-only] [-auth-file path] [-protonvpn-server-name name | -protonvpn-verify-ip]")
+		fmt.Fprintln(stderr, "Usage: ovpn-xray -profile client.ovpn -tun ovpn0 [-root directory] [-ipv4 addr] [-ipv6 prefix] [-attempts n] [-mss-mtu n] [-allow-password-only] [-auth-file path] [-expressvpn | -protonvpn-server-name name | -protonvpn-verify-ip]")
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
@@ -59,9 +60,13 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 			return 2
 		}
 	}
-	opts := profile.Options{AllowPasswordOnly: *passwordOnly, ProtonVPNServerName: *protonName, ProtonVPNVerifyIP: *protonVerifyIP}
+	opts := profile.Options{AllowPasswordOnly: *passwordOnly, ProtonVPNServerName: *protonName, ProtonVPNVerifyIP: *protonVerifyIP, ExpressVPNManual: *express}
 	if *protonVerifyIP && *protonName != "" {
 		fmt.Fprintln(stderr, "choose one Proton VPN server identity option")
+		return 2
+	}
+	if *express && (*protonVerifyIP || *protonName != "" || *passwordOnly) {
+		fmt.Fprintln(stderr, "ExpressVPN import requires its own certificate and identity policy")
 		return 2
 	}
 	if *authPath != "" {

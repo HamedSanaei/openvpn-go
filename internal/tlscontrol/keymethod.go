@@ -58,6 +58,9 @@ func writeKeyMethodOptions(w io.Writer, network, digest string, ciphers []string
 	options := "V4,dev-type tun,link-mtu " + strconv.Itoa(mtu+55) + ",tun-mtu " + mtuText + ",proto " + proto +
 		",cipher " + ciphers[0] + ",auth " + digest + ",keysize " + keySize + ",key-method 2,tls-client"
 
+	if cfg.AllowLZOStub {
+		options += ",comp-lzo,fragment"
+	}
 	// Bit 1 advertises DATA_V2. Bit 3 selects the TLS exporter when both
 	// peers support it. Address floating and dynamic wrapping are omitted.
 	flags := 10

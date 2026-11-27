@@ -65,7 +65,7 @@ the [M0 decision](adr/0006-m0-governance-and-scope.md) and
 ## Explicitly deferred or unsupported in v0.x
 
 - Server mode, TAP, bridging and L2 Ethernet.
-- Compression directives such as comp-lzo/compress.
+- Data compression. Explicit provider import may support its uncompressed framing.
 - Legacy non-AEAD data ciphers and obsolete key method 1 unless a real compatibility case is approved.
 - Scripts, plugins and arbitrary external command execution from profiles.
 - Route/DNS mutation and privileged OS configuration.

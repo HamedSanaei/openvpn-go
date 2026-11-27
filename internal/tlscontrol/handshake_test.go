@@ -147,3 +147,25 @@ func TestAuthenticatedTransportHints(t *testing.T) {
 		})
 	}
 }
+func TestLegacyLZOStubPush(t *testing.T) {
+	const base = "PUSH_REPLY,peer-id 13,key-derivation tls-ekm,cipher AES-256-GCM,"
+	for _, tc := range []struct {
+		name, options     string
+		enabled, accepted bool
+	}{
+		{"disabled", "comp-lzo no", false, false},
+		{"uncompressed", "comp-lzo no", true, true},
+		{"compressed", "comp-lzo yes", true, false},
+		{"adaptive", "comp-lzo adaptive", true, false},
+		{"lz4", "compress lz4", true, false},
+		{"duplicate", "comp-lzo no,comp-lzo no", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := pushState{allowed: []string{"AES-256-GCM"}, allowLZOStub: tc.enabled}
+			ok, err := p.add([]byte(base + tc.options))
+			if ok != tc.accepted || (err == nil) != tc.accepted {
+				t.Fatalf("unexpected compression framing result: %t, %v", ok, err)
+			}
+		})
+	}
+}

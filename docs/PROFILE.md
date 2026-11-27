@@ -99,7 +99,7 @@ their own lines.
 | `verb` | Levels 0 through 11. Reports `ignored_directive`. |
 
 Every other directive is a fatal error. This includes server mode, static-key
-mode, compression and compression framing, cipher fallback, executable
+mode, compression, legacy framing outside an authorized provider import, cipher fallback, executable
 hooks, includes, external verification mechanisms and options that alter
 the security policy. Known directive names, such as `compress` and
 `data-ciphers-fallback`, appear in the diagnostic. An unknown token is
@@ -225,3 +225,34 @@ classifications for numeric-remote import. Use `-protonvpn-server-name`
 instead when provisioning an exact certificate common name. The default inspector and
 parser retain their strict policy for these options.
 [Live results](EXTERNAL_INTEROP.md#proton-vpn) · [Proton manual OpenVPN setup](https://protonvpn.com/support/linux-openvpn)
+
+## ExpressVPN manual exports
+
+Use `Options.ExpressVPNManual` or pass `-expressvpn` to `ovpn-inspect`
+or `ovpn-xray` when importing an original trusted Manual Configuration
+export. Use the separate two-line OpenVPN credential file through
+`-auth-file`, supply `Options.Credentials`, or use the application's
+credential callback.
+
+~~~sh
+ovpn-inspect -expressvpn -auth-file "$VPN_AUTH_FILE" "$VPN_PROFILE"
+~~~
+
+The tested export shape uses UDP, a client certificate and key,
+`tls-auth`, `fragment`, and `comp-lzo no`. The client sends and
+reassembles OpenVPN fragments inside the authenticated AEAD data channel.
+It accepts only uncompressed LZO framing in this import mode. The
+numeric fragment limit is the maximum OpenVPN UDP payload in bytes.
+
+The importer maps `ns-cert-type server` to explicit server key usage
+and extended key usage checks. It verifies the certificate chain with
+the export's CA and checks the declared `verify-x509-name … name-prefix`
+against the server certificate common name before sending credentials.
+This policy supports provider certificates without SANs.
+
+`fast-io`, `route-method exe`, `route-delay`, `sndbuf`, `rcvbuf`
+and `mssfix` produce advisory warnings. The embedding application owns
+route installation and socket settings. Use `-mss-mtu` if the Xray
+service needs TCP MSS clamping. The general importer still requires a
+SAN alongside a `name-prefix`, and it rejects the legacy framing.
+[Live results](EXTERNAL_INTEROP.md#expressvpn)
