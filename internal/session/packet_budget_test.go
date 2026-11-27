@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"net"
+	"syscall"
 	"testing"
 	"time"
 
@@ -60,17 +61,27 @@ func TestUDPv4PacketBudgetPreventsOversizeSeal(t *testing.T) {
 	if err := s.WritePacket(ctx, packet(mtu+1)); !errors.Is(err, tunnel.ErrMTUExceeded) {
 		t.Fatalf("oversized packet: %v", err)
 	}
-	for i, size := range []int{mtu, 96} {
+	// Verify non-consumption of packet IDs even on systems whose UDP
+	// socket ceiling is smaller than the protocol's absolute IP limit.
+	check := func(t *testing.T, size int, id uint32, boundary bool) {
+		t.Helper()
 		if err := s.WritePacket(ctx, packet(size)); err != nil {
+			if boundary && errors.Is(err, syscall.EMSGSIZE) {
+				t.Skip("OS UDP socket limit below the absolute IPv4 payload ceiling")
+			}
 			t.Fatal(err)
 		}
 		_ = listener.SetReadDeadline(time.Now().Add(time.Second))
 		buf := make([]byte, transport.MaxPacketSize)
 		n, _, err := listener.ReadFrom(buf)
-		if err != nil || n != size+data.Overhead || binary.BigEndian.Uint32(buf[4:8]) != uint32(i+1) {
+		if err != nil || n != size+data.Overhead || binary.BigEndian.Uint32(buf[4:8]) != id {
 			t.Fatalf("datagram bytes=%d id=%d: %v", n, binary.BigEndian.Uint32(buf[4:8]), err)
 		}
 	}
+	check(t, 96, 1, false)
+	t.Run("absolute-boundary", func(t *testing.T) {
+		check(t, mtu, 2, true)
+	})
 
 	opts.FragmentSize = 65507
 	limit, mtu, fragments, err = packetBudget(raw, opts, true)
