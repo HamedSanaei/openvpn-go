@@ -10,7 +10,7 @@ and the independent license and provenance sign-off. Review the exact
 revision that will be tagged. Attach the review record to the release
 and resolve all critical or high findings. Test evidence and the
 provenance record accompany the release candidate.
-[Hardening evidence](HARDENING.md) · [Source provenance](CLEAN_ROOM.md#release-gate)
+[Independent audit plan](INDEPENDENT_AUDIT_PLAN.md) · [Hardening evidence](HARDENING.md) · [Source provenance](CLEAN_ROOM.md#release-gate)
 
 ## Candidate build and publication
 

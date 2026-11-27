@@ -1,7 +1,7 @@
 # Security model and acceptance gates
 
 This model governs the client scope approved in M0. Tests in M1–M7 provide
-implementation evidence. The release gate requires independent review.
+implementation evidence. The release gate requires independent review. Follow`r`n[the independent audit plan](INDEPENDENT_AUDIT_PLAN.md) for the scope, methodology,`r`nevidence and external-review gates.
 [Scope decision](adr/0006-m0-governance-and-scope.md) · [Acceptance criteria](TEST_STRATEGY.md)
 
 ## Assets and assumptions
