@@ -74,7 +74,8 @@ func knownLocation(name string, line int) location {
 	_, standard := directives[name]
 	_, proton := protonDirectives[name]
 	_, express := expressDirectives[name]
-	if !standard && !proton && !express && name != "push-peer-info" && !unsupported[name] {
+	_, pritunl := pritunlDirectives[name]
+	if !standard && !proton && !express && !pritunl && name != "push-peer-info" && !unsupported[name] {
 		name = ""
 	}
 	return location{line: line, name: name}
@@ -115,7 +116,7 @@ func (p *parser) apply(loc location, args []string) error {
 	case "mssfix", "script-security", "up", "down", "block-outside-dns":
 		return p.applyProtonHint(loc, args)
 	case "compat-fixed-aead", "compat-fixed-aead-v1":
-		if p.opts.protonImportEnabled() || p.opts.ExpressVPNManual || p.opts.AccessServerName != "" {
+		if p.opts.protonImportEnabled() || p.opts.ExpressVPNManual || p.opts.AccessServerName != "" || p.opts.PritunlServerName != "" {
 			return loc.diagnostic(CodeUnsupported)
 		}
 		return p.applyConnection(loc, args)

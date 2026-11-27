@@ -201,6 +201,7 @@ func probeExternalProfileWithDialer(ctx context.Context, name string, dialer tra
 		ProtonVPNVerifyIP:   os.Getenv("OVPN_EXTERNAL_PROTON_VERIFY_IP") == "1",
 		ExpressVPNManual:    os.Getenv("OVPN_EXTERNAL_EXPRESSVPN") == "1",
 		AccessServerName:    os.Getenv("OVPN_EXTERNAL_ACCESS_SERVER_NAME"),
+		PritunlServerName:   os.Getenv("OVPN_EXTERNAL_PRITUNL_SERVER_NAME"),
 	}
 	report, _ := profile.InspectWithOptions(file, options)
 	result.Profile = report.Entries

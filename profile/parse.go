@@ -42,6 +42,8 @@ type Options struct {
 	// exact VPN server certificate common name supplied by the administrator.
 	// Legacy cipher hints never enable non-AEAD data negotiation.
 	AccessServerName string
+	// PritunlServerName authorizes a Pritunl export with the administrator-verified VPN certificate common name.
+	PritunlServerName string
 	// Authentication authorizes caller-managed credentials and interaction.
 	Authentication client.Authentication
 	// Identity supplies a matching key for a profile with cert and no key.
@@ -83,20 +85,22 @@ func Parse(r io.Reader, opts Options) (client.Config, []Diagnostic, error) {
 }
 
 type parser struct {
-	opts              Options
-	cfg               client.Config
-	identity          client.X509Name
-	versionLocation   location
-	warnings          []Diagnostic
-	tlsClient         bool
-	pull              bool
-	device            bool
-	noCache           location
-	attemptsPerRemote int
-	attemptsLocation  location
-	protonHints       map[string]location
-	express           expressOptions
-	accessNoCert      bool
+	opts                Options
+	cfg                 client.Config
+	identity            client.X509Name
+	versionLocation     location
+	warnings            []Diagnostic
+	tlsClient           bool
+	pull                bool
+	device              bool
+	noCache             location
+	attemptsPerRemote   int
+	attemptsLocation    location
+	protonHints         map[string]location
+	express             expressOptions
+	accessNoCert        bool
+	pritunlSeen         map[string]location
+	pritunlLegacyCipher string
 
 	defaults connection
 	remotes  []remote
@@ -233,6 +237,9 @@ func (p *parser) readDirective(line string, number int) (location, error) {
 			rule, supported = directive{min: 2, max: 2}, true
 		}
 	}
+	if !supported && p.opts.PritunlServerName != "" {
+		rule, supported = pritunlDirectives[loc.name]
+	}
 	if !supported && p.opts.ExpressVPNManual {
 		rule, supported = expressDirectives[loc.name]
 	}
@@ -245,6 +252,9 @@ func (p *parser) readDirective(line string, number int) (location, error) {
 	}
 	if p.block != nil && !rule.connection {
 		return loc, loc.diagnostic(CodeScope)
+	}
+	if _, pritunl := pritunlDirectives[loc.name]; p.opts.PritunlServerName != "" && pritunl {
+		return loc, p.applyPritunl(loc, args)
 	}
 	if _, express := expressDirectives[loc.name]; p.opts.ExpressVPNManual && express {
 		return loc, p.applyExpress(loc, args)
@@ -269,6 +279,9 @@ func (p *parser) finish() error {
 		return err
 	}
 	if err := p.finishAccessServer(); err != nil {
+		return err
+	}
+	if err := p.finishPritunl(); err != nil {
 		return err
 	}
 	if err := p.finishExpress(); err != nil {

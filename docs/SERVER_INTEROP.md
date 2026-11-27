@@ -67,3 +67,7 @@ Same Linux host, disposable namespace, distro-packaged reference server: IPv6 da
 ## Remaining qualification
 
 Access Server 3.2.4 is documented in ACCESS_SERVER.md. Its forced TCP rekey, live inner IPv6 and additional authentication/federation modes remain open. SoftEther stable 4.x, other Developer Edition builds, certificate-only and interactive auth, L2 TAP, CBC, and long-duration/load tests are not qualified. Pritunl and other management panels that deploy Community OpenVPN need separate export and configuration testing; Community protocol tests do not establish panel compatibility. RouterOS CHR 7.25.2 has its existing fixed DATA_V2 evidence, not hardware-wide certification. These are separate compatibility targets; unrelated VPN protocols are not supported by this package.
+
+## Pritunl export shape
+
+An opt-in AEAD-only importer is described in [PRITUNL.md](PRITUNL.md). Six generated export-shaped cases passed native Community 2.7.0 tunnel traffic; the actual Pritunl management/authentication service remains unqualified.
