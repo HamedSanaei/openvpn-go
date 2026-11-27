@@ -122,6 +122,7 @@ func TestDirectiveRegistry(t *testing.T) {
 		{"reneg-sec", "reneg-sec 0", "reneg-sec 86401", false},
 		{"explicit-exit-notify", "explicit-exit-notify 2", "explicit-exit-notify -1", false},
 		{"compat-fixed-aead", "compat-fixed-aead AES-256-GCM", "compat-fixed-aead AES-256-CBC", false},
+		{"compat-fixed-aead-v1", "compat-fixed-aead-v1 AES-256-GCM\nremote-cert-tls server\nverify-x509-name vpn.example.test name\nauth-user-pass", "compat-fixed-aead-v1 AES-256-CBC", false},
 		{"tun-mtu", "tun-mtu 1400", "tun-mtu 67", false},
 		{"auth-nocache", "auth-nocache", "auth-nocache\nauth-user-pass", false},
 		{"peer-fingerprint", "peer-fingerprint " + pki.ServerFingerprint(), "peer-fingerprint ff:ff", false},

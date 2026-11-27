@@ -152,7 +152,7 @@ func interopPeer(t *testing.T) string {
 	switch version {
 	case "":
 		version = "2.6.23"
-	case "2.6.22", "2.6.23", "2.7.9":
+	case "2.6.22", "2.6.23", "2.7.0", "2.7.9":
 	default:
 		t.Fatal("unsupported reference peer version")
 	}

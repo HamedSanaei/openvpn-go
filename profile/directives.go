@@ -44,8 +44,8 @@ var directives = map[string]directive{
 	"connect-timeout": {1, 1, true, false}, "tun-mtu": {1, 1, true, false},
 	"server-poll-timeout":  {1, 1, true, false},
 	"explicit-exit-notify": {0, 1, true, false},
-	"compat-fixed-aead":    {1, 1, true, false},
-	"connect-retry":        {min: 1, max: 2}, "connect-retry-max": {min: 1, max: 1},
+	"compat-fixed-aead":    {1, 1, true, false}, "compat-fixed-aead-v1": {1, 1, true, false},
+	"connect-retry": {min: 1, max: 2}, "connect-retry-max": {min: 1, max: 1},
 	"hand-window": {min: 1, max: 1}, "reneg-sec": {min: 1, max: 1},
 	"auth-nocache": {},
 	"persist-key":  {}, "persist-tun": {}, "resolv-retry": {min: 1, max: 1}, "verb": {min: 1, max: 1},
@@ -114,7 +114,7 @@ func (p *parser) apply(loc location, args []string) error {
 		return p.applyProtonHint(loc, args)
 	case "mssfix", "script-security", "up", "down", "block-outside-dns":
 		return p.applyProtonHint(loc, args)
-	case "compat-fixed-aead":
+	case "compat-fixed-aead", "compat-fixed-aead-v1":
 		if p.opts.protonImportEnabled() || p.opts.ExpressVPNManual || p.opts.AccessServerName != "" {
 			return loc.diagnostic(CodeUnsupported)
 		}

@@ -16,6 +16,7 @@ import (
 type Negotiation struct {
 	Cipher     string
 	PeerID     uint32
+	DataV1     bool
 	TLSVersion uint16
 	Derivation crypt.Derivation
 
@@ -31,6 +32,7 @@ type pushState struct {
 	Negotiation
 	allowed         []string
 	fixedAEAD       string
+	fixedDataV1     bool
 	havePeer        bool
 	exporter        bool
 	allowExit       bool
@@ -89,14 +91,14 @@ func (p *pushState) add(message []byte) (bool, error) {
 		p.continued = true
 		return false, nil
 	}
-	if p.continued != (marker == "1") || !p.havePeer {
+	if p.continued != (marker == "1") || p.havePeer == p.fixedDataV1 || p.fixedDataV1 && p.fixedAEAD == "" {
 		return false, ErrNegotiation
 	}
 	if p.fixedAEAD != "" {
 		if p.exporter || (p.Cipher != "" && p.Cipher != p.fixedAEAD) {
 			return false, ErrNegotiation
 		}
-		p.Cipher, p.Derivation = p.fixedAEAD, crypt.ClassicKM2
+		p.Cipher, p.Derivation, p.DataV1 = p.fixedAEAD, crypt.ClassicKM2, p.fixedDataV1
 	} else {
 		if !p.exporter || p.Cipher == "" {
 			return false, ErrNegotiation

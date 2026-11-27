@@ -36,16 +36,21 @@ type generation struct {
 // generation. Its caller serializes access by the session's I/O workers.
 type Channel struct {
 	peerID   uint32
+	dataV1   bool
 	udp      bool
 	current  *generation
 	retiring *generation
 }
 
 func NewChannel(peerID uint32, udp bool, keys crypt.DataKeys) (*Channel, error) {
-	if peerID >= 0xffffff {
+	return NewChannelForFormat(peerID, udp, keys, false)
+}
+
+func NewChannelForFormat(peerID uint32, udp bool, keys crypt.DataKeys, dataV1 bool) (*Channel, error) {
+	if peerID >= 0xffffff || dataV1 && peerID != 0 {
 		return nil, ErrPacket
 	}
-	return &Channel{peerID: peerID, udp: udp, current: &generation{keys: keys, epoch: 1}}, nil
+	return &Channel{peerID: peerID, udp: udp, dataV1: dataV1, current: &generation{keys: keys, epoch: 1}}, nil
 }
 
 func NextKeyID(id uint8) uint8 { return id%7 + 1 }
@@ -83,16 +88,25 @@ func (c *Channel) Seal(payload []byte) ([]byte, error) {
 		return nil, ErrKeyLimit
 	}
 	g.sent++
-	packet := make([]byte, additionalSize, Overhead+len(payload))
-	binary.BigEndian.PutUint32(packet, uint32(uint8(wire.DataV2)<<3|g.id)<<24|c.peerID)
-	binary.BigEndian.PutUint32(packet[4:], g.sent)
+	prefix, pidOffset, aadOffset := additionalSize, 4, 0
+	if c.dataV1 {
+		prefix, pidOffset, aadOffset = 5, 1, 1
+	}
+	overhead := prefix + tagSize
+	packet := make([]byte, prefix, overhead+len(payload))
+	if c.dataV1 {
+		packet[0] = byte(wire.DataV1)<<3 | g.id
+	} else {
+		binary.BigEndian.PutUint32(packet, uint32(uint8(wire.DataV2)<<3|g.id)<<24|c.peerID)
+	}
+	binary.BigEndian.PutUint32(packet[pidOffset:], g.sent)
 	iv := nonce(g.sent, g.keys.Send.ImplicitIV)
-	packet = g.keys.Send.AEAD.Seal(packet, iv[:], payload, packet[:additionalSize])
+	packet = g.keys.Send.AEAD.Seal(packet, iv[:], payload, packet[aadOffset:prefix])
 	// Go's AEAD appends its tag. OpenVPN transmits it before ciphertext.
 	var tag [tagSize]byte
 	copy(tag[:], packet[len(packet)-tagSize:])
-	copy(packet[Overhead:], packet[additionalSize:len(packet)-tagSize])
-	copy(packet[additionalSize:Overhead], tag[:])
+	copy(packet[overhead:], packet[prefix:len(packet)-tagSize])
+	copy(packet[prefix:overhead], tag[:])
 	return packet, nil
 }
 
@@ -108,8 +122,14 @@ func (c *Channel) HasEpoch(epoch uint64) bool {
 
 // OpenWithEpoch returns the local identity of the authenticated receive key.
 func (c *Channel) OpenWithEpoch(packet []byte, now time.Time) ([]byte, uint64, error) {
-	if len(packet) <= Overhead || wire.Opcode(packet[0]>>3) != wire.DataV2 ||
-		binary.BigEndian.Uint32(packet)&0xffffff != c.peerID {
+	prefix, pidOffset, aadOffset := additionalSize, 4, 0
+	opcode := wire.DataV2
+	if c.dataV1 {
+		prefix, pidOffset, aadOffset, opcode = 5, 1, 1, wire.DataV1
+	}
+	overhead := prefix + tagSize
+	if len(packet) <= overhead || wire.Opcode(packet[0]>>3) != opcode ||
+		!c.dataV1 && binary.BigEndian.Uint32(packet)&0xffffff != c.peerID {
 		return nil, 0, ErrPacket
 	}
 	c.Retire(now)
@@ -121,15 +141,15 @@ func (c *Channel) OpenWithEpoch(packet []byte, now time.Time) ([]byte, uint64, e
 			return nil, 0, ErrKeyID
 		}
 	}
-	pid := binary.BigEndian.Uint32(packet[4:])
+	pid := binary.BigEndian.Uint32(packet[pidOffset:])
 	if pid > g.keys.PacketLimit || !g.replay.admissible(pid, c.udp, now) {
 		return nil, 0, ErrPacket
 	}
 	iv := nonce(pid, g.keys.Receive.ImplicitIV)
-	sealed := make([]byte, 0, len(packet)-additionalSize)
-	sealed = append(sealed, packet[Overhead:]...)
-	sealed = append(sealed, packet[additionalSize:Overhead]...)
-	plain, err := g.keys.Receive.AEAD.Open(sealed[:0], iv[:], sealed, packet[:additionalSize])
+	sealed := make([]byte, 0, len(packet)-prefix)
+	sealed = append(sealed, packet[overhead:]...)
+	sealed = append(sealed, packet[prefix:overhead]...)
+	plain, err := g.keys.Receive.AEAD.Open(sealed[:0], iv[:], sealed, packet[aadOffset:prefix])
 	if err != nil {
 		return nil, 0, ErrPacket
 	}
