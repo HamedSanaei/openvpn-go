@@ -64,12 +64,13 @@ that control lane before it could acknowledge the retransmission, and the
 peer rejected the next key ID while the first exchange was incomplete.
 The fix lets the previous UDP lane send ACKs during a locally initiated
 rekey until the new peer reset is accepted. A controlled packet-loss test
-failed on the baseline and passed on the candidate with Community 2.6.23.
+failed on the 2.6.23 baseline and passed on the candidate with Community
+2.6.22, 2.6.23 and 2.7.9.
 
 Repeated seed 29 runs also exposed a separate timing-sensitive outcome
 during the next key's TLS exchange. The candidate passed one traced run
-and failed two earlier untraced runs. A seed selects relay randomness
-for the actual arrival order, which can differ between runs. Existing
+and two out of five untraced runs. A seed selects relay randomness for
+the actual arrival order, which can differ between runs. Existing
 deadlines and test assertions still apply. Production SLO evaluation and
 the 72-hour soak remain pending.
 
@@ -171,11 +172,57 @@ the one-vCPU lab and leave production capacity unqualified. Capacity
 planning also needs long-duration measurements under the intended
 application workload and an explicit loss and tail latency budget.
 
-In a separate race-enabled WSL2 test with Community 2.6.23, all 64 TCP
-clients recovered after the shared peer restarted. The limiter peaked at
-eight in flight and 56 waiting, with zero rejections and no outstanding
-permits after cleanup. Recovery p50/p95/p99 was approximately
-440/743/764 ms. The test also verified tunnel traffic after recovery.
+The allocation-instrumented run used code at `a463411`, the `923f51e`
+baseline and the same test source for both. It covered 64-, 256- and
+1,400-byte packets and a mixed workload over both transports with
+64 tunnels. Each case ran three two-second windows at full priority.
+
+| Mixed workload | Driver allocations per validated echo | Allocated bytes per validated echo | p99 (ms) |
+|---|---:|---:|---:|
+| UDP | 29.68 → 19.52 | 5,807.9 → 3,643.6 | 16.196 → 17.208 |
+| TCP | 30.75 → 20.48 | 5,817.1 → 3,634.0 | 17.208 → 21.931 |
+
+Each validated echo includes transmission and reception. The driver
+counts include the test harness and echo handling. The packet-size
+matrix reduced allocations in every case, while p99 varied and exceeded
+the proposed 10% budget in some cases. The evidence includes GC cycles,
+CPU, latency, loss, and memory for all 48 windows. [Raw sanitized samples](evidence/native-load-full-power-2026-11-27.jsonl)
+
+Separate profiles of the same 64-tunnel mixed workload measured cumulative
+mutex delay attributed to `Session.write` at 4.56 → 9.39 ms for UDP and
+1.71 → 1.17 ms for TCP. Each profile covered roughly six seconds of traffic.
+The sampled `alloc_space` totals displayed by pprof over each complete
+profiled process were 871.14 → 575.23 MB for UDP and 792.41 → 381.90 MB
+for TCP.
+These totals also include setup and the workload driver. Use the
+per-validated-echo counts above for comparisons with different delivery rates.
+The two transports moved in different directions. The single-vCPU results
+and the workstation profiles support retaining the atomic key transition
+in the shared mutex until synchronized tests on more cores establish the
+cause of the tail latency changes.
+
+In the unrestricted reconnect test with Community 2.6.23, all 64, 256
+and 1,000 TCP tunnels recovered after a shared peer restart. In-flight
+attempts never exceeded eight, the queue rejected none, and all admission
+slots were released. The test also verified traffic after recovery and
+a scheduled rekey across all 64 tunnels in the first case.
+
+| Tunnels | Recovery p50/p95/p99 (ms) | Peak waiting | Failed attempts | Driver CPU (s) | RSS (MiB) | FDs |
+|---:|---:|---:|---:|---:|---:|---:|
+| 64 | 141 / 212 / 213 | 56 | 0 | 0.087 | 29.0 | 73 |
+| 256 | 382 / 744 / 764 | 248 | 0 | 0.398 | 82.1 | 265 |
+| 1,000 | 1,675 / 3,226 / 3,366 | 992 | 54 | 1.832 | 288.2 | 1,009 |
+
 Run `TestConcurrentReconnectAdmission` in an isolated loopback-only
-namespace with `OPENVPN_RECONNECT_LOAD=1`. Larger handshake bursts and
-DNS-timeout and peer-rekey stress at that scale remain pending.
+namespace with `OPENVPN_RECONNECT_LOAD=1`. Set
+`OPENVPN_RECONNECT_SESSIONS` for the desired count and
+`OPENVPN_RECONNECT_REKEY=1` for the timed rekey case. Shared DNS-timeout,
+authentication rejection and server-initiated rekey stress at that scale
+remain pending.
+
+On 2026-11-27, the earlier paced soak was superseded by an unrestricted
+24-hour run with 64 UDP tunnels, normal scheduling priority, 240 windows
+of 360 seconds, and no request pacing. It requests timed rekeys every
+60 seconds and restarts the local peer after every 20 windows. The run
+entered its traffic phase. The 24-hour result and 72-hour run remain
+qualification gates.
