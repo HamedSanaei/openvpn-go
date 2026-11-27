@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"errors"
 	"io"
 	"net"
 	"sync"
 	"time"
 
+	"github.com/hamedsanaei/openvpn-go/internal/observability"
 	"github.com/hamedsanaei/openvpn-go/internal/wire"
 	"github.com/hamedsanaei/openvpn-go/transport"
 )
@@ -25,19 +25,21 @@ type Mux struct {
 	chunkSize  int
 	udp        bool
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	done   chan struct{}
-	send   chan struct{}
-	data   chan []byte
-	resets chan Reset
+	ctx       context.Context
+	cancel    context.CancelFunc
+	done      chan struct{}
+	send      chan struct{}
+	data      chan []byte
+	dataQueue observability.Queue
+	resets    chan Reset
 
-	mu     sync.Mutex
-	lanes  [8]*lane
-	local  wire.SessionID
-	peer   wire.SessionID
-	expect uint8
-	txKey  uint8
+	mu      sync.Mutex
+	lanes   [8]*lane
+	local   wire.SessionID
+	peer    wire.SessionID
+	expect  uint8
+	txKey   uint8
+	readErr error
 }
 
 type Reset struct {
@@ -45,13 +47,22 @@ type Reset struct {
 	raw   []byte
 }
 
-func NewMux(packets transport.PacketConn, protection Protection, limit int, udp bool) (*Mux, error) {
-	c := newCodec(protection, uint32(time.Now().Unix()))
-	frameLimit := min(limit, 1250)
-	chunkSize := frameLimit - c.overhead() - maxControlHeader
-	if chunkSize < 1 || len(protection.wrapped)+c.overhead()+maxControlHeader > frameLimit {
-		return nil, ErrProtection
+// ControlChunkSize validates the outbound control frame budget.
+func (p Protection) ControlChunkSize(limit int) (int, error) {
+	c := newCodec(p, 0)
+	frameLimit, header := min(limit, 1250), c.overhead()+maxControlHeader
+	if frameLimit <= header || len(p.wrapped) > frameLimit-header {
+		return 0, ErrProtection
 	}
+	return frameLimit - header, nil
+}
+
+func NewMux(packets transport.PacketConn, protection Protection, limit int, udp bool) (*Mux, error) {
+	chunkSize, err := protection.ControlChunkSize(limit)
+	if err != nil {
+		return nil, err
+	}
+	c := newCodec(protection, uint32(time.Now().Unix()))
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &Mux{
 		raw: packets, limit: limit, chunkSize: chunkSize, udp: udp,
@@ -126,6 +137,8 @@ func (m *Mux) start(id uint8, local, peer wire.SessionID, prepend []byte) (*Stre
 
 func (m *Mux) Data() <-chan []byte { return m.data }
 
+func (m *Mux) DataQueueStats() observability.QueueStats { return m.dataQueue.Stats() }
+
 func (m *Mux) Resets() <-chan Reset { return m.resets }
 
 func (m *Mux) Done() <-chan struct{} { return m.done }
@@ -145,11 +158,11 @@ func (m *Mux) write(ctx context.Context, packet []byte, control *lane) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-m.ctx.Done():
-		return net.ErrClosed
+		return m.terminalError()
 	}
 	defer func() { <-m.send }()
 	if m.ctx.Err() != nil {
-		return net.ErrClosed
+		return m.terminalError()
 	}
 	if control != nil {
 		m.mu.Lock()
@@ -162,6 +175,15 @@ func (m *Mux) write(ctx context.Context, packet []byte, control *lane) error {
 	return m.raw.WritePacket(ctx, packet)
 }
 
+func (m *Mux) terminalError() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.readErr != nil {
+		return m.readErr
+	}
+	return net.ErrClosed
+}
+
 func (m *Mux) read() {
 	defer close(m.done)
 	defer m.cancel()
@@ -169,9 +191,12 @@ func (m *Mux) read() {
 	for m.ctx.Err() == nil {
 		n, err := m.raw.ReadPacket(m.ctx, buffer)
 		if err != nil {
-			if m.udp && (errors.Is(err, transport.ErrEmptyPacket) || errors.Is(err, transport.ErrPacketTooLarge)) {
+			if m.udp && discardedDatagram(err) {
 				continue
 			}
+			m.mu.Lock()
+			m.readErr = controlIOError(m.ctx, err)
+			m.mu.Unlock()
 			return
 		}
 		if n < 1 || n > len(buffer) {
@@ -183,8 +208,14 @@ func (m *Mux) read() {
 			continue
 		}
 		if h.IsData() {
-			if h.Opcode == wire.DataV2 && len(m.data) < cap(m.data) {
-				m.data <- bytes.Clone(packet)
+			if h.Opcode == wire.DataV2 {
+				depth := len(m.data)
+				if depth == cap(m.data) {
+					m.dataQueue.Drop(depth)
+				} else {
+					m.data <- bytes.Clone(packet)
+					m.dataQueue.Observe(depth + 1)
+				}
 			}
 			continue
 		}
@@ -240,7 +271,7 @@ func (l *lane) ReadPacket(ctx context.Context, dst []byte) (int, error) {
 	case <-l.closed:
 		return 0, net.ErrClosed
 	case <-l.mux.ctx.Done():
-		return 0, net.ErrClosed
+		return 0, l.mux.terminalError()
 	}
 }
 

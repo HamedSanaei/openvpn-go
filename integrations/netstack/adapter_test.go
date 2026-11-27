@@ -230,3 +230,33 @@ func TestDialLimitsAndCancellation(t *testing.T) {
 		t.Fatalf("closed packet endpoint = %v", err)
 	}
 }
+
+func TestDNSQuestionIdentity(t *testing.T) {
+	query := []byte{0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 3, 'd', 'n', 's', 0, 0, 1, 0, 1}
+	want, ok := dnsQuestionOf(query)
+	if !ok {
+		t.Fatal("valid DNS question rejected")
+	}
+	for _, tt := range []struct {
+		name           string
+		offset         int
+		value          byte
+		valid, matches bool
+	}{
+		{"case", 13, 'D', true, true},
+		{"name", 13, 'x', true, false},
+		{"type", 18, 28, true, false},
+		{"class", 20, 3, true, false},
+		{"count", 5, 2, false, false},
+		{"pointer", 12, 0xc0, false, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			reply := bytes.Clone(query)
+			reply[tt.offset] = tt.value
+			got, ok := dnsQuestionOf(reply)
+			if ok != tt.valid || (got == want) != tt.matches {
+				t.Fatal("unexpected DNS question comparison")
+			}
+		})
+	}
+}

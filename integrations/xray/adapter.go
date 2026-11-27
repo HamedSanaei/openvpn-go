@@ -59,7 +59,7 @@ func New(cfg client.Config, device tunnel.PacketConn, addresses Addresses) (*Ada
 
 // NewFixed uses fixed host addresses with optional adapter settings.
 func NewFixed(cfg client.Config, device tunnel.PacketConn, addresses Addresses, opts Options) (*Adapter, error) {
-	if !addresses.valid() {
+	if !addresses.valid() || addresses.IPv6.IsValid() && opts.MSSMTU != 0 && opts.MSSMTU < 1280 {
 		return nil, ErrTunnelConfig
 	}
 	return newAdapter(cfg, device, &addresses, opts)
@@ -116,6 +116,15 @@ func (a *Adapter) Run(ctx context.Context) error {
 }
 
 func (a *Adapter) prepare(ctx context.Context, gen client.TunnelGeneration) (func(), error) {
+	mtu := a.options.MSSMTU
+	if a.mss != nil {
+		if gen.Control.MaxTunnelPacketSize > 0 {
+			mtu = min(mtu, gen.Control.MaxTunnelPacketSize)
+		}
+		if gen.Control.TunnelIPv6.IsValid() && mtu < 1280 {
+			return nil, ErrTunnelConfig
+		}
+	}
 	var rollback func()
 	if a.options.Configure != nil {
 		var err error
@@ -125,13 +134,6 @@ func (a *Adapter) prepare(ctx context.Context, gen client.TunnelGeneration) (fun
 		}
 	}
 	if a.mss != nil {
-		mtu := a.options.MSSMTU
-		if gen.Control.MaxTunnelPacketSize > 0 {
-			mtu = min(mtu, gen.Control.MaxTunnelPacketSize)
-		}
-		if gen.Control.TunnelIPv6.IsValid() && mtu < 1280 {
-			return rollback, ErrTunnelConfig
-		}
 		a.mss.mtu.Store(int32(mtu))
 	}
 	if a.options.DNSDialer == nil {

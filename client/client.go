@@ -5,10 +5,12 @@ import (
 	"errors"
 	"math/rand/v2"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hamedsanaei/openvpn-go/internal/failover"
 	"github.com/hamedsanaei/openvpn-go/internal/observability"
+	"github.com/hamedsanaei/openvpn-go/internal/tlscontrol"
 	"github.com/hamedsanaei/openvpn-go/transport"
 	"github.com/hamedsanaei/openvpn-go/tunnel"
 )
@@ -58,6 +60,7 @@ type connection struct {
 	generation      uint64
 	started         time.Time
 	sent, recv      observability.Traffic
+	cleanupFailed   bool
 }
 
 // A handshake returns an authenticated IP packet session. A returned session
@@ -72,11 +75,12 @@ type Client struct {
 	handshakes []handshakeFunc
 	order      []int
 
-	mu      sync.Mutex
-	state   ClientState
-	attempt *operation
-	run     *operation
-	active  *connection
+	mu            sync.Mutex
+	state         ClientState
+	attempt       *operation
+	run           *operation
+	active        *connection
+	cleanupFailed bool
 
 	stats       Stats
 	events      observability.History[Event]
@@ -84,6 +88,7 @@ type Client struct {
 	generations *observability.History[GenerationReport]
 	sent        observability.Traffic
 	recv        observability.Traffic
+	packetDrops atomic.Uint64
 
 	closeOnce sync.Once
 	closeErr  error
@@ -138,6 +143,10 @@ func (c *Client) Connect(ctx context.Context) error {
 		c.mu.Unlock()
 		return err
 	}
+	if c.cleanupFailed {
+		c.mu.Unlock()
+		return &Error{Op: "connect", Code: CodeCleanup}
+	}
 	if c.attempt != nil || c.run != nil || active != nil {
 		c.mu.Unlock()
 		return &Error{Op: "connect", Code: CodeBusy}
@@ -178,7 +187,7 @@ func (c *Client) operationError(ctx context.Context, op string) error {
 	return nil
 }
 
-func (c *Client) dial(ctx context.Context, index, visit int) (tunnel.PacketConn, AttemptStage, error) {
+func (c *Client) dial(ctx context.Context, index int, cursor *candidateCursor) (tunnel.PacketConn, AttemptStage, error) {
 	endpoint := c.config.Endpoints[index]
 	timeout := endpoint.ConnectTimeout
 	if timeout == 0 {
@@ -193,7 +202,7 @@ func (c *Client) dial(ctx context.Context, index, visit int) (tunnel.PacketConn,
 		dialDeadline = pollDeadline
 	}
 	dialCtx, cancelDial := context.WithDeadline(ctx, dialDeadline)
-	conn, network, err := c.connectSocket(dialCtx, endpoint, visit)
+	conn, network, err := c.connectSocket(dialCtx, endpoint, cursor)
 	stage := StageDial
 	if errors.Is(err, errResolution) {
 		stage = StageResolve
@@ -213,6 +222,8 @@ func (c *Client) dial(ctx context.Context, index, visit int) (tunnel.PacketConn,
 		if errors.Is(err, transport.ErrInvalidPacketLimit) || errors.Is(err, transport.ErrUnsupportedNetwork) ||
 			errors.Is(err, transport.ErrInvalidConnection) {
 			code = CodeConfig
+		} else if errors.Is(err, transport.ErrPeerCertificate) {
+			code = CodeCertificate
 		}
 		return nil, stage, &Error{Op: "dial", Code: code}
 	}
@@ -235,9 +246,12 @@ func (c *Client) dial(ctx context.Context, index, visit int) (tunnel.PacketConn,
 		}
 	}
 	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, c.config.HandshakeTimeout)
+	handshakeCtx, pendingExtended := tlscontrol.WithPendingParent(handshakeCtx, ctx)
 	endpoint.Network = network
 	session, err := c.handshakes[index](handshakeCtx, endpoint, conn)
-	if handshakeCtx.Err() != nil {
+	if ctx.Err() != nil {
+		err = ctx.Err()
+	} else if !pendingExtended() && handshakeCtx.Err() != nil {
 		err = handshakeCtx.Err()
 	}
 	cancelHandshake()
@@ -259,7 +273,11 @@ func (c *Client) dial(ctx context.Context, index, visit int) (tunnel.PacketConn,
 		case CodeCertificate:
 			stage = StageCertificate
 		}
-		return nil, stage, &Error{Op: "handshake", Code: code}
+		failure := &Error{Op: "handshake", Code: code}
+		if _, same := errors.AsType[restartSameError](err); same {
+			return nil, stage, restartSameError{failure}
+		}
+		return nil, stage, failure
 	}
 	return session, StageControl, nil
 }
@@ -283,14 +301,13 @@ func (c *Client) Close() error {
 		if run != nil {
 			run.cancel()
 		}
+		var cleanupFailed bool
 		if active != nil {
 			closeLink := active.link.Close
 			if graceful, ok := active.link.(interface{ CloseGracefully() error }); ok {
 				closeLink = graceful.CloseGracefully
 			}
-			if err := closeLink(); err != nil {
-				c.closeErr = &Error{Op: "close", Code: CodeNetwork}
-			}
+			cleanupFailed = failedCleanup(closeLink())
 		}
 		if attempt != nil {
 			<-attempt.done
@@ -305,10 +322,12 @@ func (c *Client) Close() error {
 		c.config.Resolver = nil
 		c.state = StateClosed
 		var code ErrorCode
-		if c.closeErr != nil {
-			code = CodeNetwork
+		if cleanupFailed || c.cleanupFailed {
+			code = CodeCleanup
+			c.closeErr = &Error{Op: "close", Code: code}
 		}
 		if active != nil {
+			active.cleanupFailed = cleanupFailed
 			c.finishGeneration(active, code)
 		}
 		c.record(EventClosed, -1, code, 0)

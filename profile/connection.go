@@ -25,10 +25,10 @@ type connection struct {
 	bindMode       string
 	localBindSet   bool
 	localSourceSet bool
-	timeout        time.Duration
 	pollTimeout    time.Duration
 	mtu            int
 	exit           bool
+	exitSet        bool
 	fixedAEAD      string
 	fixedLoc       location
 
@@ -59,11 +59,12 @@ func (p *parser) closeConnection(line int) error {
 	if p.block == nil {
 		return (location{line: line, name: "connection"}).diagnostic(CodeSyntax)
 	}
-	if p.block.remote.loc.line == 0 {
+	block := p.block
+	p.block = nil
+	if block.remote.loc.line == 0 {
 		return (location{line: p.blockLoc.line, name: "remote"}).diagnostic(CodeRequired)
 	}
-	p.blocks = append(p.blocks, *p.block)
-	p.block = nil
+	p.blocks = append(p.blocks, *block)
 	return nil
 }
 
@@ -121,13 +122,7 @@ func (p *parser) applyConnection(loc location, args []string) error {
 		}
 		c.localPort = uint16(n)
 		c.localSourceSet = true
-	case "connect-timeout":
-		timeout, ok := seconds(args[0], 1, 120)
-		if !ok {
-			return loc.diagnostic(CodeValue)
-		}
-		c.timeout = timeout
-	case "server-poll-timeout":
+	case "connect-timeout", "server-poll-timeout":
 		timeout, ok := seconds(args[0], 1, 300)
 		if !ok {
 			return loc.diagnostic(CodeValue)
@@ -140,14 +135,15 @@ func (p *parser) applyConnection(loc location, args []string) error {
 		}
 		c.mtu = int(n)
 	case "explicit-exit-notify":
-		c.exit = true
+		exit := true
 		if len(args) != 0 {
 			n, ok := uintValue(args[0], 8)
 			if !ok {
 				return loc.diagnostic(CodeValue)
 			}
-			c.exit = n != 0
+			exit = n != 0
 		}
+		c.exit, c.exitSet = exit, true
 	case "compat-fixed-aead":
 		if c.fixedAEAD != "" {
 			return loc.diagnostic(CodeConflict)
@@ -160,6 +156,9 @@ func (p *parser) applyConnection(loc location, args []string) error {
 		direction, ok := keyDirection(args[0])
 		if !ok {
 			return loc.diagnostic(CodeValue)
+		}
+		if c.localDirection && c.direction != direction {
+			return loc.diagnostic(CodeConflict)
 		}
 		c.direction, c.directionLoc, c.localDirection = direction, loc, true
 	case "remote":
@@ -246,6 +245,7 @@ func (p *parser) endpoints() error {
 
 func (p *parser) appendEndpoint(e client.Endpoint, loc location, c connection) error {
 	if c.fixedAEAD != "" && (c.protection != nil ||
+		p.usesPasswordOnly() ||
 		len(p.cfg.DataCiphers) != 0 && (len(p.cfg.DataCiphers) != 1 || p.cfg.DataCiphers[0] != c.fixedAEAD)) {
 		return c.fixedLoc.diagnostic(CodeConflict)
 	}
@@ -259,14 +259,13 @@ func (p *parser) appendEndpoint(e client.Endpoint, loc location, c connection) e
 	e.VerifyX509Name = p.identity
 	if p.opts.ExpressVPNManual {
 		e.ExpressVPNFragmentSize = p.express.fragment
-		e.ExplicitExitNotify = true
 		if c.protection == nil || c.protection.loc.name != "tls-auth" {
 			return (location{name: "tls-auth"}).diagnostic(CodeRequired)
 		}
 	}
 	e.LocalAddress, e.LocalPort = c.localAddress, c.localPort
-	e.ConnectTimeout, e.TunnelMTU = c.timeout, c.mtu
-	e.ExplicitExitNotify = e.ExplicitExitNotify || c.exit
+	e.TunnelMTU = c.mtu
+	e.ExplicitExitNotify = c.exit || p.opts.ExpressVPNManual && !c.exitSet
 	e.ServerPollTimeout = c.pollTimeout
 	if c.bindMode == "bind" && e.LocalPort == 0 {
 		e.LocalPort = c.portLocal
@@ -284,7 +283,7 @@ func (p *parser) appendEndpoint(e client.Endpoint, loc location, c connection) e
 
 func (p *parser) setProtection(m *material) error {
 	c := p.connection()
-	if c.localProtection && c.protection.loc.name != m.loc.name {
+	if c.localProtection {
 		return m.loc.diagnostic(CodeConflict)
 	}
 	if p.block != nil && !c.localDirection && c.protection != nil &&

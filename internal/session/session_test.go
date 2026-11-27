@@ -10,7 +10,6 @@ import (
 	"github.com/hamedsanaei/openvpn-go/internal/crypt"
 	"github.com/hamedsanaei/openvpn-go/internal/data"
 	"github.com/hamedsanaei/openvpn-go/internal/tlscontrol"
-	"github.com/hamedsanaei/openvpn-go/transport"
 	"github.com/hamedsanaei/openvpn-go/tunnel"
 )
 
@@ -92,7 +91,20 @@ func TestAuthenticatedKeepaliveAndInvalidData(t *testing.T) {
 		t.Fatalf("configured tunnel limit overrides outbound hard frame error: %v", err)
 	}
 	s.opts.TunnelMTU, s.packetMTU = 0, 1400-data.Overhead
-	if err := s.WritePacket(t.Context(), make([]byte, 1400)); !errors.Is(err, transport.ErrPacketTooLarge) {
+	if err := s.WritePacket(t.Context(), make([]byte, 1400)); !errors.Is(err, tunnel.ErrMTUExceeded) {
 		t.Fatalf("hard frame limit = %v", err)
+	}
+
+	ip := make([]byte, 40)
+	ip[0] = 0x60
+	for range 3 {
+		frame, err := peer.Seal(ip)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.receive(frame)
+	}
+	if stats := s.inboundQueue.Stats(); stats.Dropped != 2 || stats.HighWater != 1 {
+		t.Fatalf("authenticated inbound drops = %+v", stats)
 	}
 }

@@ -2,6 +2,7 @@ package tlscontrol
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -61,6 +62,7 @@ func TestPeerIdentityPolicies(t *testing.T) {
 		{"wrong_common_name_prefix", missingSAN, "common-name-prefix", "wrong.", pki, pki.CA, 0, true},
 		{"untrusted_common_name_prefix", missingSAN, "common-name-prefix", "vpn.", pki, wrongCA, 0, true},
 		{"prefix_requires_server_role", missingSAN, "common-name-prefix", "vpn.", noEKU, noEKU.CA, 0, true},
+		{"server_role_requires_signing_usage", host, "", "", noSignature, noSignature.CA, 0, true},
 		{"prefix_requires_signing_usage", missingSAN, "common-name-prefix", "vpn.", noSignature, noSignature.CA, 0, true},
 		{"SAN_with_wrong_prefix", host, "name-prefix", "unused.", pki, pki.CA, 0, true},
 		{"untrusted_exact_identity", missingSAN, "name", host, pki, wrongCA, 0, true},
@@ -160,5 +162,14 @@ func TestSubjectPolicyRejectsAmbiguousOrMalformedNames(t *testing.T) {
 	subject, ok := parseSubject("2.5.4.3=vpn\\=server")
 	if !ok || !matchName(cert.Leaf, "subject", "", subject) {
 		t.Fatal("escaped DN value did not match the complete subject")
+	}
+}
+
+func TestRejectMalformedEd25519Signer(t *testing.T) {
+	pki := testkit.NewPKI(t)
+	for _, key := range []ed25519.PrivateKey{nil, make(ed25519.PrivateKey, 1), make(ed25519.PrivateKey, 63)} {
+		if err := SetKeyProvider(&tls.Config{}, pki.Client.Certificate, key, nil); !errors.Is(err, ErrConfig) {
+			t.Fatalf("unexpected signer validation error: %v", err)
+		}
 	}
 }

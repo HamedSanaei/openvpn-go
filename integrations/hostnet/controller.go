@@ -51,7 +51,8 @@ type Backend interface {
 }
 
 // Journal records a plan durably before its first side effect. A nil plan
-// from Load means there is no outstanding lease.
+// from Load means there is no visible lease. Delete must idempotently
+// confirm durable absence, including after a failed prior deletion.
 type Journal interface {
 	Load() (*Plan, error)
 	Save(Plan) error
@@ -59,12 +60,13 @@ type Journal interface {
 }
 
 type Controller struct {
-	mu      sync.Mutex
-	policy  Policy
-	backend Backend
-	journal Journal
-	active  *Plan
-	cleanup error
+	mu         sync.Mutex
+	policy     Policy
+	backend    Backend
+	journal    Journal
+	active     *Plan
+	cleanup    error
+	intentOnly bool
 }
 
 func New(policy Policy, backend Backend, journal Journal) (*Controller, error) {
@@ -105,7 +107,7 @@ func New(policy Policy, backend Backend, journal Journal) (*Controller, error) {
 func (c *Controller) Configure(ctx context.Context, gen client.TunnelGeneration) (func(), error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.active != nil {
+	if c.active != nil || c.cleanup != nil {
 		return nil, ErrPending
 	}
 	previous, err := c.journal.Load()
@@ -123,6 +125,7 @@ func (c *Controller) Configure(ctx context.Context, gen client.TunnelGeneration)
 		return nil, err
 	}
 	if err := c.journal.Save(plan); err != nil {
+		c.cleanup, c.intentOnly = ErrJournal, true
 		return nil, ErrJournal
 	}
 	c.active = &plan
@@ -155,6 +158,9 @@ func (c *Controller) rollback() {
 
 // Recover removes any previous lease described by the journal. Recovery
 // validates the saved plan against this controller's current host policy.
+// In-process journal failures remain pending until deletion is durably
+// confirmed. On restart, a retained authorized intent is recovered as
+// possibly applied and an absent record follows the journal's durability contract.
 func (c *Controller) Recover(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -165,16 +171,28 @@ func (c *Controller) Recover(ctx context.Context) error {
 	if err != nil {
 		return ErrJournal
 	}
-	if plan == nil {
-		c.cleanup = nil
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if plan == nil && c.cleanup == nil {
 		return nil
 	}
-	if !c.policy.authorizes(*plan) {
+	if plan != nil && !c.policy.authorizes(*plan) {
 		return ErrPolicy
 	}
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	c.cleanup = c.clear(ctx, *plan)
+	if plan == nil && errors.Is(c.cleanup, ErrCleanup) {
+		return c.cleanup
+	}
+	if plan == nil || c.intentOnly {
+		c.cleanup = c.deleteIntent()
+	} else {
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		c.cleanup = c.clear(ctx, *plan)
+	}
+	if c.cleanup == nil {
+		c.intentOnly = false
+	}
 	return c.cleanup
 }
 
@@ -189,6 +207,10 @@ func (c *Controller) clear(ctx context.Context, plan Plan) error {
 	if err := c.backend.Clear(ctx, plan); err != nil {
 		return ErrCleanup
 	}
+	return c.deleteIntent()
+}
+
+func (c *Controller) deleteIntent() error {
 	if err := c.journal.Delete(); err != nil {
 		return ErrJournal
 	}

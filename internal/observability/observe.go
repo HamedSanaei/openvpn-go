@@ -44,3 +44,32 @@ func (c *Traffic) Add(n int) {
 func (c *Traffic) Load() (packets, bytes uint64) {
 	return c.packets.Load(), c.bytes.Load()
 }
+
+// QueueStats records drops and the observed high-water mark for a queue.
+type QueueStats struct {
+	Dropped   uint64
+	HighWater uint64
+}
+
+type Queue struct {
+	dropped   atomic.Uint64
+	highWater atomic.Uint64
+}
+
+func (q *Queue) Drop(depth int) {
+	q.dropped.Add(1)
+	q.Observe(depth)
+}
+
+func (q *Queue) Observe(depth int) {
+	candidate := uint64(depth)
+	for old := q.highWater.Load(); candidate > old; old = q.highWater.Load() {
+		if q.highWater.CompareAndSwap(old, candidate) {
+			return
+		}
+	}
+}
+
+func (q *Queue) Stats() QueueStats {
+	return QueueStats{Dropped: q.dropped.Load(), HighWater: q.highWater.Load()}
+}

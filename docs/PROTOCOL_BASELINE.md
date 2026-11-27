@@ -80,7 +80,9 @@ attempt deadline or retry budget, whichever comes first. These resource and
 timer settings are client policy. The receiving side keeps the wrapper replay
 window separate from reliable IDs and advances it only after authenticating
 the wrapper. With the same outer key and session IDs, maintain the outer
-counter and replay window across soft resets. The plain outer mode uses
+counter and replay window across soft resets. A missing counter expires
+15 seconds after the first higher counter exposes the gap. Later packets
+do not renew that allowance. The plain outer mode uses
 session and reliable sequence checks before TLS. TLS records provide
 cryptographic integrity. [OpenVPN 2.6 manual, TLS options](https://openvpn.net/community-docs/community-articles/openvpn-2-6-manual/) · [Security budgets](SECURITY_MODEL.md)
 
@@ -200,8 +202,9 @@ IP packets. For UDP accept unseen reordered IDs within the bounded window.
 TCP accepts strictly increasing IDs, with gaps allowed. Authentication
 failures never advance the receive window. The OpenVPN data-channel
 keepalive is the 16-byte value `2a187bf3641eb4cb07ed2d0a981fc748`; consume it
-inside the session. Honor bounded `ping` and `ping-restart` settings with
-monotonic timers. [Wire draft §7.4](https://openvpn.github.io/openvpn-rfc/openvpn-wire-protocol.html#section-7.4) · [Pinned keepalive reference](https://github.com/OpenVPN/openvpn/blob/v2.6.23/src/openvpn/ping.c)
+inside the session. Honor bounded `ping`, `ping-restart` and `ping-exit`
+settings with monotonic timers. A zero disables the corresponding
+timer, and repeated settings remain invalid even when one is zero. [Wire draft §7.4](https://openvpn.github.io/openvpn-rfc/openvpn-wire-protocol.html#section-7.4) · [Pinned keepalive reference](https://github.com/OpenVPN/openvpn/blob/v2.6.23/src/openvpn/ping.c)
 
 Rekey on time or key-use limits, before packet ID exhaustion. Either peer
 can initiate with opcode 3 under the next key ID. Respond with a soft reset

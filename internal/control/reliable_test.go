@@ -10,6 +10,7 @@ import (
 	"errors"
 	"strconv"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/hamedsanaei/openvpn-go/internal/testkit"
@@ -32,7 +33,7 @@ func TestDirectionalControlProtection(t *testing.T) {
 			for i := range key {
 				key[i] = byte(i)
 			}
-			data := []byte("OpenVPN synthetic key\n-----BEGIN OpenVPN Static key V1-----\n" + hex.EncodeToString(key) + "\n-----END OpenVPN Static key V1-----\n")
+			data := []byte("# OpenVPN synthetic key\n-----BEGIN OpenVPN Static key V1-----\n" + hex.EncodeToString(key) + "\n-----END OpenVPN Static key V1-----\n")
 			p, err := NewProtection(tc.mode, tc.dir, tc.digest, data)
 			if err != nil {
 				t.Fatal(err)
@@ -309,6 +310,140 @@ func TestV2ResetContinuation(t *testing.T) {
 			if err != nil || header.Opcode != wire.ACK {
 				t.Fatalf("late wrapped-key request was honored: %v, %v", header, err)
 			}
+		})
+	}
+}
+
+func TestDrainWaitsForAllWrittenControlRecords(t *testing.T) {
+	for _, udp := range []bool{false, true} {
+		name := "tcp"
+		if udp {
+			name = "udp"
+		}
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				self, remote := testkit.PacketPipe(16, 512)
+				d := newDriver(self, &frameProtection{codec: newCodec(Protection{}, 0)}, udp)
+				d.local = wire.SessionID{1}
+				remoteID := wire.SessionID{2}
+				peer := newCodec(Protection{}, 0)
+				s := startStream(d, 512, 64)
+				defer s.Close()
+				defer remote.Close()
+				send := func(op wire.Opcode, ids ...uint32) {
+					packet := wire.ControlPacket{Header: wire.Header{Opcode: op}, Sender: remoteID, ACKTarget: d.local, ACKCount: len(ids)}
+					copy(packet.ACKs[:], ids)
+					raw, err := peer.seal(packet)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := remote.WritePacket(t.Context(), raw); err != nil {
+						t.Fatal(err)
+					}
+				}
+				readTestPacket(t, remote)
+				send(wire.ServerReset, 0)
+				readTestPacket(t, remote)
+				if err := s.WaitReady(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := s.Conn().Write(make([]byte, 150)); err != nil {
+					t.Fatal(err)
+				}
+				result := make(chan error, 2)
+				go func() { result <- s.Drain(t.Context()) }()
+				go func() { result <- s.Drain(t.Context()) }()
+				requireBlocked := func() {
+					synctest.Wait()
+					select {
+					case err := <-result:
+						t.Fatalf("drained without the full ACK set: %v", err)
+					default:
+					}
+				}
+				requireBlocked()
+				for i := uint32(1); i <= 3; i++ {
+					packet, _, _, err := peer.open(readTestPacket(t, remote))
+					if err != nil || packet.ID != i {
+						t.Fatalf("control packet %d: %v, %v", i, packet.ID, err)
+					}
+				}
+				send(wire.ACK, 3, 1)
+				requireBlocked()
+				send(wire.ACK, 2)
+				for range 2 {
+					if err := <-result; err != nil {
+						t.Fatal(err)
+					}
+				}
+			})
+		})
+	}
+}
+
+func TestOuterReplayGapDoesNotGetYounger(t *testing.T) {
+	var window replayWindow
+	start := time.Now()
+	if !window.accept(1, 1, start) || !window.accept(3, 1, start) ||
+		!window.accept(5, 1, start.Add(14*time.Second)) {
+		t.Fatal("could not establish the replay window")
+	}
+	if window.admissible(2, 1, start.Add(16*time.Second)) || window.accept(2, 1, start.Add(16*time.Second)) {
+		t.Fatal("unrelated counters refreshed an expired replay gap")
+	}
+	if !window.accept(4, 1, start.Add(16*time.Second)) || window.accept(4, 1, start.Add(16*time.Second)) {
+		t.Fatal("a fresh gap should be accepted once")
+	}
+	if !window.accept(2, 2, start.Add(16*time.Second)) {
+		t.Fatal("a newer epoch did not reset the replay window")
+	}
+}
+
+func TestStaticKeyRejectsAdditionalContent(t *testing.T) {
+	const keyBegin = "-----BEGIN OpenVPN Static key V1-----\n"
+	const keyEnd = "\n-----END OpenVPN Static key V1-----\n"
+	key := keyBegin + hex.EncodeToString(make([]byte, 256)) + keyEnd
+	for _, input := range []string{key + key, "unknown\n" + key, key + "extra\n"} {
+		if _, err := NewProtection(TLSAuth, Bidirectional, "", []byte(input)); !errors.Is(err, ErrProtection) {
+			t.Fatal("accepted extra static key material")
+		}
+	}
+	if _, err := NewProtection(TLSAuth, Bidirectional, "", []byte("# synthetic test fixture\n"+key+"; comment\n")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMuxQueueBoundsAndDiscardedDatagrams(t *testing.T) {
+	for _, udp := range []bool{false, true} {
+		t.Run(strconv.FormatBool(udp), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				packets, peer := testkit.PacketPipe(4, 1024)
+				mux, err := NewMux(packets, Protection{}, 512, udp)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer mux.Close()
+				defer peer.Close()
+				frame := []byte{byte(wire.DataV2) << 3, 0, 0, 1}
+				if udp {
+					if err := peer.WritePacket(t.Context(), make([]byte, 513)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				for range dataQueueSize + 5 {
+					if err := peer.WritePacket(t.Context(), frame); err != nil {
+						t.Fatal(err)
+					}
+				}
+				synctest.Wait()
+				stats := mux.DataQueueStats()
+				if stats.Dropped != 5 || stats.HighWater != dataQueueSize || len(mux.Data()) != dataQueueSize {
+					t.Fatalf("unexpected mux queue: %+v", stats)
+				}
+				if got := <-mux.Data(); !bytes.Equal(got, frame) {
+					t.Fatal("an oversized datagram affected the next frame")
+				}
+			})
 		})
 	}
 }

@@ -241,6 +241,17 @@ that setting, and the probe overrides it only when explicitly asked to
 test a forced rekey. This evidence does not certify forced TCP rekey
 against the provider.
 
+A follow-up using the same authorized profile set compared the previous
+client with the ordered control-drain fix. The sampled UDP profile
+passed the forced rekey in both. The sampled TCP profile still
+reconnected with a network failure in both. A redacted phase trace of the
+updated client reached key-method processing and then saw TCP EOF before
+a later reset acknowledgment. This locates the repeat failure without
+establishing its cause. In one ten-second probe per build, the previous
+client lost the post-rekey echo and the updated client passed it. The
+two-second TCP failure is still reproducible. The OpenVPN Community
+rekey fixtures passed.
+
 The provider's server build is undisclosed. These observations cover the
 uploaded profiles, one authorized account and one IPv4 endpoint. The
 import deliberately recognizes only the tested Linux DNS-hook group and
@@ -261,7 +272,9 @@ go test -race -v -count=1 -timeout 1m -run '^TestExternalProfile$' ./tests/inter
 
 `OVPN_EXTERNAL_REMOTE` selects a one-based candidate. Use
 `OVPN_EXTERNAL_REKEY=1` and `OVPN_EXTERNAL_EXPECT=rekey_verified` for the
-separate forced-rekey probe. [Synthetic negative tests](../tests/interop/password_test.go)
+separate forced-rekey probe. `OVPN_EXTERNAL_REKEY_SECONDS` selects a
+bounded interval of 1–20 seconds instead of the two-second default.
+[Synthetic negative tests](../tests/interop/password_test.go)
 
 #### Country and Secure Core exports
 

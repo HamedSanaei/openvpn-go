@@ -76,9 +76,11 @@ func (a *Authentication) forHandshake(ctx context.Context, provider func(context
 func (a *Authentication) set(token []byte, username string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	clear(a.token)
-	a.token = token
-	a.base.Password = ""
+	if token != nil {
+		clear(a.token)
+		a.token = token
+		a.base.Password = ""
+	}
 	if username != "" {
 		a.tokenUser = username
 	}

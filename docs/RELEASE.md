@@ -25,9 +25,10 @@ CGO disabled, path trimming and no embedded build ID. It packages
 the changelog, license notices and SPDX inventory with each archive.
 The archive timestamp uses the source commit time, or
 `SOURCE_DATE_EPOCH` when explicitly set. The release workflow runs the
-hardening workflow and builds each archive twice to compare the bytes.
-Local candidate builds for all four targets produced identical archives
-on repetition and passed SHA-256 verification.
+hardening workflow and compares archives built under umasks 022 and
+077. The staging tree uses mode 0755 for directories and executables
+and mode 0644 for text files. Local builds for all four targets produced
+identical archives under umasks 022, 077 and 002.
 
 The release workflow attests each archive's build provenance and SPDX
 SBOM. A separate job verifies both attestations against the workflow and

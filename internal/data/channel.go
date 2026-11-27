@@ -26,6 +26,7 @@ var (
 type generation struct {
 	keys    crypt.DataKeys
 	id      uint8
+	epoch   uint64
 	sent    uint32
 	replay  replay
 	expires time.Time
@@ -44,7 +45,7 @@ func NewChannel(peerID uint32, udp bool, keys crypt.DataKeys) (*Channel, error) 
 	if peerID >= 0xffffff {
 		return nil, ErrPacket
 	}
-	return &Channel{peerID: peerID, udp: udp, current: &generation{keys: keys}}, nil
+	return &Channel{peerID: peerID, udp: udp, current: &generation{keys: keys, epoch: 1}}, nil
 }
 
 func NextKeyID(id uint8) uint8 { return id%7 + 1 }
@@ -63,7 +64,7 @@ func (c *Channel) Promote(id uint8, keys crypt.DataKeys, expires time.Time) erro
 	}
 	c.current.expires = expires
 	c.retiring = c.current
-	c.current = &generation{keys: keys, id: id}
+	c.current = &generation{keys: keys, id: id, epoch: c.current.epoch + 1}
 	return nil
 }
 
@@ -96,9 +97,20 @@ func (c *Channel) Seal(payload []byte) ([]byte, error) {
 }
 
 func (c *Channel) Open(packet []byte, now time.Time) ([]byte, error) {
+	plaintext, _, err := c.OpenWithEpoch(packet, now)
+	return plaintext, err
+}
+
+// HasEpoch reports whether a local key generation can still receive data.
+func (c *Channel) HasEpoch(epoch uint64) bool {
+	return c.current.epoch == epoch || c.retiring != nil && c.retiring.epoch == epoch
+}
+
+// OpenWithEpoch returns the local identity of the authenticated receive key.
+func (c *Channel) OpenWithEpoch(packet []byte, now time.Time) ([]byte, uint64, error) {
 	if len(packet) <= Overhead || wire.Opcode(packet[0]>>3) != wire.DataV2 ||
 		binary.BigEndian.Uint32(packet)&0xffffff != c.peerID {
-		return nil, ErrPacket
+		return nil, 0, ErrPacket
 	}
 	c.Retire(now)
 	id := packet[0] & 7
@@ -106,12 +118,12 @@ func (c *Channel) Open(packet []byte, now time.Time) ([]byte, error) {
 	if id != g.id {
 		g = c.retiring
 		if g == nil || g.id != id {
-			return nil, ErrKeyID
+			return nil, 0, ErrKeyID
 		}
 	}
 	pid := binary.BigEndian.Uint32(packet[4:])
 	if pid > g.keys.PacketLimit || !g.replay.admissible(pid, c.udp, now) {
-		return nil, ErrPacket
+		return nil, 0, ErrPacket
 	}
 	iv := nonce(pid, g.keys.Receive.ImplicitIV)
 	sealed := make([]byte, 0, len(packet)-additionalSize)
@@ -119,10 +131,10 @@ func (c *Channel) Open(packet []byte, now time.Time) ([]byte, error) {
 	sealed = append(sealed, packet[additionalSize:Overhead]...)
 	plain, err := g.keys.Receive.AEAD.Open(sealed[:0], iv[:], sealed, packet[:additionalSize])
 	if err != nil {
-		return nil, ErrPacket
+		return nil, 0, ErrPacket
 	}
 	g.replay.commit(pid, c.udp, now)
-	return plain, nil
+	return plain, g.epoch, nil
 }
 
 func nonce(id uint32, implicit [8]byte) [12]byte {

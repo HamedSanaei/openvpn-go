@@ -1,6 +1,7 @@
 """Check median measurements from the three samples produced by make bench."""
 
 import argparse
+from math import isfinite
 from pathlib import Path
 import re
 from statistics import median
@@ -19,13 +20,26 @@ LIMITS = {
 
 def check(path):
     measurements = {name: [] for name in LIMITS}
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         fields = line.split()
-        if len(fields) < 4 or not fields[0].startswith("Benchmark"):
+        if not fields or not fields[0].startswith("Benchmark"):
             continue
         name = re.sub(r"-\d+$", "", fields[0])
         if name in measurements:
-            measurements[name].append({unit: float(value) for value, unit in zip(fields[2::2], fields[3::2])})
+            if len(fields) < 4 or len(fields) % 2:
+                raise ValueError(f"{name} line {line_no}: malformed benchmark row")
+            sample = {}
+            for value, unit in zip(fields[2::2], fields[3::2], strict=True):
+                if unit in sample:
+                    raise ValueError(f"{name} line {line_no}: duplicate {unit} measurement")
+                try:
+                    number = float(value)
+                except ValueError:
+                    raise ValueError(f"{name} line {line_no}: invalid {unit} measurement") from None
+                if not isfinite(number) or number < 0:
+                    raise ValueError(f"{name} line {line_no}: invalid {unit} measurement")
+                sample[unit] = number
+            measurements[name].append(sample)
     failures = []
     for name, samples in measurements.items():
         if len(samples) != 3:

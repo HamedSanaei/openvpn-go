@@ -52,6 +52,10 @@ func TestTunnelPushRejectsMalformedAndDuplicate(t *testing.T) {
 	for _, input := range []string{
 		"ifconfig 10.0.0.2 255.0.255.0,topology subnet",
 		"ifconfig 10.0.0.2 10.0.0.6,topology net30",
+		"ifconfig 10.0.0.0 10.0.0.1,topology net30",
+		"ifconfig 10.0.0.1 10.0.0.3,topology net30",
+		"ifconfig 10.0.0.0 255.255.255.0,topology subnet",
+		"ifconfig 10.0.0.255 255.255.255.0,topology subnet",
 		"ifconfig-ipv6 ::ffff:10.0.0.2/120 fd49::1",
 		"route 10.0.0.0 255.0.255.0",
 		"route 10.0.0.1 255.0.0.0,route 10.0.0.2 255.0.0.0",
@@ -62,6 +66,9 @@ func TestTunnelPushRejectsMalformedAndDuplicate(t *testing.T) {
 		"dhcp-option DNS synthetic-secret.example",
 		"dhcp-option DNS 127.0.0.1",
 		"dhcp-option DOMAIN bad_domain",
+		"dhcp-option UNKNOWN_OPTION synthetic",
+		"dhcp-option WINS invalid",
+		"dhcp-option DISABLE-NBT trailing",
 		"dhcp-option DOMAIN-SEARCH A.example,dhcp-option DOMAIN-SEARCH a.example.",
 		"dns server 1 transport DoT",
 		"dns server 129 address 10.49.0.1",
@@ -78,7 +85,7 @@ func TestTunnelPushPolicy(t *testing.T) {
 	p := pushState{allowed: []string{"AES-256-GCM"}, policy: tunnel.PushPolicy{
 		Addresses: tunnel.PushIgnore, DNS: tunnel.PushIgnore, Routes: tunnel.PushIgnore, MTU: tunnel.PushIgnore,
 	}}
-	if done, err := p.add([]byte(pushBase + ",ifconfig ignored,dhcp-option DNS ignored,route ignored,tun-mtu ignored")); !done || err != nil {
+	if done, err := p.add([]byte(pushBase + ",ifconfig ignored,dhcp-option UNKNOWN_OPTION ignored,route ignored,tun-mtu ignored")); !done || err != nil {
 		t.Fatalf("ignored payload = %v, %v", done, err)
 	}
 	if cfg := p.Tunnel; cfg.IPv4.IsValid() || len(cfg.DNS().Servers) != 0 || len(cfg.Routes()) != 0 || cfg.MTU != 0 {
@@ -91,5 +98,22 @@ func TestTunnelPushPolicy(t *testing.T) {
 	p = pushState{allowed: []string{"AES-256-GCM"}, policy: tunnel.PushPolicy{Routes: tunnel.PushIgnore}}
 	if done, err := p.add([]byte(pushBase + ",up synthetic-secret")); done || err != ErrNegotiation {
 		t.Fatal("policy weakened unrelated push restrictions")
+	}
+}
+
+func TestDisabledPushPingTimersAndDuplicates(t *testing.T) {
+	for _, option := range []string{"ping", "ping-restart", "ping-exit"} {
+		p := pushState{allowed: []string{"AES-256-GCM"}}
+		done, err := p.add([]byte(pushBase + "," + option + " 0"))
+		if !done || err != nil || p.PingInterval != 0 || p.PingTimeout != 0 || p.PingExit {
+			t.Fatalf("%s 0 did not disable the timer: %v", option, err)
+		}
+		p = pushState{allowed: []string{"AES-256-GCM"}}
+		if done, err := p.add([]byte(pushBase + "," + option + " 0,push-continuation 2")); done || err != nil {
+			t.Fatalf("initial push: %t, %v", done, err)
+		}
+		if done, err := p.add([]byte("PUSH_REPLY," + option + " 1,push-continuation 1")); done || err != ErrNegotiation {
+			t.Fatalf("duplicate %s succeeded: %t, %v", option, done, err)
+		}
 	}
 }

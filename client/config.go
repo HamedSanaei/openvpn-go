@@ -75,6 +75,9 @@ type Config struct {
 	Retry RetryPolicy
 	// PushPolicy selects how authenticated tunnel metadata is handled.
 	PushPolicy tunnel.PushPolicy
+	// AdvertiseDNS opts into the OpenVPN 2.6 DNS metadata capability with
+	// PushAccept. The application is responsible for applying the metadata.
+	AdvertiseDNS bool
 
 	// TLS supplies the trust anchors and client identity policy for Connect.
 	TLS *TLSConfig
@@ -211,11 +214,8 @@ func (e *Endpoint) normalize() error {
 	}
 
 	if addr, err := netip.ParseAddr(e.Host); err == nil {
-		switch {
-		case e.addressFamily() == "ip4" && !addr.Unmap().Is4():
-			return configError("endpoint address family")
-		case e.addressFamily() == "ip6" && addr.Unmap().Is4():
-			return configError("endpoint address family")
+		if !validRemoteIP(addr, e.addressFamily()) {
+			return configError("endpoint address or family")
 		}
 		if e.ServerName == "" {
 			e.ServerName = addr.WithZone("").Unmap().String()

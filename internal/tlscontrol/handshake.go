@@ -2,6 +2,7 @@ package tlscontrol
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -40,6 +41,7 @@ type Options struct {
 	TunnelMTU         int
 	FixedAEAD         string
 	AllowLZOStub      bool
+	AdvertiseDNS      bool
 	ServerPollTimeout time.Duration
 }
 
@@ -69,21 +71,32 @@ func Establish(ctx context.Context, stream *control.Stream, opts Options, previo
 		return nil, err
 	}
 	// No control application bytes enter TLS until its peer is verified.
-	done := make(chan struct{})
-	stop := context.AfterFunc(ctx, func() {
-		defer close(done)
-		conn.SetDeadline(time.Now())
-	})
+	activeCtx := ctx
+	stopDeadline := func() {}
 	defer func() {
-		if !stop() {
-			<-done
-		}
+		stopDeadline()
 		conn.SetDeadline(time.Time{})
 	}()
-	if deadline, ok := ctx.Deadline(); ok {
-		conn.SetDeadline(deadline)
+	setPhaseDeadline := func(phase context.Context) error {
+		stopDeadline()
+		activeCtx = phase
+		deadline, _ := phase.Deadline()
+		if err := conn.SetDeadline(deadline); err != nil {
+			return err
+		}
+		done := make(chan struct{})
+		stop := context.AfterFunc(phase, func() {
+			defer close(done)
+			conn.SetDeadline(time.Now())
+		})
+		stopDeadline = func() {
+			if !stop() {
+				<-done
+			}
+		}
+		return phase.Err()
 	}
-	if err := ctx.Err(); err != nil {
+	if err := setPhaseDeadline(ctx); err != nil {
 		return nil, err
 	}
 
@@ -117,19 +130,25 @@ func Establish(ctx context.Context, stream *control.Stream, opts Options, previo
 	} else {
 		observability.Enter(ctx, observability.PhasePush)
 		push := pushState{allowed: opts.Ciphers, policy: opts.PushPolicy, allowExit: opts.ExitNotify, fixedAEAD: opts.FixedAEAD, allowLZOStub: opts.AllowLZOStub}
-		if err := readPushInteractive(ctx, conn, reader, &push, opts.Interaction); err != nil {
+		pending := pendingAuth{Interaction: opts.Interaction}
+		defer pending.close()
+		if err := readPushWithPending(ctx, conn, reader, &push, &pending, setPhaseDeadline); err != nil {
 			clear(push.token)
-			return nil, ctxError(ctx, err)
+			return nil, ctxError(activeCtx, err)
 		}
 		if classic != nil {
 			// The concise peer starts handling tunnel traffic only after
 			// its PUSH_REPLY has been acknowledged on the control channel.
-			if err := stream.Drain(ctx); err != nil {
+			if err := stream.Drain(activeCtx); err != nil {
 				clear(push.token)
-				return nil, ctxError(ctx, err)
+				return nil, ctxError(activeCtx, err)
 			}
 		}
-		if push.token != nil {
+		if err := activeCtx.Err(); err != nil {
+			clear(push.token)
+			return nil, err
+		}
+		if push.token != nil || push.tokenUser != "" {
 			opts.Auth.set(push.token, push.tokenUser)
 		}
 		info = push.Negotiation
@@ -176,11 +195,17 @@ func readPush(ctx context.Context, conn net.Conn, reader *bufio.Reader, push *pu
 }
 
 func readPushInteractive(ctx context.Context, conn net.Conn, reader *bufio.Reader, push *pushState, interaction Interaction) error {
-	var commands commandReader
-	defer func() { clear(commands.partial) }()
 	pending := pendingAuth{Interaction: interaction}
 	defer pending.close()
+	return readPushWithPending(ctx, conn, reader, push, &pending, func(context.Context) error { return nil })
+}
+
+func readPushWithPending(ctx context.Context, conn net.Conn, reader *bufio.Reader, push *pushState,
+	pending *pendingAuth, setPhaseDeadline func(context.Context) error) error {
+	var commands commandReader
+	defer func() { clear(commands.partial) }()
 	current := ctx
+	infoBudget := 16 << 10
 	for current.Err() == nil {
 		if deadline, ok := current.Deadline(); ok {
 			if !time.Now().Before(deadline) {
@@ -213,11 +238,37 @@ func readPushInteractive(ctx context.Context, conn net.Conn, reader *bufio.Reade
 				}
 				return err
 			}
+			kind, _, _ := bytes.Cut(message, []byte{','})
+			informational := bytes.Equal(kind, []byte("INFO")) || bytes.Equal(kind, []byte("ECHO"))
+			if informational || bytes.Equal(kind, []byte("INFO_PRE")) {
+				infoBudget -= len(message) + 1
+				if infoBudget < 0 {
+					clear(message)
+					return ErrNegotiation
+				}
+				if informational {
+					clear(message)
+					continue
+				}
+			}
 			handled, response, err := pending.handle(ctx, message)
 			if handled {
 				clear(message)
 				if err != nil {
 					return err
+				}
+				if current != pending.ctx {
+					current = pending.ctx
+					if err := setPhaseDeadline(current); err != nil {
+						clear(response)
+						return err
+					}
+					deadline, _ := current.Deadline()
+					next = minTime(time.Now().Add(pushRetry), deadline)
+					if err := conn.SetReadDeadline(next); err != nil {
+						clear(response)
+						return err
+					}
 				}
 				if len(response) != 0 {
 					deadline, _ := pending.ctx.Deadline()
@@ -233,12 +284,6 @@ func readPushInteractive(ctx context.Context, conn net.Conn, reader *bufio.Reade
 						return ctxError(pending.ctx, err)
 					}
 				}
-				current = pending.ctx
-				if deadline, _ := current.Deadline(); deadline.Before(next) {
-					if err := conn.SetReadDeadline(deadline); err != nil {
-						return err
-					}
-				}
 				continue
 			}
 			complete, err := push.add(message)
@@ -249,6 +294,13 @@ func readPushInteractive(ctx context.Context, conn net.Conn, reader *bufio.Reade
 		}
 	}
 	return current.Err()
+}
+
+func minTime(a, b time.Time) time.Time {
+	if b.Before(a) {
+		return b
+	}
+	return a
 }
 
 func ctxError(ctx context.Context, fallback error) error {

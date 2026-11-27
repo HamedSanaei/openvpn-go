@@ -35,6 +35,22 @@ func TestExpressVPNManualImport(t *testing.T) {
 		cfg.Control.Direction != client.KeyDirection1 || cfg.Control.Digest != "SHA512" || cfg.Credentials == nil {
 		t.Fatal("ExpressVPN import lost transport, peer verification or authentication settings")
 	}
+	for _, tt := range []struct {
+		directive string
+		enabled   bool
+	}{{"", true}, {"explicit-exit-notify 0\n", false}, {"explicit-exit-notify 2\n", true}} {
+		cfg, _, err := Parse(strings.NewReader(shape+tt.directive+material), opts)
+		if err != nil || cfg.Endpoints[0].ExplicitExitNotify != tt.enabled {
+			t.Fatalf("unexpected exit-notify policy for %q: %v", tt.directive, err)
+		}
+	}
+	blocks := strings.Replace(shape, "remote vpn.example.test 1194\n", "", 1) + material +
+		"explicit-exit-notify 0\n<connection>\nremote first.example.test\n</connection>\n" +
+		"<connection>\nremote second.example.test\nexplicit-exit-notify 0\nexplicit-exit-notify 1\n</connection>\n"
+	multi, _, err := Parse(strings.NewReader(blocks), opts)
+	if err != nil || multi.Endpoints[0].ExplicitExitNotify || !multi.Endpoints[1].ExplicitExitNotify {
+		t.Fatalf("unexpected ExpressVPN connection override: %v", err)
+	}
 	if len(warnings) != 7 {
 		t.Fatalf("expected seven advisory warnings, got %v", warnings)
 	}

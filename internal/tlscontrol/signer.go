@@ -1,14 +1,15 @@
 package tlscontrol
 
 import (
-	"bytes"
 	"context"
 	"crypto"
+	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/pem"
 	"io"
 	"reflect"
+
+	"github.com/hamedsanaei/openvpn-go/internal/pemutil"
 )
 
 // KeyProvider supplies a signer for an authenticated TLS certificate request.
@@ -18,26 +19,13 @@ func SetKeyProvider(cfg *tls.Config, certificate []byte, signer crypto.Signer, p
 	if signer != nil && provider != nil {
 		return ErrConfig
 	}
-	var identity tls.Certificate
-	for raw := bytes.TrimSpace(certificate); len(raw) != 0; raw = bytes.TrimSpace(raw) {
-		block, rest := pem.Decode(raw)
-		if block == nil || block.Type != "CERTIFICATE" || len(block.Headers) != 0 ||
-			!bytes.HasPrefix(raw, []byte("-----BEGIN CERTIFICATE-----")) ||
-			bytes.Count(raw[:len(raw)-len(rest)], []byte("-----BEGIN ")) != 1 {
-			return ErrConfig
-		}
-		cert, err := x509.ParseCertificate(block.Bytes)
-		if err != nil {
-			return ErrConfig
-		}
-		if identity.Leaf == nil {
-			identity.Leaf = cert
-		}
-		identity.Certificate = append(identity.Certificate, block.Bytes)
-		raw = rest
-	}
-	if identity.Leaf == nil || signer != nil && !keyMatches(signer, identity.Leaf) {
+	chain, ok := pemutil.Certificates(certificate)
+	if !ok || signer == nil && provider == nil || signer != nil && !keyMatches(signer, chain[0]) {
 		return ErrConfig
+	}
+	identity := tls.Certificate{Leaf: chain[0], Certificate: make([][]byte, 0, len(chain))}
+	for _, cert := range chain {
+		identity.Certificate = append(identity.Certificate, cert.Raw)
 	}
 	cfg.GetClientCertificate = func(request *tls.CertificateRequestInfo) (*tls.Certificate, error) {
 		ctx := request.Context()
@@ -63,8 +51,25 @@ func SetKeyProvider(cfg *tls.Config, certificate []byte, signer crypto.Signer, p
 }
 
 func keyMatches(key crypto.Signer, leaf *x509.Certificate) bool {
-	if key == nil || reflect.ValueOf(key).Kind() == reflect.Pointer && reflect.ValueOf(key).IsNil() {
+	if key == nil {
 		return false
+	}
+	value := reflect.ValueOf(key)
+	switch value.Kind() {
+	case reflect.Pointer, reflect.Slice, reflect.Map, reflect.Func, reflect.Chan, reflect.Interface:
+		if value.IsNil() {
+			return false
+		}
+	}
+	switch k := key.(type) {
+	case ed25519.PrivateKey:
+		if len(k) != ed25519.PrivateKeySize {
+			return false
+		}
+	case *ed25519.PrivateKey:
+		if len(*k) != ed25519.PrivateKeySize {
+			return false
+		}
 	}
 	expected, ok := leaf.PublicKey.(interface{ Equal(crypto.PublicKey) bool })
 	return ok && expected.Equal(key.Public())

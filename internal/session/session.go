@@ -46,12 +46,13 @@ type Session struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 
-	inbound   chan []byte
-	writeGate chan struct{}
-	rotate    chan struct{}
-	notify    sync.Once
-	packetMTU int
-	fragments *fragmenter
+	inbound      chan []byte
+	inboundQueue observability.Queue
+	writeGate    chan struct{}
+	rotate       chan struct{}
+	notify       sync.Once
+	packetMTU    int
+	fragments    *fragmenter
 
 	mu       sync.Mutex
 	channel  *data.Channel
@@ -152,6 +153,20 @@ func (s *Session) Info() (tlscontrol.Negotiation, uint8) {
 
 func (s *Session) Done() <-chan struct{} { return s.done }
 
+func (s *Session) QueueStats() (observability.QueueStats, observability.QueueStats) {
+	return s.mux.DataQueueStats(), s.inboundQueue.Stats()
+}
+
+// CleanupError is stable after Done closes.
+func (s *Session) CleanupError() error {
+	select {
+	case <-s.done:
+		return s.closeErr
+	default:
+		return nil
+	}
+}
+
 // Err returns the stable shutdown cause once the session has finished.
 func (s *Session) Err() error {
 	select {
@@ -207,13 +222,10 @@ func (s *Session) ReadPacket(ctx context.Context, dst []byte) (int, error) {
 
 func (s *Session) WritePacket(ctx context.Context, packet []byte) error {
 	if len(packet) > s.packetMTU {
-		if s.opts.TunnelMTU != 0 {
-			return tunnel.ErrMTUExceeded
-		}
-		return transport.ErrPacketTooLarge
+		return tunnel.ErrMTUExceeded
 	}
 	if !data.IsIP(packet) {
-		return data.ErrPacket
+		return tunnel.ErrInvalidPacket
 	}
 	return s.write(ctx, packet)
 }
@@ -252,7 +264,7 @@ func (s *Session) write(ctx context.Context, plain []byte) error {
 	}
 	var packets [][]byte
 	var err error
-	if s.fragments != nil && !data.IsKeepalive(plain) {
+	if s.fragments != nil {
 		packets, err = s.fragments.seal(s.channel, plain)
 	} else {
 		var packet []byte
@@ -291,12 +303,13 @@ func (s *Session) requestRekey() {
 func (s *Session) receive(wrapped []byte) {
 	now := time.Now()
 	s.mu.Lock()
-	packet, err := s.channel.Open(wrapped, now)
+	packet, epoch, err := s.channel.OpenWithEpoch(wrapped, now)
 	keepalive, validIP := false, false
 	if err == nil {
 		keepalive = data.IsKeepalive(packet)
+		// Some legacy peers also send bare encrypted keepalives.
 		if !keepalive && s.fragments != nil {
-			packet = s.fragments.open(wrapped, packet, s.packetMTU, now)
+			packet = s.fragments.open(wrapped, packet, epoch, s.packetMTU, now)
 			keepalive = data.IsKeepalive(packet)
 		}
 		validIP = len(packet) <= s.packetMTU && data.IsIP(packet)
@@ -316,9 +329,12 @@ func (s *Session) receive(wrapped []byte) {
 		clear(packet)
 		return
 	}
+	depth := len(s.inbound)
 	select {
 	case s.inbound <- packet:
+		s.inboundQueue.Observe(min(cap(s.inbound), depth+1))
 	default:
+		s.inboundQueue.Drop(cap(s.inbound))
 		clear(packet)
 	}
 }

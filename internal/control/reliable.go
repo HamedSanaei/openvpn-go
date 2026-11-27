@@ -64,7 +64,7 @@ func newDriver(packets transport.PacketConn, codec *frameProtection, udp bool) *
 	}
 }
 
-func (d *driver) loop(ctx context.Context, incoming, outgoing <-chan []byte, delivery chan<- []byte, drain <-chan chan struct{}, ready func()) error {
+func (d *driver) loop(ctx context.Context, incoming, outgoing <-chan []byte, delivery chan<- []byte, drain <-chan drainRequest, ready func()) error {
 	reset := wire.ClientReset
 	if d.keyID != 0 {
 		reset = wire.SoftReset
@@ -77,25 +77,26 @@ func (d *driver) loop(ctx context.Context, incoming, outgoing <-chan []byte, del
 
 	timer := time.NewTimer(0)
 	defer timer.Stop()
-	var flushing chan struct{}
+	var admitted uint64
+	var flushing drainRequest
 	for {
-		var drainRequest <-chan chan struct{}
-		if flushing == nil {
-			drainRequest = drain
-		} else {
+		var nextDrain <-chan drainRequest
+		if flushing.done == nil {
+			nextDrain = drain
+		} else if admitted >= flushing.target {
 			if !d.ackTime.IsZero() {
 				if err := d.send(ctx, wire.ControlPacket{Header: wire.Header{Opcode: wire.ACK}}); err != nil {
 					return err
 				}
 			}
 			if len(d.tx) == 0 {
-				close(flushing)
-				flushing = nil
-				drainRequest = drain
+				close(flushing.done)
+				flushing = drainRequest{}
+				nextDrain = drain
 			}
 		}
 		var write <-chan []byte
-		if d.bound && d.canSend() {
+		if d.bound && d.canSend() && (flushing.done == nil || admitted < flushing.target) {
 			write = outgoing
 		}
 		var deliver chan<- []byte
@@ -117,7 +118,9 @@ func (d *driver) loop(ctx context.Context, incoming, outgoing <-chan []byte, del
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case flushing = <-drainRequest:
+		case flushing = <-nextDrain:
+		case <-flushing.cancel:
+			flushing = drainRequest{}
 		case raw := <-incoming:
 			wasBound := d.bound
 			if err := d.receive(ctx, raw); err != nil {
@@ -130,6 +133,7 @@ func (d *driver) loop(ctx context.Context, incoming, outgoing <-chan []byte, del
 			if err := d.enqueue(ctx, wire.Control, payload); err != nil {
 				return err
 			}
+			admitted += uint64(len(payload))
 		case deliver <- payload:
 			d.received()
 		case <-wake:
@@ -197,10 +201,7 @@ func (d *driver) send(ctx context.Context, p wire.ControlPacket) error {
 	writeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if err := d.packets.WritePacket(writeCtx, packet); err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return ErrTransport
+		return controlIOError(ctx, err)
 	}
 	d.ackTime = time.Time{}
 	return nil

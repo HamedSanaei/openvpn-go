@@ -13,9 +13,18 @@ import (
 
 	"github.com/hamedsanaei/openvpn-go/internal/crypt"
 	"github.com/hamedsanaei/openvpn-go/internal/observability"
+	"github.com/hamedsanaei/openvpn-go/tunnel"
 )
 
 const keyMethod = 2
+
+const (
+	protoDataV2      = 1 << 1
+	protoTLSExporter = 1 << 3
+	protoAuthPending = 1 << 4
+	protoDNS26       = 1 << 6
+	protoExitNotify  = 1 << 7
+)
 
 func writeKeyMethod(w io.Writer, network, digest string, ciphers []string, user Credentials) error {
 	return writeKeyMethodOptions(w, network, digest, ciphers, user, Options{}, nil)
@@ -63,16 +72,19 @@ func writeKeyMethodOptions(w io.Writer, network, digest string, ciphers []string
 	}
 	// Bit 1 advertises DATA_V2. Bit 3 selects the TLS exporter when both
 	// peers support it. Address floating and dynamic wrapping are omitted.
-	flags := 10
-	if cfg.FixedAEAD != "" {
-		flags = 2
+	flags := protoDataV2
+	if cfg.FixedAEAD == "" {
+		flags |= protoTLSExporter
+		if cfg.AdvertiseDNS && cfg.PushPolicy.DNS == tunnel.PushAccept {
+			flags |= protoDNS26
+		}
 	}
 	extra := cfg.Interaction.peerInfo()
-	if extra != "" {
-		flags |= 1 << 4
+	if extra != "" || cfg.Interaction.AllowPassivePending {
+		flags |= protoAuthPending
 	}
 	if cfg.ExitNotify {
-		flags |= 1 << 7
+		flags |= protoExitNotify
 	}
 	peer := "IV_PROTO=" + strconv.Itoa(flags) + "\nIV_CIPHERS=" + strings.Join(ciphers, ":") + "\n" + extra
 	for _, field := range []string{options, user.Username, user.Password, peer} {
@@ -213,17 +225,22 @@ func unexpectedCommand(message []byte) error {
 		if !ok {
 			return ErrNegotiation
 		}
+		var purge, same bool
 		for _, flag := range flags {
-			switch flag {
-			case 'P':
-				// A purge needs new credentials from the embedding application.
-				return ErrAuth
-			case 'N':
+			switch {
+			case flag == 'P' && !purge:
+				purge = true
+			case flag == 'N' && !same:
+				same = true
 			default:
 				return ErrNegotiation
 			}
 		}
-		if bytes.ContainsRune(flags, 'N') {
+		if purge {
+			// A purge needs new credentials from the embedding application.
+			return ErrAuth
+		}
+		if same {
 			return ErrPeerRestartSame
 		}
 		return ErrPeerRestart

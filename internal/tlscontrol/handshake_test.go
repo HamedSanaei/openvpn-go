@@ -1,6 +1,7 @@
 package tlscontrol
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hamedsanaei/openvpn-go/internal/testkit"
+	"github.com/hamedsanaei/openvpn-go/tunnel"
 )
 
 func TestVerifiedTLSIdentityAndValidity(t *testing.T) {
@@ -167,5 +169,27 @@ func TestLegacyLZOStubPush(t *testing.T) {
 				t.Fatalf("unexpected compression framing result: %t, %v", ok, err)
 			}
 		})
+	}
+}
+
+func TestPeerInfoCapabilities(t *testing.T) {
+	for _, tc := range []struct {
+		opts Options
+		want string
+	}{
+		{Options{}, "10"},
+		{Options{AdvertiseDNS: true}, "74"},
+		{Options{AdvertiseDNS: true, PushPolicy: tunnel.PushPolicy{DNS: tunnel.PushReject}}, "10"},
+		{Options{AdvertiseDNS: true, PushPolicy: tunnel.PushPolicy{DNS: tunnel.PushIgnore}}, "10"},
+		{Options{AdvertiseDNS: true, FixedAEAD: "AES-256-GCM"}, "2"},
+		{Options{Interaction: Interaction{AllowPassivePending: true}, ExitNotify: true}, "154"},
+	} {
+		var wire bytes.Buffer
+		if err := writeKeyMethodOptions(&wire, "udp", "", []string{"AES-256-GCM"}, Credentials{}, tc.opts, nil); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Contains(wire.Bytes(), []byte("IV_PROTO="+tc.want+"\n")) {
+			t.Fatalf("expected IV_PROTO=%s", tc.want)
+		}
 	}
 }

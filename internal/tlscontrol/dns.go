@@ -47,6 +47,9 @@ func appendDomains(dst []string, values []string) ([]string, error) {
 }
 
 func (p *pushState) dhcpOption(args []string) error {
+	if len(args) == 1 && args[0] == "DISABLE-NBT" {
+		return nil
+	}
 	if len(args) < 2 {
 		return ErrNegotiation
 	}
@@ -75,6 +78,21 @@ func (p *pushState) dhcpOption(args []string) error {
 		var err error
 		p.dns.SearchDomains, err = appendDomains(p.dns.SearchDomains, args[1:])
 		return err
+	case "WINS", "NBDD", "NTP":
+		addr, err := netip.ParseAddr(args[1])
+		if len(args) != 2 || err != nil || !vpnAddress(addr, true) {
+			return ErrNegotiation
+		}
+	case "NBT":
+		if len(args) != 2 || args[1] != "1" && args[1] != "2" && args[1] != "4" && args[1] != "8" {
+			return ErrNegotiation
+		}
+	case "NBT-SCOPE":
+		if _, ok := dnsDomain(args[1]); len(args) != 2 || !ok {
+			return ErrNegotiation
+		}
+	default:
+		return ErrNegotiation
 	}
 	return nil
 }

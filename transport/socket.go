@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 )
@@ -31,7 +32,13 @@ func (d SocketDialer) WithDialContext(dial func(context.Context, string, string)
 
 type socketDialer struct {
 	SocketDialer
-	dial func(context.Context, string, string) (net.Conn, error)
+	dial      func(context.Context, string, string) (net.Conn, error)
+	localAddr net.Addr
+}
+
+// WithLocalAddr uses a native socket bound to the supplied source address.
+func (d SocketDialer) WithLocalAddr(addr net.Addr) Dialer {
+	return socketDialer{SocketDialer: d, localAddr: addr}
 }
 
 func (d socketDialer) DialPacket(ctx context.Context, network, address string) (PacketConn, error) {
@@ -51,7 +58,7 @@ func (d socketDialer) DialPacket(ctx context.Context, network, address string) (
 
 	dial := d.dial
 	if dial == nil {
-		dial = (&net.Dialer{}).DialContext
+		dial = (&net.Dialer{LocalAddr: d.localAddr}).DialContext
 	}
 	conn, err := dial(ctx, network, address)
 	if ctx.Err() != nil {
@@ -67,12 +74,19 @@ func (d socketDialer) DialPacket(ctx context.Context, network, address string) (
 		return nil, ErrInvalidConnection
 	}
 
-	switch network {
-	case "udp", "udp4", "udp6":
-		return &udpConn{socket: newSocket(conn, limit)}, nil
-	default:
-		return &tcpConn{socket: newSocket(conn, limit)}, nil
+	socket := newSocket(conn, limit)
+	if d.dial == nil {
+		switch addr := conn.RemoteAddr().(type) {
+		case *net.TCPAddr:
+			socket.peerIP = addr.AddrPort().Addr().Unmap()
+		case *net.UDPAddr:
+			socket.peerIP = addr.AddrPort().Addr().Unmap()
+		}
 	}
+	if network == "udp" || network == "udp4" || network == "udp6" {
+		return &udpConn{socket: socket}, nil
+	}
+	return &tcpConn{socket: socket}, nil
 }
 
 type socket struct {
@@ -83,7 +97,11 @@ type socket struct {
 	closed    chan struct{}
 	closeOnce sync.Once
 	closeErr  error
+	peerIP    netip.Addr
 }
+
+// PeerIP reports the VPN peer for native sockets. It is unset for custom streams.
+func (s *socket) PeerIP() netip.Addr { return s.peerIP }
 
 func newSocket(conn net.Conn, limit int) *socket {
 	return &socket{

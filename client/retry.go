@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"math/rand/v2"
 	"time"
 
@@ -49,7 +50,7 @@ func (c *Client) establish(ctx context.Context, start int, recovery bool, lost E
 	backoff := failover.NewBackoff(policy.InitialBackoff, policy.MaxBackoff)
 	position := start
 	remaining := policy.MaxAttempts
-	var visits [MaxEndpoints]int
+	var cursors [MaxEndpoints]candidateCursor
 	for {
 		index := c.order[position]
 		var delay time.Duration
@@ -78,8 +79,7 @@ func (c *Client) establish(ctx context.Context, start int, recovery bool, lost E
 		c.mu.Unlock()
 
 		progress := observability.Progress{Phase: observability.PhaseTransport, Started: started}
-		link, stage, err := c.dial(observability.WithProgress(ctx, &progress), index, visits[index])
-		visits[index]++
+		link, stage, err := c.dial(observability.WithProgress(ctx, &progress), index, &cursors[index])
 		c.mu.Lock()
 		stopped := c.operationError(ctx, "connect")
 		report := AttemptReport{Sequence: c.stats.Attempts, EndpointIndex: index, Stage: stage,
@@ -124,7 +124,9 @@ func (c *Client) establish(ctx context.Context, start int, recovery bool, lost E
 		if remaining == 0 || !canRetry(lost) {
 			return nil, err
 		}
-		position = (position + 1) % len(c.order)
+		if _, same := errors.AsType[restartSameError](err); !same {
+			position = (position + 1) % len(c.order)
+		}
 	}
 }
 

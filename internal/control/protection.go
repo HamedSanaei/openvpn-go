@@ -10,11 +10,11 @@ import (
 	"crypto/sha512"
 	"encoding/binary"
 	"encoding/hex"
-	"encoding/pem"
 	"errors"
 	"hash"
 	"math"
 
+	"github.com/hamedsanaei/openvpn-go/internal/pemutil"
 	"github.com/hamedsanaei/openvpn-go/internal/wire"
 )
 
@@ -109,13 +109,15 @@ func NewProtection(mode Mode, direction Direction, digest string, encoded []byte
 
 	var raw []byte
 	if mode == TLSCryptV2 {
-		block, trailing := pem.Decode(bytes.TrimSpace(encoded))
-		if block == nil || block.Type != "OpenVPN tls-crypt-v2 client key" ||
-			len(block.Headers) != 0 || len(bytes.TrimSpace(trailing)) != 0 {
+		block, trailing := pemutil.Next(encoded)
+		if block == nil {
 			return Protection{}, ErrProtection
 		}
 		raw = block.Bytes
 		defer clear(raw)
+		if block.Type != "OpenVPN tls-crypt-v2 client key" || len(bytes.TrimSpace(trailing)) != 0 {
+			return Protection{}, ErrProtection
+		}
 		size := len(raw) - staticSize
 		if size < sha256.Size+staticSize+2 || size > maxWrappedSize ||
 			int(binary.BigEndian.Uint16(raw[len(raw)-2:])) != size {
@@ -153,12 +155,21 @@ func parseStaticKey(encoded []byte) ([]byte, error) {
 		encoded = rest
 		line = bytes.TrimSpace(line)
 		if !started {
-			started = bytes.Equal(line, []byte("-----BEGIN OpenVPN Static key V1-----"))
+			if bytes.Equal(line, []byte("-----BEGIN OpenVPN Static key V1-----")) {
+				started = true
+			} else if !staticKeyComment(line) {
+				return nil, ErrProtection
+			}
 			continue
 		}
 		if bytes.Equal(line, []byte("-----END OpenVPN Static key V1-----")) {
 			if n != len(hexBytes) {
 				return nil, ErrProtection
+			}
+			for tail := range bytes.SplitSeq(encoded, []byte{'\n'}) {
+				if !staticKeyComment(bytes.TrimSpace(tail)) {
+					return nil, ErrProtection
+				}
 			}
 			raw := make([]byte, staticSize)
 			if _, err := hex.Decode(raw, hexBytes[:]); err != nil {
@@ -173,6 +184,10 @@ func parseStaticKey(encoded []byte) ([]byte, error) {
 		n += copy(hexBytes[n:], line)
 	}
 	return nil, ErrProtection
+}
+
+func staticKeyComment(line []byte) bool {
+	return len(line) == 0 || line[0] == '#' || line[0] == ';'
 }
 
 func (p Protection) newKey(raw []byte) key {

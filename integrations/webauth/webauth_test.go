@@ -52,3 +52,35 @@ func TestBrowserCallback(t *testing.T) {
 		t.Fatalf("canceled flow reached browser: %v", err)
 	}
 }
+
+func TestEquivalentHTTPSAuthorities(t *testing.T) {
+	for _, tt := range []struct {
+		origin, address, callback string
+	}{
+		{"https://login.example.test", "https://LOGIN.example.test:443/start", "https://app.example.test:443/sign-in"},
+		{"https://login.example.test:443", "https://login.example.test/start", "https://app.example.test/sign-in"},
+		{"https://[2001:db8::1]:443", "https://[2001:db8::1]/start", "https://app.example.test/sign-in"},
+		{"https://login.example.test:8443", "https://login.example.test:8443/start", "https://app.example.test/sign-in"},
+	} {
+		opened := 0
+		handler, err := webauth.New(tt.origin, tt.callback, time.Second, func(_ context.Context, _, state string) (string, error) {
+			opened++
+			return "https://app.example.test/sign-in?state=" + state, nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := handler(t.Context(), tt.address); err != nil {
+			t.Fatalf("equivalent authority rejected: %v", err)
+		}
+		for _, input := range []string{"https://login.example.test:444/start", "https://login.example.test:65536/start",
+			"https://login.example.test:/start", "https://other.example.test/start", "http://login.example.test/start"} {
+			if err := handler(t.Context(), input); !errors.Is(err, webauth.ErrWebAuth) {
+				t.Fatal("invalid login origin accepted")
+			}
+		}
+		if opened != 1 {
+			t.Fatal("invalid authority reached the browser")
+		}
+	}
+}

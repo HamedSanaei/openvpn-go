@@ -39,7 +39,6 @@ func (p *frameProtection) mayAccept(counter, timestamp uint32) bool {
 		return true
 	}
 	p.mu.Lock()
-	window := p.wrap
-	p.mu.Unlock()
-	return window.accept(counter, timestamp, time.Now())
+	defer p.mu.Unlock()
+	return p.wrap.admissible(counter, timestamp, time.Now())
 }

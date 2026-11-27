@@ -33,9 +33,11 @@ const (
 )
 
 var (
-	ErrConfig      = errors.New("invalid userspace network configuration")
-	ErrPacket      = errors.New("invalid userspace IP packet")
-	ErrSocketLimit = errors.New("userspace socket limit reached")
+	ErrConfig = errors.New("invalid userspace network configuration")
+	ErrPacket = errors.New("invalid userspace IP packet")
+	// ErrMTUExceeded reports a packet above the adapter's configured MTU.
+	ErrMTUExceeded error = mtuError{}
+	ErrSocketLimit       = errors.New("userspace socket limit reached")
 )
 
 // Config supplies assigned addresses and numeric DNS servers. Configure at
@@ -162,6 +164,12 @@ func (a *Adapter) ReadPacket(ctx context.Context, dst []byte) (int, error) {
 	return n, nil
 }
 
+type mtuError struct{}
+
+func (mtuError) Error() string     { return "packet exceeds the userspace adapter MTU" }
+func (mtuError) MTUExceeded() bool { return true }
+func (mtuError) Unwrap() error     { return ErrPacket }
+
 func (a *Adapter) WritePacket(ctx context.Context, packet []byte) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -171,7 +179,10 @@ func (a *Adapter) WritePacket(ctx context.Context, packet []byte) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if len(packet) < 20 || len(packet) > a.mtu {
+	if len(packet) > a.mtu {
+		return ErrMTUExceeded
+	}
+	if len(packet) < 20 {
 		return ErrPacket
 	}
 	var proto tcpip.NetworkProtocolNumber

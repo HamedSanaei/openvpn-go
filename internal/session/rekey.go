@@ -134,6 +134,9 @@ func (s *Session) run(active *tlscontrol.Link) {
 			s.mu.Lock()
 			err := s.channel.Promote(result.id, result.keys, time.Now().Add(rekeyOverlap))
 			if err == nil {
+				if s.fragments != nil {
+					s.fragments.retire(s.channel)
+				}
 				s.info = result.link.Info
 				s.link = result.link
 				s.keyID = result.id
@@ -179,6 +182,7 @@ func (s *Session) maintain(now time.Time) error {
 	s.channel.Retire(now)
 	if s.fragments != nil {
 		s.fragments.expire(now)
+		s.fragments.retire(s.channel)
 	}
 	idle := now.Sub(s.lastRecv)
 	silent := now.Sub(s.lastSent)

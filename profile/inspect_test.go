@@ -48,3 +48,22 @@ func TestInspectDisabledRegistry(t *testing.T) {
 		}
 	}
 }
+
+func TestInspectRecoversAfterMissingBlockRemote(t *testing.T) {
+	source := "<connection>\nproto udp\n</connection>\nclient\ndev tun\nremote localhost\n"
+	report, err := Inspect(strings.NewReader(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var missing, recognized bool
+	for _, entry := range report.Entries {
+		missing = missing || entry.Line == 3 && entry.Directive == "connection" && entry.Code == CodeRequired
+		recognized = recognized || entry.Line == 4 && entry.Directive == "client" && entry.Capability == Supported
+	}
+	if !missing || !recognized {
+		t.Fatalf("unexpected inspection recovery: %+v", report.Entries)
+	}
+	if _, _, err := Parse(strings.NewReader(source), Options{}); err == nil {
+		t.Fatal("strict import accepted the incomplete block")
+	}
+}

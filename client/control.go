@@ -5,8 +5,10 @@ import (
 	"crypto"
 	"crypto/fips140"
 	"crypto/tls"
+	"errors"
 	"net/netip"
 	"strings"
+	"time"
 
 	"github.com/hamedsanaei/openvpn-go/internal/control"
 	"github.com/hamedsanaei/openvpn-go/internal/crypt"
@@ -64,6 +66,12 @@ type Authentication struct {
 	Credentials func(context.Context) (Credentials, error)
 	Challenge   func(context.Context, Challenge) (string, error)
 	WebAuth     func(context.Context, string) error
+	// AllowPassivePending accepts a deferred server decision without a local callback.
+	AllowPassivePending bool
+	// PendingTimeout permits verified AUTH_PENDING to extend setup by at
+	// most this duration, up to five minutes and the caller's deadline.
+	// Zero keeps the existing handshake deadline.
+	PendingTimeout time.Duration
 }
 
 // ControlMode selects the optional outer protection of the TLS control channel.
@@ -155,7 +163,11 @@ func prepareHandshakes(cfg Config) ([]handshakeFunc, error) {
 		return nil, configError("auth digest")
 	}
 	var user tlscontrol.Credentials
-	auth := tlscontrol.Interaction{Challenge: cfg.Authentication.Challenge, WebAuth: cfg.Authentication.WebAuth}
+	auth := tlscontrol.Interaction{Challenge: cfg.Authentication.Challenge, WebAuth: cfg.Authentication.WebAuth,
+		AllowPassivePending: cfg.Authentication.AllowPassivePending, PendingTimeout: cfg.Authentication.PendingTimeout}
+	if auth.PendingTimeout < 0 || auth.PendingTimeout > tlscontrol.MaxPendingTimeout {
+		return nil, configError("pending authentication timeout")
+	}
 	if provider := cfg.Authentication.Credentials; provider != nil {
 		if cfg.Credentials != nil {
 			return nil, configError("credentials")
@@ -248,6 +260,9 @@ func prepareHandshakes(cfg Config) ([]handshakeFunc, error) {
 		if settings == nil {
 			continue
 		}
+		if _, err := protection.ControlChunkSize(cfg.MaxPacketSize); err != nil {
+			return nil, configError("control frame size")
+		}
 		peer := tlscontrol.PeerConfigWithTrust(settings, endpoint.ServerName, string(endpoint.VerifyX509Name.Mode),
 			endpoint.VerifyX509Name.Value, cfg.TLS.RequireServerUsage, trust)
 		opts := limits
@@ -263,7 +278,7 @@ func prepareHandshakes(cfg Config) ([]handshakeFunc, error) {
 		opts.TLS = tlscontrol.Options{TLS: peer, Digest: wireDigest, Ciphers: offer, PushPolicy: cfg.PushPolicy,
 			Interaction: auth, ExitNotify: (cfg.ExplicitExitNotify || endpoint.ExplicitExitNotify) && strings.HasPrefix(endpoint.Network, "udp"),
 			TunnelMTU: opts.TunnelMTU, FixedAEAD: endpoint.FixedAEAD,
-			AllowLZOStub: endpoint.ExpressVPNFragmentSize != 0}
+			AllowLZOStub: endpoint.ExpressVPNFragmentSize != 0, AdvertiseDNS: cfg.AdvertiseDNS}
 		opts.Protection = protection
 		opts.FragmentSize = endpoint.ExpressVPNFragmentSize
 		handshakes[i] = openHandshake(opts, user)
@@ -301,5 +316,9 @@ func openHandshake(config session.Options, user tlscontrol.Credentials) handshak
 }
 
 func setControlError(err error) error {
-	return &Error{Op: "handshake", Code: packetErrorCode(err, CodeProtocol)}
+	failure := &Error{Op: "handshake", Code: packetErrorCode(err, CodeProtocol)}
+	if errors.Is(err, tlscontrol.ErrPeerRestartSame) {
+		return restartSameError{failure}
+	}
+	return failure
 }

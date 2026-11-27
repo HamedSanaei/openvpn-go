@@ -7,10 +7,12 @@ import (
 	"net/netip"
 	"slices"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/hamedsanaei/openvpn-go/internal/testkit"
 	"github.com/hamedsanaei/openvpn-go/transport"
+	"github.com/hamedsanaei/openvpn-go/tunnel"
 )
 
 type lookupFunc func(context.Context, string, string) ([]netip.Addr, error)
@@ -55,8 +57,9 @@ func TestEndpointResolverAndIdentity(t *testing.T) {
 	}
 	defer c.Close()
 	check := c.config.Endpoints[0]
-	for visit := range 2 {
-		if _, _, err := c.connectSocket(t.Context(), check, visit); err != nil {
+	var cursor candidateCursor
+	for range 2 {
+		if _, _, err := c.connectSocket(t.Context(), check, &cursor); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -89,7 +92,7 @@ func TestEndpointLocalBindAndCanceledLookup(t *testing.T) {
 	defer c.Close()
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
-	conn, _, err := c.connectSocket(ctx, c.config.Endpoints[0], 0)
+	conn, _, err := c.connectSocket(ctx, c.config.Endpoints[0], &candidateCursor{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,4 +122,71 @@ func TestEndpointLocalBindAndCanceledLookup(t *testing.T) {
 	if _, err := other.resolve(short, other.config.Endpoints[0]); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("resolver failure = %v", err)
 	}
+}
+
+func TestNativeHostnameSocketReportsActualIPv6(t *testing.T) {
+	ln, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skip("IPv6 loopback unavailable")
+	}
+	defer ln.Close()
+	port := uint16(ln.Addr().(*net.TCPAddr).Port)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	ep := Endpoint{Host: "localhost", Port: port, Network: "tcp"}
+	cfg, err := New(Config{Endpoints: []Endpoint{ep}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, network, err := cfg.connectSocket(ctx, ep, &candidateCursor{})
+	if err != nil {
+		t.Skip("local resolver did not provide the IPv6 loopback address")
+	}
+	defer conn.Close()
+	if network != "tcp6" {
+		t.Fatalf("wrong OpenVPN network for connected IPv6 socket: %s", network)
+	}
+}
+
+func TestTCPHandshakeRetryRotatesResolvedCandidate(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		endpoint := Endpoint{Network: "tcp4", Host: "vpn.example.test"}
+		var dialed []string
+		c, err := New(Config{Endpoints: []Endpoint{endpoint}, Retry: RetryPolicy{MaxAttempts: 2},
+			Resolver: lookupFunc(func(context.Context, string, string) ([]netip.Addr, error) {
+				return []netip.Addr{
+					netip.MustParseAddr("192.0.2.1"),
+					netip.MustParseAddr("192.0.2.2"),
+					netip.MustParseAddr("192.0.2.3"),
+				}, nil
+			}),
+			Dialer: testkit.DialerFunc(func(_ context.Context, _, addr string) (transport.PacketConn, error) {
+				dialed = append(dialed, addr)
+				if addr == "192.0.2.1:1194" {
+					return nil, errors.New("synthetic socket failure")
+				}
+				conn, _ := testkit.PacketPipe(1, 64)
+				return conn, nil
+			}),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		c.handshakes[0] = func(ctx context.Context, ep Endpoint, conn transport.PacketConn) (tunnel.PacketConn, error) {
+			if ep.ServerName != endpoint.Host || ep.Host != endpoint.Host {
+				t.Fatal("the retry changed the TLS identity")
+			}
+			if len(dialed) == 2 {
+				return nil, context.DeadlineExceeded
+			}
+			return acceptTestSession(ctx, ep, conn)
+		}
+		if err := c.Connect(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(dialed, []string{"192.0.2.1:1194", "192.0.2.2:1194", "192.0.2.3:1194"}) {
+			t.Fatalf("unexpected retry order: %v", dialed)
+		}
+	})
 }
