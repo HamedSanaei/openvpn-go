@@ -132,6 +132,35 @@ func TestTCPReadCancellationAndDeadlineReset(t *testing.T) {
 	waitError(t, done, nil)
 }
 
+func TestTCPCancelLeavesWriteAndNextReadUsable(t *testing.T) {
+	local, peer := newPipe(t)
+	observed := &observedConn{Conn: local, reading: make(chan struct{}), writing: make(chan struct{})}
+	conn := &tcpConn{socket: newSocket(observed, 8)}
+	remote := &tcpConn{socket: newSocket(peer, 8)}
+	ctx, stop := context.WithTimeout(t.Context(), 3*time.Second)
+	defer stop()
+	readCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	readDone, writeDone := make(chan error, 1), make(chan error, 1)
+	go func() {
+		_, err := conn.ReadPacket(readCtx, make([]byte, 8))
+		readDone <- err
+	}()
+	select {
+	case <-observed.reading:
+	case <-ctx.Done():
+		t.Fatal("cancellable read did not enter the transport")
+	}
+	go func() { writeDone <- conn.WritePacket(ctx, []byte{1, 2}) }()
+	cancel()
+	assertPacket(t, ctx, remote, []byte{1, 2})
+	waitError(t, readDone, context.Canceled)
+	waitError(t, writeDone, nil)
+	go func() { writeDone <- remote.WritePacket(ctx, []byte{3, 4}) }()
+	assertPacket(t, ctx, conn, []byte{3, 4})
+	waitError(t, writeDone, nil)
+}
+
 func TestTCPPartialFrameCancellationCloses(t *testing.T) {
 	local, peer := newPipe(t)
 	conn := &tcpConn{socket: newSocket(local, 8)}

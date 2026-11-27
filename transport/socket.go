@@ -105,8 +105,8 @@ func (d socketDialer) DialPacket(ctx context.Context, network, address string) (
 type socket struct {
 	conn      net.Conn
 	limit     int
-	readGate  chan struct{}
-	writeGate chan struct{}
+	read      socketDirection
+	write     socketDirection
 	closed    chan struct{}
 	closeOnce sync.Once
 	closeErr  error
@@ -121,11 +121,11 @@ func (s *socket) PacketSizeLimit() int { return s.limit }
 
 func newSocket(conn net.Conn, limit int) *socket {
 	return &socket{
-		conn:      conn,
-		limit:     limit,
-		readGate:  make(chan struct{}, 1),
-		writeGate: make(chan struct{}, 1),
-		closed:    make(chan struct{}),
+		conn:   conn,
+		limit:  limit,
+		read:   newSocketDirection(conn.SetReadDeadline),
+		write:  newSocketDirection(conn.SetWriteDeadline),
+		closed: make(chan struct{}),
 	}
 }
 
@@ -137,41 +137,59 @@ func (s *socket) Close() error {
 	return s.closeErr
 }
 
-func (s *socket) start(ctx context.Context, gate chan struct{}, setDeadline func(time.Time) error) (func(), error) {
+type socketDirection struct {
+	gate        chan struct{}
+	interrupted chan struct{}
+	setDeadline func(time.Time) error
+}
+
+func newSocketDirection(setDeadline func(time.Time) error) socketDirection {
+	return socketDirection{
+		gate: make(chan struct{}, 1), interrupted: make(chan struct{}, 1), setDeadline: setDeadline,
+	}
+}
+
+type socketOperation struct {
+	socket *socket
+	side   *socketDirection
+	stop   func() bool
+}
+
+func (s *socket) start(ctx context.Context, side *socketDirection) (socketOperation, error) {
 	select {
-	case gate <- struct{}{}:
+	case side.gate <- struct{}{}:
 	case <-s.closed:
-		return nil, net.ErrClosed
+		return socketOperation{}, net.ErrClosed
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return socketOperation{}, ctx.Err()
 	}
 
 	if err := s.stateError(ctx); err != nil {
-		<-gate
-		return nil, err
+		<-side.gate
+		return socketOperation{}, err
 	}
-	if ctx.Done() == nil {
-		return func() { <-gate }, nil
-	}
-
-	interrupted := make(chan struct{})
-	stop := context.AfterFunc(ctx, func() {
-		defer close(interrupted)
-		if err := setDeadline(time.Now()); err != nil {
-			s.Close()
-		}
-	})
-	return func() {
-		if !stop() {
-			// Wait for the callback before resetting the deadline. The next
-			// operation on this side of the socket starts with a clean slate.
-			<-interrupted
-			if err := setDeadline(time.Time{}); err != nil {
+	op := socketOperation{socket: s, side: side}
+	if ctx.Done() != nil {
+		op.stop = context.AfterFunc(ctx, func() {
+			if err := side.setDeadline(time.Now()); err != nil {
 				s.Close()
 			}
+			side.interrupted <- struct{}{}
+		})
+	}
+	return op, nil
+}
+
+func (op socketOperation) finish() {
+	if op.stop != nil && !op.stop() {
+		// The direction remains owned until its own callback completes and
+		// its deadline is reset, so the ticket cannot reach the next call.
+		<-op.side.interrupted
+		if err := op.side.setDeadline(time.Time{}); err != nil {
+			op.socket.Close()
 		}
-		<-gate
-	}, nil
+	}
+	<-op.side.gate
 }
 
 func (s *socket) stateError(ctx context.Context) error {
