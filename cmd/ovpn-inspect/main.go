@@ -20,14 +20,15 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	authPath := flags.String("auth-file", "", "two-line OpenVPN credential file")
 	protonName := flags.String("protonvpn-server-name", "", "trusted exact Proton VPN certificate name")
 	protonVerifyIP := flags.Bool("protonvpn-verify-ip", false, "verify each Proton VPN numeric remote against its certificate IP SAN")
+	express := flags.Bool("expressvpn", false, "import a trusted ExpressVPN manual profile")
 	passwordOnly := flags.Bool("allow-password-only", false, "allow verified profiles without a client certificate")
 	err := flags.Parse(args)
 	if err != nil || flags.NArg() != 1 {
 		if err == flag.ErrHelp {
-			fmt.Fprintln(stdout, "Usage: ovpn-inspect [-capabilities] [-root directory] [-allow-password-only] [-auth-file path] [-protonvpn-server-name name | -protonvpn-verify-ip] profile.ovpn|-")
+			fmt.Fprintln(stdout, "Usage: ovpn-inspect [-capabilities] [-root directory] [-allow-password-only] [-auth-file path] [-expressvpn | -protonvpn-server-name name | -protonvpn-verify-ip] profile.ovpn|-")
 			return 0
 		}
-		fmt.Fprintln(stderr, "Usage: ovpn-inspect [-capabilities] [-root directory] [-allow-password-only] [-auth-file path] [-protonvpn-server-name name | -protonvpn-verify-ip] profile.ovpn|-")
+		fmt.Fprintln(stderr, "Usage: ovpn-inspect [-capabilities] [-root directory] [-allow-password-only] [-auth-file path] [-expressvpn | -protonvpn-server-name name | -protonvpn-verify-ip] profile.ovpn|-")
 		return 2
 	}
 
@@ -41,9 +42,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		defer file.Close()
 		r = file
 	}
-	opts := profile.Options{AllowPasswordOnly: *passwordOnly, ProtonVPNServerName: *protonName, ProtonVPNVerifyIP: *protonVerifyIP}
+	opts := profile.Options{AllowPasswordOnly: *passwordOnly, ProtonVPNServerName: *protonName, ProtonVPNVerifyIP: *protonVerifyIP, ExpressVPNManual: *express}
 	if *protonVerifyIP && *protonName != "" {
 		fmt.Fprintln(stderr, "choose one Proton VPN server identity option")
+		return 2
+	}
+	if *express && (*protonVerifyIP || *protonName != "" || *passwordOnly) {
+		fmt.Fprintln(stderr, "ExpressVPN import requires its own certificate and identity policy")
 		return 2
 	}
 	if *capabilities {

@@ -36,6 +36,8 @@ type Options struct {
 	// each numeric remote against the server certificate's IP SAN.
 	// This mode excludes ProtonVPNServerName and profile name overrides.
 	ProtonVPNVerifyIP bool
+	// ExpressVPNManual imports trusted ExpressVPN Manual Configuration exports.
+	ExpressVPNManual bool
 	// Authentication authorizes caller-managed credentials and interaction.
 	Authentication client.Authentication
 	// Identity supplies a matching key for a profile with cert and no key.
@@ -89,6 +91,7 @@ type parser struct {
 	attemptsPerRemote int
 	attemptsLocation  location
 	protonHints       map[string]location
+	express           expressOptions
 
 	defaults connection
 	remotes  []remote
@@ -217,6 +220,9 @@ func (p *parser) readDirective(line string, number int) (location, error) {
 	if !supported && p.opts.protonImportEnabled() {
 		rule, supported = protonDirectives[loc.name]
 	}
+	if !supported && p.opts.ExpressVPNManual {
+		rule, supported = expressDirectives[loc.name]
+	}
 	if !supported {
 		return loc, loc.diagnostic(CodeUnsupported)
 	}
@@ -226,6 +232,9 @@ func (p *parser) readDirective(line string, number int) (location, error) {
 	}
 	if p.block != nil && !rule.connection {
 		return loc, loc.diagnostic(CodeScope)
+	}
+	if _, express := expressDirectives[loc.name]; p.opts.ExpressVPNManual && express {
+		return loc, p.applyExpress(loc, args)
 	}
 	return loc, p.apply(loc, args)
 }
@@ -244,6 +253,9 @@ func (p *parser) finish() error {
 		return p.versionLocation.diagnostic(CodeConflict)
 	}
 	if err := p.setProtonServerIdentity(); err != nil {
+		return err
+	}
+	if err := p.finishExpress(); err != nil {
 		return err
 	}
 	if err := p.endpoints(); err != nil {

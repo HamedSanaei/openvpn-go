@@ -32,6 +32,7 @@ type Options struct {
 	RekeyInterval  time.Duration
 	HandshakeLimit time.Duration
 	TunnelMTU      int
+	FragmentSize   int
 }
 
 // Session owns one authenticated OpenVPN link. Control generations share its
@@ -50,6 +51,7 @@ type Session struct {
 	rotate    chan struct{}
 	notify    sync.Once
 	packetMTU int
+	fragments *fragmenter
 
 	mu       sync.Mutex
 	channel  *data.Channel
@@ -93,7 +95,16 @@ func Open(ctx context.Context, raw transport.PacketConn, opts Options) (*Session
 	}
 	observability.Enter(ctx, observability.PhaseDataSetup)
 	mtu := opts.MaxPacketSize - data.Overhead
-	if link.Info.Tunnel.MTU != 0 || opts.TunnelMTU != 0 {
+	var fragments *fragmenter
+	if opts.FragmentSize != 0 {
+		limit := min(opts.FragmentSize, opts.MaxPacketSize)
+		if !udp || limit < fragmentHeaderSize+data.Overhead+68+1 {
+			return nil, tlscontrol.ErrNegotiation
+		}
+		fragments = &fragmenter{chunkSize: (limit - fragmentHeaderSize - data.Overhead) &^ 3}
+		mtu = min(mtu-1, fragments.chunkSize*maxFragments-1)
+	}
+	if link.Info.Tunnel.MTU != 0 || opts.TunnelMTU != 0 || fragments != nil {
 		if opts.TunnelMTU != 0 {
 			mtu = min(mtu, opts.TunnelMTU)
 		}
@@ -125,7 +136,7 @@ func Open(ctx context.Context, raw transport.PacketConn, opts Options) (*Session
 	s := &Session{
 		opts: opts, raw: raw, mux: mux, ctx: lifetime, cancel: cancel, done: make(chan struct{}),
 		inbound: make(chan []byte, queueSize), writeGate: make(chan struct{}, 1), rotate: make(chan struct{}, 1),
-		channel: ch, link: link, packetMTU: mtu, info: link.Info, lastSent: now, lastRecv: now,
+		channel: ch, link: link, packetMTU: mtu, fragments: fragments, info: link.Info, lastSent: now, lastRecv: now,
 	}
 	mux.Expect(stream, data.NextKeyID(ch.KeyID()))
 	opened = true
@@ -239,7 +250,15 @@ func (s *Session) write(ctx context.Context, plain []byte) error {
 		s.mu.Unlock()
 		return net.ErrClosed
 	}
-	packet, err := s.channel.Seal(plain)
+	var packets [][]byte
+	var err error
+	if s.fragments != nil && !data.IsKeepalive(plain) {
+		packets, err = s.fragments.seal(s.channel, plain)
+	} else {
+		var packet []byte
+		packet, err = s.channel.Seal(plain)
+		packets = [][]byte{packet}
+	}
 	due := s.channel.RekeyDue()
 	s.mu.Unlock()
 	if due {
@@ -251,8 +270,10 @@ func (s *Session) write(ctx context.Context, plain []byte) error {
 		}
 		return err
 	}
-	if err := s.mux.Write(ctx, packet); err != nil {
-		return err
+	for _, packet := range packets {
+		if err := s.mux.Write(ctx, packet); err != nil {
+			return err
+		}
 	}
 	s.mu.Lock()
 	s.lastSent = time.Now()
@@ -273,7 +294,12 @@ func (s *Session) receive(wrapped []byte) {
 	packet, err := s.channel.Open(wrapped, now)
 	keepalive, validIP := false, false
 	if err == nil {
-		keepalive, validIP = data.IsKeepalive(packet), len(packet) <= s.packetMTU && data.IsIP(packet)
+		keepalive = data.IsKeepalive(packet)
+		if !keepalive && s.fragments != nil {
+			packet = s.fragments.open(wrapped, packet, s.packetMTU, now)
+			keepalive = data.IsKeepalive(packet)
+		}
+		validIP = len(packet) <= s.packetMTU && data.IsIP(packet)
 		if keepalive || validIP {
 			s.lastRecv = now
 		}

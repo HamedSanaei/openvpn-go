@@ -22,7 +22,7 @@ func ValidNamePolicy(mode, value string) bool {
 	switch mode {
 	case "":
 		return value == ""
-	case "name", "name-prefix":
+	case "name", "name-prefix", "common-name-prefix":
 		return len(value) <= 1024 && validNameText(value)
 	case "subject":
 		_, ok := parseSubject(value)
@@ -32,8 +32,8 @@ func ValidNamePolicy(mode, value string) bool {
 	}
 }
 
-// PeerConfig binds verification to an endpoint. Exact X.509 identities
-// replace Go's SAN check and explicitly perform the complete chain check.
+// PeerConfig binds verification to an endpoint. Explicit subject identities
+// perform the complete chain check and verify the selected certificate name.
 func PeerConfig(base *tls.Config, serverName, mode, value string, requireUsage bool) *tls.Config {
 	return PeerConfigWithTrust(base, serverName, mode, value, requireUsage, ServerTrust{})
 }
@@ -44,8 +44,8 @@ func PeerConfigWithTrust(base *tls.Config, serverName, mode, value string, requi
 	if mode == "" && !requireUsage && len(trust.pins) == 0 && len(trust.crls) == 0 {
 		return cfg
 	}
-	exact := mode == "name" || mode == "subject"
-	cfg.InsecureSkipVerify = exact // VerifyConnection performs full chain verification for exact policies.
+	explicitName := mode == "name" || mode == "subject" || mode == "common-name-prefix"
+	cfg.InsecureSkipVerify = explicitName // VerifyConnection performs full verification against the selected identity.
 	subject, _ := parseSubject(value)
 	cfg.VerifyConnection = func(state tls.ConnectionState) error {
 		if len(state.PeerCertificates) == 0 {
@@ -56,7 +56,7 @@ func PeerConfigWithTrust(base *tls.Config, serverName, mode, value string, requi
 		if base.Time != nil {
 			now = base.Time()
 		}
-		if exact {
+		if explicitName {
 			intermediates := x509.NewCertPool()
 			for _, cert := range state.PeerCertificates[1:] {
 				intermediates.AddCert(cert)
@@ -69,7 +69,10 @@ func PeerConfigWithTrust(base *tls.Config, serverName, mode, value string, requi
 				return ErrCertificate
 			}
 		}
-		if requireUsage && !serverUsage(leaf) {
+		if (requireUsage || mode == "common-name-prefix") && !serverUsage(leaf) {
+			return ErrCertificate
+		}
+		if mode == "common-name-prefix" && leaf.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
 			return ErrCertificate
 		}
 		if !matchName(leaf, mode, value, subject) || !trust.verify(leaf, chains, now) {
@@ -133,7 +136,7 @@ func matchName(leaf *x509.Certificate, mode, expected string, subject []subjectA
 	if !found {
 		return false
 	}
-	if mode == "name-prefix" {
+	if mode == "name-prefix" || mode == "common-name-prefix" {
 		return strings.HasPrefix(commonName, expected)
 	}
 	return commonName == expected

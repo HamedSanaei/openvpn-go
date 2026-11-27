@@ -73,7 +73,8 @@ var unsupported = map[string]bool{
 func knownLocation(name string, line int) location {
 	_, standard := directives[name]
 	_, proton := protonDirectives[name]
-	if !standard && !proton && !unsupported[name] {
+	_, express := expressDirectives[name]
+	if !standard && !proton && !express && !unsupported[name] {
 		name = ""
 	}
 	return location{line: line, name: name}
@@ -101,7 +102,7 @@ func (p *parser) apply(loc location, args []string) error {
 	case "setenv", "mssfix", "script-security", "up", "down", "block-outside-dns":
 		return p.applyProtonHint(loc, args)
 	case "compat-fixed-aead":
-		if p.opts.protonImportEnabled() {
+		if p.opts.protonImportEnabled() || p.opts.ExpressVPNManual {
 			return loc.diagnostic(CodeUnsupported)
 		}
 		return p.applyConnection(loc, args)
@@ -166,7 +167,7 @@ func (p *parser) apply(loc location, args []string) error {
 		if len(args) == 2 {
 			name.Mode = client.X509NameMode(args[1])
 		}
-		if name.Mode == "" || name.Validate() != nil {
+		if name.Mode == "" || name.Mode == client.X509CommonNamePrefix || name.Validate() != nil {
 			return loc.diagnostic(CodeValue)
 		}
 		p.identity = name

@@ -35,6 +35,8 @@ type pushState struct {
 	exporter        bool
 	allowExit       bool
 	haveFlags       bool
+	allowLZOStub    bool
+	haveLZOStub     bool
 	continued       bool
 	parts           int
 	total           int
@@ -155,6 +157,11 @@ func (p *pushState) option(name string, arg []byte) error {
 		if _, err := strconv.ParseUint(string(arg), 10, 31); err != nil {
 			return ErrNegotiation
 		}
+	case "comp-lzo":
+		if !p.allowLZOStub || p.haveLZOStub || string(arg) != "no" {
+			return ErrNegotiation
+		}
+		p.haveLZOStub = true
 	case "auth-token":
 		if len(p.token) != 0 || len(arg) == 0 || !validKeyString(string(arg)) {
 			return ErrNegotiation

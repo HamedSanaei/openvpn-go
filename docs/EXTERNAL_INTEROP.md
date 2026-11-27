@@ -23,7 +23,8 @@ go test -v -count=1 -timeout 1m -run '^TestExternalProfile$' ./tests/interop
 `OVPN_EXTERNAL_ROOT` authorizes profile-relative material references.
 `OVPN_EXTERNAL_AUTH_FILE` supplies the two-line username and password for
 a bare `auth-user-pass` directive. Omit whichever variables the profile
-doesn't need. Set `OVPN_EXTERNAL_PASSWORD_ONLY=1` only for a test profile
+doesn't need. Set `OVPN_EXTERNAL_EXPRESSVPN=1` for trusted ExpressVPN
+Manual Configuration profiles. Set `OVPN_EXTERNAL_PASSWORD_ONLY=1` only for a test profile
 designed to use verified TLS and password authentication without a client
 certificate. The default client policy still requires verified server
 identity, TLS 1.2 or later, negotiated AEAD, TLS exporter key derivation
@@ -33,8 +34,8 @@ The probe selects the first declared remote. Use `OVPN_EXTERNAL_REMOTE`
 to select another using its one-based profile index. Repeat per transport
 and profile. The default expected outcome is `connected`, which verifies
 negotiation. To verify data and reconnect, set `OVPN_EXTERNAL_ECHO` to an
-IPv4 ICMP echo endpoint owned by the test lab and set
-`OVPN_EXTERNAL_EXPECT=verified`. The probe sends only a synthetic nonce
+IPv4 ICMP echo endpoint owned by the test lab or to `gateway` to use the
+authenticated IPv4 gateway of each session. Set `OVPN_EXTERNAL_EXPECT=verified`. The probe sends only a synthetic nonce
 through the packet API, closes the first peer transport and checks another
 round trip through the new session. It installs no host routes or DNS
 settings. To reproduce a known rejection, set the expected outcome to its
@@ -179,11 +180,33 @@ profiles. [Access Server image](https://hub.docker.com/r/openvpn/openvpn-as)
 |---|---|---|
 | Proton VPN | Authorized manual exports with explicitly provisioned identity | Twelve original exports verified under the opt-in import. See the [redacted results](#proton-vpn). |
 | Windscribe | Authorized manual OpenVPN configuration from the Config Generator | Pending authorized account and export |
-| ExpressVPN | OpenVPN configuration and credentials from Manual Configuration | Pending authorized account and export |
+| ExpressVPN | OpenVPN configuration and credentials from Manual Configuration | Two original UDP exports passed DNS and HTTPS. See the [redacted results](#expressvpn). |
 
 [Proton VPN manual setup](https://protonvpn.com/support/vpn-login) ·
 [Windscribe Config Generator](https://windscribe.com/getconfig/openvpn) ·
 [ExpressVPN manual setup](https://www.expressvpn.com/support/vpn-setup/manual-config-for-windows-with-openvpn/)
+
+### ExpressVPN
+
+On 2026-11-27, both authorized, unchanged UDP Manual Configuration
+exports connected with a client certificate, SHA512 `tls-auth`,
+username and password, TLS 1.3, TLS exporter derivation, AES-256-GCM
+and DATA_V2. Both peer certificates had a matching common-name prefix
+and lacked SANs. A Community 2.7.9 reference comparison showed that the
+tested peers needed the UDP fragment header with their `comp-lzo no`
+framing.
+
+The Go client passed gateway ICMP with a 1,400-byte payload, VPN DNS,
+and public HTTPS in an isolated Linux TUN namespace for each profile.
+Both exports passed gateway ICMP before and after a client-initiated
+rekey. Both also passed gateway ICMP after the probe forcibly closed the
+first transport and the client authenticated a replacement session. The
+probe uses each session's negotiated gateway.
+
+The [opt-in importer](PROFILE.md#expressvpn-manual-exports) accepts
+uncompressed frames and rejects compressed packets. The outside-facing
+documentation and regression tests use synthetic identifiers and PKI.
+[Provider setup](https://www.expressvpn.com/support/vpn-setup/manual-config-for-linux-with-openvpn/)
 
 ### Proton VPN
 

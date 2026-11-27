@@ -193,6 +193,7 @@ func probeExternalProfile(ctx context.Context, name string) (result externalResu
 		AllowPasswordOnly:   os.Getenv("OVPN_EXTERNAL_PASSWORD_ONLY") == "1",
 		ProtonVPNServerName: os.Getenv("OVPN_EXTERNAL_PROTON_SERVER_NAME"),
 		ProtonVPNVerifyIP:   os.Getenv("OVPN_EXTERNAL_PROTON_VERIFY_IP") == "1",
+		ExpressVPNManual:    os.Getenv("OVPN_EXTERNAL_EXPRESSVPN") == "1",
 	}
 	report, _ := profile.InspectWithOptions(file, options)
 	result.Profile = report.Entries
@@ -305,14 +306,7 @@ func probeExternalProfile(ctx context.Context, name string) (result externalResu
 	}
 	result.Stage, result.TLS, result.AEAD = "connected", tls.VersionName(info.TLSVersion), info.DataCipher
 	result.Derivation, result.DataFormat = info.KeyDerivation, info.DataFormat
-	if echoTarget == "gateway" {
-		peer = info.Tunnel.GatewayIPv4
-		if !peer.Is4() {
-			result.Stage, result.Code = "traffic", "missing_ipv4_gateway"
-			return result
-		}
-	}
-	if peer.IsValid() {
+	if peer.IsValid() || echoTarget == "gateway" {
 		result.Stage, result.Code, result.RoundTrips = probeExternalData(ctx, c, first, peer, rekey)
 		if result.Stage == "rekey_verified" {
 			result.Rekeys = 1
@@ -358,6 +352,7 @@ func externalError(err error) string {
 
 // When explicitly given a test-owned IPv4 echo target, exercise data on both
 // sides of a transport interruption without creating an OS tunnel or routes.
+// An invalid peer requests the gateway of each authenticated generation.
 func probeExternalData(ctx context.Context, c *client.Client, first transport.PacketConn, peer netip.Addr, rekey bool) (stage, code string, trips int) {
 	ctx, cancel := context.WithTimeout(ctx, 35*time.Second)
 	defer cancel()
@@ -377,6 +372,7 @@ func probeExternalData(ctx context.Context, c *client.Client, first transport.Pa
 	}()
 	stage = "traffic"
 	for count := uint64(1); count <= 2; count++ {
+		var target netip.Addr
 		select {
 		case err := <-done:
 			return stage, externalError(err), trips
@@ -386,7 +382,14 @@ func probeExternalData(ctx context.Context, c *client.Client, first transport.Pa
 			if gen.Number != count {
 				return stage, "unexpected_generation", trips
 			}
-			if err := externalEcho(ctx, app, gen.Control.TunnelIP, peer); err != nil {
+			target = peer
+			if !target.IsValid() {
+				target = gen.Control.Tunnel.GatewayIPv4
+				if !target.Is4() {
+					return stage, "missing_ipv4_gateway", trips
+				}
+			}
+			if err := externalEcho(ctx, app, gen.Control.TunnelIP, target); err != nil {
 				return stage, "echo_failed", trips
 			}
 		}
@@ -396,7 +399,7 @@ func probeExternalData(ctx context.Context, c *client.Client, first transport.Pa
 				if current, ok := c.ControlInfo(); !ok || current.KeyID != 0 {
 					return "rekey", "initial_key_not_verified", trips
 				}
-				return probeExternalRekey(ctx, c, app, peer, done)
+				return probeExternalRekey(ctx, c, app, target, done)
 			}
 			stage = "reconnect"
 			if err := first.Close(); err != nil {

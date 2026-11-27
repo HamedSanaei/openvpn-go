@@ -42,6 +42,10 @@ type Endpoint struct {
 	// FixedAEAD explicitly selects the fixed AES-GCM compatibility policy
 	// for this endpoint. An empty string requires modern negotiation.
 	FixedAEAD string
+	// ExpressVPNFragmentSize enables legacy UDP fragmentation and uncompressed
+	// LZO framing for this endpoint. It bounds the outer OpenVPN UDP payload;
+	// zero selects the standard data channel framing.
+	ExpressVPNFragmentSize int
 }
 
 // Validated returns an endpoint with defaults applied and its identity checked.
@@ -191,6 +195,10 @@ func (e *Endpoint) normalize() error {
 	case "udp", "udp4", "udp6", "tcp", "tcp4", "tcp6":
 	default:
 		return configError("endpoint network")
+	}
+	if size := e.ExpressVPNFragmentSize; size != 0 &&
+		(!strings.HasPrefix(e.Network, "udp") || size < 256 || size > 65507) {
+		return configError("ExpressVPN UDP fragment size")
 	}
 	e.LocalAddress = e.LocalAddress.Unmap()
 	if e.LocalAddress.IsValid() && (e.LocalAddress.IsMulticast() ||

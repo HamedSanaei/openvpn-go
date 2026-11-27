@@ -227,6 +227,16 @@ func prepareHandshakes(cfg Config) ([]handshakeFunc, error) {
 				return nil, err
 			}
 		}
+		if endpoint.VerifyX509Name.Mode == X509CommonNamePrefix &&
+			(settings == nil || len(cfg.TLS.CA) == 0 || cfg.TLS.UseSystemRoots || !cfg.TLS.RequireServerUsage) {
+			return nil, configError("X.509 prefix policy")
+		}
+		if endpoint.ExpressVPNFragmentSize != 0 &&
+			(settings == nil || mode != ControlTLSAuth || endpoint.FixedAEAD != "" ||
+				endpoint.VerifyX509Name.Mode != X509CommonNamePrefix || cfg.TLS.AllowPasswordOnly ||
+				cfg.Credentials == nil && auth.Credentials == nil) {
+			return nil, configError("ExpressVPN data framing policy")
+		}
 		offer := ciphers
 		if fixed := endpoint.FixedAEAD; fixed != "" {
 			if settings == nil || len(cfg.TLS.Certificate) == 0 || mode != ControlPlain || fips140.Enabled() ||
@@ -252,8 +262,10 @@ func prepareHandshakes(cfg Config) ([]handshakeFunc, error) {
 		}
 		opts.TLS = tlscontrol.Options{TLS: peer, Digest: wireDigest, Ciphers: offer, PushPolicy: cfg.PushPolicy,
 			Interaction: auth, ExitNotify: (cfg.ExplicitExitNotify || endpoint.ExplicitExitNotify) && strings.HasPrefix(endpoint.Network, "udp"),
-			TunnelMTU: opts.TunnelMTU, FixedAEAD: endpoint.FixedAEAD}
+			TunnelMTU: opts.TunnelMTU, FixedAEAD: endpoint.FixedAEAD,
+			AllowLZOStub: endpoint.ExpressVPNFragmentSize != 0}
 		opts.Protection = protection
+		opts.FragmentSize = endpoint.ExpressVPNFragmentSize
 		handshakes[i] = openHandshake(opts, user)
 	}
 	return handshakes, nil

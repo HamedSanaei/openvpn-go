@@ -20,6 +20,9 @@ func TestPeerIdentityPolicies(t *testing.T) {
 		server.Subject.Organization = []string{"Example, Test"}
 	})
 	wrongCA := testkit.NewPKI(t).CA
+	noSignature := testkit.NewPKIWithServer(t, func(server *x509.Certificate) {
+		server.KeyUsage = x509.KeyUsageKeyEncipherment
+	})
 	noKU := testkit.NewPKIWithServer(t, func(server *x509.Certificate) { server.KeyUsage = 0 })
 	noEKU := testkit.NewPKIWithServer(t, func(server *x509.Certificate) { server.ExtKeyUsage = nil })
 	wrongEKU := testkit.NewPKIWithServer(t, func(server *x509.Certificate) {
@@ -54,6 +57,11 @@ func TestPeerIdentityPolicies(t *testing.T) {
 		{"wrong_subject", host, "subject", "C=US, O=Other, CN=vpn.example.test", pki, pki.CA, 0, true},
 		{"prefix_and_SAN", host, "name-prefix", "vpn.", pki, pki.CA, 0, false},
 		{"prefix_with_wrong_SAN", missingSAN, "name-prefix", "vpn.", pki, pki.CA, 0, true},
+		{"trusted_common_name_prefix", missingSAN, "common-name-prefix", "vpn.", pki, pki.CA, 0, false},
+		{"wrong_common_name_prefix", missingSAN, "common-name-prefix", "wrong.", pki, pki.CA, 0, true},
+		{"untrusted_common_name_prefix", missingSAN, "common-name-prefix", "vpn.", pki, wrongCA, 0, true},
+		{"prefix_requires_server_role", missingSAN, "common-name-prefix", "vpn.", noEKU, noEKU.CA, 0, true},
+		{"prefix_requires_signing_usage", missingSAN, "common-name-prefix", "vpn.", noSignature, noSignature.CA, 0, true},
 		{"SAN_with_wrong_prefix", host, "name-prefix", "unused.", pki, pki.CA, 0, true},
 		{"untrusted_exact_identity", missingSAN, "name", host, pki, wrongCA, 0, true},
 		{"expired_exact_identity", missingSAN, "name", host, pki, pki.CA, 2 * time.Hour, true},

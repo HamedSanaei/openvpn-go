@@ -54,6 +54,9 @@ func (s *Session) run(active *tlscontrol.Link) {
 		workers.Wait()
 		s.opts.TLS.Auth.Clear()
 		s.mu.Lock()
+		if s.fragments != nil {
+			s.fragments.clear()
+		}
 		s.channel = nil
 		s.link = nil
 		s.mu.Unlock()
@@ -174,6 +177,9 @@ func peerEndedSession(err error) bool {
 func (s *Session) maintain(now time.Time) error {
 	s.mu.Lock()
 	s.channel.Retire(now)
+	if s.fragments != nil {
+		s.fragments.expire(now)
+	}
 	idle := now.Sub(s.lastRecv)
 	silent := now.Sub(s.lastSent)
 	info := s.info
