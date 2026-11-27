@@ -138,6 +138,29 @@ identity; other environment directives remain unsupported.
 
 See [live evidence and unsupported modes](ACCESS_SERVER.md).
 
+## Pritunl import
+
+Use the original administrator-provisioned export with
+`profile.Options.PritunlServerName` or the CLI flag
+`-pritunl-server-name` (both inspection and Xray). Provide the exact
+VPN server certificate CN confirmed independently by the administrator;
+do not learn it from an unverified connection.
+
+~~~sh
+ovpn-inspect -pritunl-server-name "$VERIFIED_CN" "$VPN_PROFILE"
+~~~
+
+The mode requires the CA, client identity, server certificate role and
+explicit AEAD data offer. The known matching AES-GCM/CBC pairs retain only
+GCM, with warnings; CBC-only and conflicting offers remain rejected.
+Only `ignore-unknown-option data-ciphers` is accepted as an advisory
+hint; arbitrary ignore lists are rejected. UV_ID/UV_NAME, push-peer-info,
+mute, bounded local ping and socket buffer hints are ignored with warnings.
+Authenticated pushed liveness policy governs the session. Export timers
+above seven days and up to 30 days are capped at seven days with a warning.
+This mode cannot be combined with the other provider imports, password-only
+or fixed AEAD modes. See [real server results](SERVER_INTEROP.md#pritunl-134482259-2026-11-27).
+
 ## Remote precedence
 
 With top-level `remote` entries, final `proto`, `port` and `rport` values

@@ -42,6 +42,9 @@ type Options struct {
 	// exact VPN server certificate common name supplied by the administrator.
 	// Legacy cipher hints never enable non-AEAD data negotiation.
 	AccessServerName string
+	// PritunlServerName authorizes trusted Pritunl exports with an exact
+	// administrator-confirmed VPN server certificate common name.
+	PritunlServerName string
 	// Authentication authorizes caller-managed credentials and interaction.
 	Authentication client.Authentication
 	// Identity supplies a matching key for a profile with cert and no key.
@@ -97,6 +100,9 @@ type parser struct {
 	protonHints       map[string]location
 	express           expressOptions
 	accessNoCert      bool
+	pritunlSeen       map[string]location
+	pritunlHint       string
+	pritunlCBC        string
 
 	defaults connection
 	remotes  []remote
@@ -233,6 +239,9 @@ func (p *parser) readDirective(line string, number int) (location, error) {
 			rule, supported = directive{min: 2, max: 2}, true
 		}
 	}
+	if !supported && p.opts.PritunlServerName != "" {
+		rule, supported = pritunlDirectives[loc.name]
+	}
 	if !supported && p.opts.ExpressVPNManual {
 		rule, supported = expressDirectives[loc.name]
 	}
@@ -248,6 +257,11 @@ func (p *parser) readDirective(line string, number int) (location, error) {
 	}
 	if _, express := expressDirectives[loc.name]; p.opts.ExpressVPNManual && express {
 		return loc, p.applyExpress(loc, args)
+	}
+	if p.opts.PritunlServerName != "" {
+		if _, ok := pritunlDirectives[loc.name]; ok {
+			return loc, p.applyPritunl(loc, args)
+		}
 	}
 	return loc, p.apply(loc, args)
 }
@@ -266,6 +280,9 @@ func (p *parser) finish() error {
 		return p.versionLocation.diagnostic(CodeConflict)
 	}
 	if err := p.setProtonServerIdentity(); err != nil {
+		return err
+	}
+	if err := p.finishPritunl(); err != nil {
 		return err
 	}
 	if err := p.finishAccessServer(); err != nil {
