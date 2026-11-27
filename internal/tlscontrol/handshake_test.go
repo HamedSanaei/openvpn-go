@@ -178,7 +178,7 @@ func TestPeerInfoCapabilities(t *testing.T) {
 		want string
 	}{
 		{Options{}, "10"},
-		{Options{AdvertiseDNS: true}, "74"},
+		{Options{AdvertiseDNS: true}, "2122"},
 		{Options{AdvertiseDNS: true, PushPolicy: tunnel.PushPolicy{DNS: tunnel.PushReject}}, "10"},
 		{Options{AdvertiseDNS: true, PushPolicy: tunnel.PushPolicy{DNS: tunnel.PushIgnore}}, "10"},
 		{Options{AdvertiseDNS: true, FixedAEAD: "AES-256-GCM"}, "2"},

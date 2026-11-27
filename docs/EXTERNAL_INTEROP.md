@@ -252,6 +252,26 @@ client lost the post-rekey echo and the updated client passed it. The
 two-second TCP failure is still reproducible. The OpenVPN Community
 rekey fixtures passed.
 
+A subsequent authorized retest used the same sampled Linux manual
+profiles with the exact configured remote verified through its certificate
+IP SAN and the original CA. The Go client passed one two-second TCP
+rekey and one two-second UDP rekey with gateway traffic and no session
+replacement. A separate ten-second TCP probe installed key ID 1 but
+failed its post-rekey gateway echo. A further TCP probe requested ten
+consecutive two-second rekeys. It installed key ID 1, but the next
+reset failed at reset acknowledgment with a network error and the
+session was replaced before any post-rekey echo could be verified.
+In a control-only Community 2.6.23
+comparison using the same TCP profile, the reference verified the IP SAN
+and used a null device with route and interface effects disabled.
+During an 18-second two-second-rekey probe it initialized three times
+and reported two restarts; during a 24-second ten-second-rekey probe
+it initialized once and reported one restart. The reference test did
+not measure gateway traffic. These observations indicate that forced
+TCP rekey instability is not unique to this Go implementation but do
+not prove its root cause or qualify forced rekey. The original
+`reneg-sec 0` remains unchanged and #49 remains open.
+
 The provider's server build is undisclosed. These observations cover the
 uploaded profiles, one authorized account and one IPv4 endpoint. The
 import deliberately recognizes only the tested Linux DNS-hook group and
@@ -272,7 +292,13 @@ go test -race -v -count=1 -timeout 1m -run '^TestExternalProfile$' ./tests/inter
 
 `OVPN_EXTERNAL_REMOTE` selects a one-based candidate. Use
 `OVPN_EXTERNAL_REKEY=1` and `OVPN_EXTERNAL_EXPECT=rekey_verified` for the
-separate forced-rekey probe. `OVPN_EXTERNAL_REKEY_SECONDS` selects a
+separate forced-rekey probe. `OVPN_EXTERNAL_REKEY_COUNT` selects one to
+ten consecutive key changes; each must retain the connection and return
+a gateway echo with the expected new key ID. Increase the test timeout
+for longer sequences. `Client.RekeyReports()` provides bounded redacted
+phase, key ID, duration, initiation direction and failure category
+snapshots. This telemetry does not establish provider compatibility by
+itself. `OVPN_EXTERNAL_REKEY_SECONDS` selects a
 bounded interval of 1–20 seconds instead of the two-second default.
 [Synthetic negative tests](../tests/interop/password_test.go)
 

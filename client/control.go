@@ -155,6 +155,9 @@ func controlInfo(active *connection) (ControlInfo, bool) {
 
 func prepareHandshakes(cfg Config) ([]handshakeFunc, error) {
 	ciphers, err := crypt.DataCiphers(cfg.DataCiphers)
+	if err == nil && cfg.TLS != nil {
+		ciphers, err = crypt.RuntimeDataCiphers(ciphers, len(cfg.DataCiphers) != 0)
+	}
 	if err != nil {
 		return nil, configError("data ciphers")
 	}
@@ -227,7 +230,7 @@ func prepareHandshakes(cfg Config) ([]handshakeFunc, error) {
 	handshakes := make([]handshakeFunc, len(cfg.Endpoints))
 	limits := session.Options{
 		MaxPacketSize: cfg.MaxPacketSize, RekeyInterval: cfg.RekeyInterval, HandshakeLimit: cfg.HandshakeTimeout,
-		TunnelMTU: cfg.TunnelMTU,
+		TunnelMTU: cfg.TunnelMTU, ReceiveQueueSize: cfg.ReceiveQueueSize,
 	}
 	for i, endpoint := range cfg.Endpoints {
 		protection, wireDigest := common, digest
@@ -269,11 +272,9 @@ func prepareHandshakes(cfg Config) ([]handshakeFunc, error) {
 		if endpoint.TunnelMTU != 0 {
 			opts.TunnelMTU = endpoint.TunnelMTU
 		}
-		if opts.TunnelMTU != 0 {
-			opts.TunnelMTU = min(opts.TunnelMTU, opts.MaxPacketSize-data.Overhead)
-			if opts.TunnelMTU < 68 {
-				return nil, configError("tunnel MTU")
-			}
+		if opts.TunnelMTU != 0 && endpoint.ExpressVPNFragmentSize == 0 &&
+			opts.MaxPacketSize-data.Overhead < 68 {
+			return nil, configError("tunnel MTU")
 		}
 		opts.TLS = tlscontrol.Options{TLS: peer, Digest: wireDigest, Ciphers: offer, PushPolicy: cfg.PushPolicy,
 			Interaction: auth, ExitNotify: (cfg.ExplicitExitNotify || endpoint.ExplicitExitNotify) && strings.HasPrefix(endpoint.Network, "udp"),

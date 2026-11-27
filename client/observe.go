@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/hamedsanaei/openvpn-go/internal/observability"
+	"github.com/hamedsanaei/openvpn-go/internal/session"
 )
 
 // EventKind identifies a bounded lifecycle transition.
@@ -137,6 +138,8 @@ const (
 	PhasePush            = observability.PhasePush
 	PhaseKeyDerivation   = observability.PhaseKeyDerivation
 	PhaseDataSetup       = observability.PhaseDataSetup
+	PhaseRekeyDrain      = observability.PhaseRekeyDrain
+	PhaseRekeyInstall    = observability.PhaseRekeyInstall
 )
 
 // AttemptReport uses ordinal endpoints, durations and stable codes. It is
@@ -173,6 +176,18 @@ func (c *Client) recordAttempt(report AttemptReport) {
 		c.attempts = new(observability.History[AttemptReport])
 	}
 	c.attempts.Append(report)
+}
+
+// RekeyReport identifies a completed soft-reset attempt without peer data.
+// A nonzero Code indicates that the attempt did not install data keys.
+type RekeyReport struct {
+	Generation    uint64        `json:"generation"`
+	KeyID         uint8         `json:"key_id"`
+	PeerInitiated bool          `json:"peer_initiated"`
+	Started       time.Time     `json:"started"`
+	Duration      time.Duration `json:"duration_ns"`
+	Phase         AttemptPhase  `json:"phase"`
+	Code          ErrorCode     `json:"code,omitempty"`
 }
 
 // GenerationReport uses connection-local packet and plaintext byte counters.
@@ -219,6 +234,22 @@ func (c *Client) CompletedGenerationReports(afterGeneration uint64) []Generation
 	return c.generations.After(afterGeneration)
 }
 
+// RekeyReports returns up to 64 retained soft resets from completed
+// connections followed by up to eight attempts from the active connection.
+func (c *Client) RekeyReports() []RekeyReport {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	active := c.liveConnection()
+	var reports []RekeyReport
+	if c.rekeys != nil {
+		reports = c.rekeys.After(0)
+	}
+	if active != nil {
+		reports = appendRekeyReports(reports, active)
+	}
+	return reports
+}
+
 func (c *Client) finishGeneration(active *connection, code ErrorCode) {
 	report := generationReport(active)
 	report.EndedAt, report.Code = time.Now(), code
@@ -229,6 +260,12 @@ func (c *Client) finishGeneration(active *connection, code ErrorCode) {
 		c.generations = new(observability.History[GenerationReport])
 	}
 	c.generations.Append(report)
+	for _, rekey := range appendRekeyReports(nil, active) {
+		if c.rekeys == nil {
+			c.rekeys = new(observability.History[RekeyReport])
+		}
+		c.rekeys.Append(rekey)
+	}
 }
 
 func generationReport(active *connection) GenerationReport {
@@ -237,6 +274,20 @@ func generationReport(active *connection) GenerationReport {
 	out.PacketsSent, out.BytesSent = active.sent.Load()
 	out.PacketsReceived, out.BytesReceived = active.recv.Load()
 	return out
+}
+
+func appendRekeyReports(reports []RekeyReport, active *connection) []RekeyReport {
+	if reporter, ok := active.link.(interface{ RekeyResults() []session.RekeyResult }); ok {
+		for _, result := range reporter.RekeyResults() {
+			report := RekeyReport{Generation: active.generation, KeyID: result.KeyID, PeerInitiated: result.PeerInitiated,
+				Started: result.Started, Duration: result.Duration, Phase: result.Phase}
+			if result.Err != nil {
+				report.Code = packetErrorCode(result.Err, CodeProtocol)
+			}
+			reports = append(reports, report)
+		}
+	}
+	return reports
 }
 
 func connectionQueues(active *connection) (observability.QueueStats, observability.QueueStats) {

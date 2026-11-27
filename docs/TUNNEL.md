@@ -16,6 +16,25 @@ bounded queue counters. `CiphertextQueue` counts DATA_V2 frames before
 authentication. `InboundQueue` counts complete authenticated IP
 packets. Each shows lifetime drops and an observed maximum occupancy.
 Full queues discard new arrivals without holding up control traffic.
+`client.Config.ReceiveQueueSize` sets both per-connection receive
+queue depths to a value from 1 to 128. Zero keeps the default of 32.
+A larger queue retains more of a short burst at the cost of memory
+and waiting time if the consumer remains slow. Both outer TCP and UDP
+use this bounded policy. Blocking the sole mux reader would also
+stall control acknowledgments and key changes.
+
+The local burst benchmarks stall the consumer until 128 records of
+1,200 bytes arrive in one stage, then drain the retained records.
+Depths 16, 32, 64 and 128 dropped 112, 96, 64 and zero records,
+respectively, in both stages. On the Linux/amd64 test host the
+mux burst took approximately 0.12–0.22 ms across these capacities
+in a repeat with 20 bursts per sample and three samples per case.
+The authenticated benchmark took approximately 0.15–0.23 ms, with
+512 allocations per burst including the synthetic peer's sealing
+work. The mux benchmark also delivered a control record before the
+data queue was drained. These measurements use an in-memory
+transport and are useful for comparing buffer pressure, with path
+throughput and application scheduling outside the measured scope.
 
 ## Push policy
 
@@ -42,10 +61,27 @@ validated, and reliable exit notification still depends on the
 authenticated `cc-exit` protocol flag.
 
 Applications that apply authenticated DNS metadata may set
-`client.Config.AdvertiseDNS` with `PushAccept`. This advertises the
-OpenVPN 2.6 DNS option bit. The later DNS v2 bit remains unadvertised
-until its distinct grammar is supported. DNS and routing enforcement
+`client.Config.AdvertiseDNS` with `PushAccept`. Set it only when the
+application can handle the authenticated DNS settings it requests.
+Ordinary AEAD negotiation uses the following capability policy.
+
+| Policy | DNS bits in `IV_PROTO` |
+|---|---|
+| Default, `PushIgnore`, `PushReject` or fixed AEAD | None |
+| `AdvertiseDNS` and `PushAccept` | Bit 6 for 2.6 and bit 11 for 2.7 and OpenVPN 3 |
+
+Both reference Community versions document the same pushed
+`dns search-domains` and indexed `dns server` fields. Their native
+clients advertise different bits. A server hook can gate the push on
+the corresponding bit. The pinned OpenVPN 3 Core 3.11.8 advertises bit
+11. The Community 2.7 manual specifies applying only the lowest server
+ID; the Go library retains all bounded groups as metadata and leaves
+selection to the application. Opt in only when the application implements
+the applicable selection and resolver policy. The client retains legacy
+DHCP DNS fallback and returns typed
+metadata. DNS routing, encrypted resolver transport and enforcement
 belong to the adapter.
+[2.6 manual](https://openvpn.net/community-docs/community-articles/openvpn-2-6-manual/) · [2.7 manual](https://openvpn.net/community-docs/community-articles/openvpn-2-7-manual/)
 
 DNS groups are ordered by index and each group can supply multiple
 IPv4/IPv6 endpoints, split domains, transport, DNSSEC mode and a TLS

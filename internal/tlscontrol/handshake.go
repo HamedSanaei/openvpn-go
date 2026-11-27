@@ -123,6 +123,7 @@ func Establish(ctx context.Context, stream *control.Stream, opts Options, previo
 	var info Negotiation
 	if previous != nil {
 		// The existing authenticated push governs soft-reset generations.
+		observability.Enter(ctx, observability.PhaseRekeyDrain)
 		if err := stream.Drain(ctx); err != nil {
 			return nil, ctxError(ctx, err)
 		}

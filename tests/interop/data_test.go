@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -92,7 +93,7 @@ func TestDataRekeyOpenVPN26(t *testing.T) {
 		rounds  int
 	}{
 		{"server-initiated", "udp", "v2-cookie", "2", 1, 1},
-		{"client-initiated-rollover", "tcp", "tls-auth", "300", 2, 8},
+		{"client-initiated-rollover", "tcp", "tls-auth", "300", 2, 10},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			port, echo := startDataPeer(t, f, test.network, test.mode, true, "1.3", "AES-256-GCM",
@@ -121,6 +122,18 @@ func TestDataRekeyOpenVPN26(t *testing.T) {
 					waitForKeyID(t, c, want)
 				}
 				roundtrip(t, app, echo, info.TunnelIP.AsSlice(), []byte("packet through generation "+strconv.Itoa(i)))
+			}
+			rekeys := c.RekeyReports()
+			retained := min(test.rounds, 8)
+			if len(rekeys) != retained {
+				t.Fatalf("retained rekey reports = %d, want %d", len(rekeys), retained)
+			}
+			for i, report := range rekeys {
+				expectedID := uint8((test.rounds-retained+i)%7 + 1)
+				if report.Code != "" || report.Generation != 1 || report.PeerInitiated != (test.first == 1) ||
+					report.KeyID != expectedID || report.Phase != client.PhaseRekeyInstall || report.Duration <= 0 {
+					t.Fatalf("unexpected rekey report: %+v", report)
+				}
 			}
 			if first := observer.first.Load(); first != test.first {
 				t.Fatalf("rekey initiator = %d; want %d (1 peer, 2 client)", first, test.first)
@@ -354,4 +367,46 @@ func (o *rekeyObserver) WritePacket(ctx context.Context, packet []byte) error {
 		o.first.CompareAndSwap(0, 2)
 	}
 	return o.PacketConn.WritePacket(ctx, packet)
+}
+
+func TestNativeUDPFrameLimitInAuthenticatedMTU(t *testing.T) {
+	pki := testkit.NewPKI(t)
+	f := makeFixture(t, interopPeer(t), pki)
+	for _, tc := range []struct {
+		name  string
+		local int
+		push  string
+		want  int
+	}{
+		{"implicit", 0, "", 65507 - 24},
+		{"local", 1800, "", 1800},
+		{"pushed", 0, "tun-mtu 1600", 1600},
+		{"combined", 1500, "tun-mtu 1600", 1500},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// push-remove is legal only in a client-specific config. Use
+			// the client-connect hook to select the authenticated MTU.
+			script := "#!/bin/sh\nprintf '%s\\n' 'push-remove tun-mtu'"
+			if tc.push != "" {
+				script += " 'push \"" + tc.push + "\"'"
+			}
+			script += " > \"$1\"\n"
+			if err := os.WriteFile(filepath.Join(f.dir, "select-mtu"), []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			port, echo := startDataPeer(t, f, "udp", "tls", false, "1.3", "AES-256-GCM",
+				"--script-security", "2", "--client-connect", "./select-mtu")
+			cfg := f.config(pki, "udp", "tls", port, false)
+			cfg.MaxPacketSize, cfg.TunnelMTU = transport.MaxPacketSize, tc.local
+			c, app := connectData(t, cfg)
+			info, ok := c.ControlInfo()
+			if !ok || info.MaxTunnelPacketSize != tc.want {
+				t.Fatalf("published packet ceiling = %d, want %d", info.MaxTunnelPacketSize, tc.want)
+			}
+			if (tc.local != 0 || tc.push != "") && int(info.Tunnel.MTU) != tc.want {
+				t.Fatalf("published tunnel MTU = %d, want %d", info.Tunnel.MTU, tc.want)
+			}
+			roundtrip(t, app, echo, info.TunnelIP.AsSlice(), []byte("native UDP frame budget"))
+		})
+	}
 }

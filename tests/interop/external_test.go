@@ -27,24 +27,25 @@ import (
 )
 
 type externalResult struct {
-	Profile     []profile.CapabilityEntry `json:"profile,omitempty"`
-	Warnings    []profile.CapabilityEntry `json:"warnings,omitempty"`
-	Stage       string                    `json:"stage"`
-	Code        string                    `json:"code,omitempty"`
-	Directive   string                    `json:"directive,omitempty"`
-	Line        int                       `json:"line,omitempty"`
-	Transport   string                    `json:"transport,omitempty"`
-	Control     string                    `json:"control,omitempty"`
-	Credentials bool                      `json:"password_auth"`
-	Identity    bool                      `json:"client_certificate"`
-	TLS         string                    `json:"tls,omitempty"`
-	AEAD        string                    `json:"aead,omitempty"`
-	Derivation  client.KeyDerivation      `json:"derivation,omitempty"`
-	DataFormat  string                    `json:"data_format,omitempty"`
-	RoundTrips  int                       `json:"synthetic_round_trips"`
-	Rekeys      int                       `json:"verified_rekeys,omitempty"`
-	Attempts    []externalAttempt         `json:"attempts,omitempty"`
-	Generations []externalGeneration      `json:"generations,omitempty"`
+	Profile       []profile.CapabilityEntry `json:"profile,omitempty"`
+	Warnings      []profile.CapabilityEntry `json:"warnings,omitempty"`
+	Stage         string                    `json:"stage"`
+	Code          string                    `json:"code,omitempty"`
+	Directive     string                    `json:"directive,omitempty"`
+	Line          int                       `json:"line,omitempty"`
+	Transport     string                    `json:"transport,omitempty"`
+	Control       string                    `json:"control,omitempty"`
+	Credentials   bool                      `json:"password_auth"`
+	Identity      bool                      `json:"client_certificate"`
+	TLS           string                    `json:"tls,omitempty"`
+	AEAD          string                    `json:"aead,omitempty"`
+	Derivation    client.KeyDerivation      `json:"derivation,omitempty"`
+	DataFormat    string                    `json:"data_format,omitempty"`
+	RoundTrips    int                       `json:"synthetic_round_trips"`
+	Rekeys        int                       `json:"verified_rekeys,omitempty"`
+	Attempts      []externalAttempt         `json:"attempts,omitempty"`
+	Generations   []externalGeneration      `json:"generations,omitempty"`
+	RekeyAttempts []client.RekeyReport      `json:"rekey_attempts,omitempty"`
 }
 
 type externalAttempt struct {
@@ -249,8 +250,16 @@ func probeExternalProfile(ctx context.Context, name string) (result externalResu
 	cfg.RemoteRandom = false
 	cfg.ConnectTimeout, cfg.HandshakeTimeout = 5*time.Second, 12*time.Second
 	cfg.Retry = client.RetryPolicy{MaxAttempts: 1}
-	rekey := os.Getenv("OVPN_EXTERNAL_REKEY") == "1"
-	if rekey {
+	rekeyCount := 0
+	if os.Getenv("OVPN_EXTERNAL_REKEY") == "1" {
+		rekeyCount = 1
+		if value := os.Getenv("OVPN_EXTERNAL_REKEY_COUNT"); value != "" {
+			rekeyCount, err = strconv.Atoi(value)
+			if err != nil || rekeyCount < 1 || rekeyCount > 10 {
+				result.Code = "invalid_rekey_count"
+				return result
+			}
+		}
 		interval := 2
 		if value := os.Getenv("OVPN_EXTERNAL_REKEY_SECONDS"); value != "" {
 			interval, err = strconv.Atoi(value)
@@ -293,6 +302,7 @@ func probeExternalProfile(ctx context.Context, name string) (result externalResu
 	}
 	defer func() {
 		c.Close()
+		result.RekeyAttempts = c.RekeyReports()
 		for _, a := range c.AttemptReports(0) {
 			result.Attempts = append(result.Attempts, externalAttempt{
 				Stage: a.Stage, Phase: a.Phase, PhaseDuration: a.PhaseDuration, PhaseSteps: a.PhaseSteps, Code: a.Code, RetryReason: a.RetryReason,
@@ -316,9 +326,10 @@ func probeExternalProfile(ctx context.Context, name string) (result externalResu
 	result.Stage, result.TLS, result.AEAD = "connected", tls.VersionName(info.TLSVersion), info.DataCipher
 	result.Derivation, result.DataFormat = info.KeyDerivation, info.DataFormat
 	if peer.IsValid() || echoTarget == "gateway" {
-		result.Stage, result.Code, result.RoundTrips = probeExternalData(ctx, c, first, peer, rekey)
-		if result.Stage == "rekey_verified" {
-			result.Rekeys = 1
+		budget := max(35*time.Second, time.Duration(rekeyCount)*(cfg.RekeyInterval+6*time.Second)+5*time.Second)
+		result.Stage, result.Code, result.RoundTrips = probeExternalData(ctx, c, first, peer, rekeyCount, budget)
+		if rekeyCount != 0 {
+			result.Rekeys = max(0, result.RoundTrips-1)
 		}
 	}
 	return result
@@ -362,8 +373,8 @@ func externalError(err error) string {
 // When explicitly given a test-owned IPv4 echo target, exercise data on both
 // sides of a transport interruption without creating an OS tunnel or routes.
 // An invalid peer requests the gateway of each authenticated generation.
-func probeExternalData(ctx context.Context, c *client.Client, first transport.PacketConn, peer netip.Addr, rekey bool) (stage, code string, trips int) {
-	ctx, cancel := context.WithTimeout(ctx, 35*time.Second)
+func probeExternalData(ctx context.Context, c *client.Client, first transport.PacketConn, peer netip.Addr, rekeyCount int, budget time.Duration) (stage, code string, trips int) {
+	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	device, app := testkit.PacketPipe(8, transport.DefaultPacketSize)
 	defer device.Close()
@@ -404,11 +415,11 @@ func probeExternalData(ctx context.Context, c *client.Client, first transport.Pa
 		}
 		trips++
 		if count == 1 {
-			if rekey {
+			if rekeyCount != 0 {
 				if current, ok := c.ControlInfo(); !ok || current.KeyID != 0 {
 					return "rekey", "initial_key_not_verified", trips
 				}
-				return probeExternalRekey(ctx, c, app, target, done)
+				return probeExternalRekey(ctx, c, app, target, done, rekeyCount)
 			}
 			stage = "reconnect"
 			if err := first.Close(); err != nil {
@@ -419,32 +430,42 @@ func probeExternalData(ctx context.Context, c *client.Client, first transport.Pa
 	return "verified", "", trips
 }
 
-func probeExternalRekey(ctx context.Context, c *client.Client, app transport.PacketConn, peer netip.Addr, done <-chan error) (string, string, int) {
+func probeExternalRekey(ctx context.Context, c *client.Client, app transport.PacketConn, peer netip.Addr, done <-chan error, count int) (string, string, int) {
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
-	for {
+	trips := 1
+	var previous uint8
+	for trips <= count {
 		select {
 		case err := <-done:
-			return "rekey", externalError(err), 1
+			return "rekey", externalError(err), trips
 		case <-ctx.Done():
-			return "rekey", "generation_timeout", 1
+			return "rekey", "generation_timeout", trips
 		case <-ticker.C:
 			if c.Stats().Connections != 1 {
-				return "rekey", "replaced_connection", 1
+				return "rekey", "replaced_connection", trips
 			}
 			info, ok := c.ControlInfo()
-			if !ok || info.KeyID == 0 {
+			if !ok || info.KeyID == previous {
 				continue
 			}
+			if info.KeyID != previous%7+1 {
+				return "rekey", "unexpected_key_id", trips
+			}
 			if err := externalEcho(ctx, app, info.TunnelIP, peer); err != nil {
-				return "rekey", "echo_failed", 1
+				return "rekey", "echo_failed", trips
 			}
 			if c.Stats().Connections != 1 {
-				return "rekey", "replaced_connection", 1
+				return "rekey", "replaced_connection", trips
 			}
-			return "rekey_verified", "", 2
+			if after, ok := c.ControlInfo(); !ok || after.KeyID != info.KeyID {
+				return "rekey", "echo_spanned_key_change", trips
+			}
+			previous = info.KeyID
+			trips++
 		}
 	}
+	return "rekey_verified", "", trips
 }
 
 func externalEcho(ctx context.Context, app transport.PacketConn, source, peer netip.Addr) error {

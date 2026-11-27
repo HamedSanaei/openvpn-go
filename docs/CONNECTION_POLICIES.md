@@ -119,11 +119,32 @@ acknowledgment wait is bounded to 250 ms. A dead peer or a concurrent
 rekey still permits cleanup. Cancellation of `Connect` and `Run` retains
 its existing immediate teardown path. [OpenVPN 2.6 manual](https://openvpn.net/community-docs/community-articles/openvpn-2-6-manual/) · [Control protocol flags](https://openvpn.github.io/openvpn-rfc/openvpn-wire-protocol.html#name-protocol-flags)
 
+## Runtime cryptographic policy
+
+TLS-backed clients check the runtime availability of the protocol's
+nonce-taking AEAD constructors before dialing. Explicit offers containing
+an unavailable algorithm fail with `CodeConfig` (field `data ciphers`);
+default offers retain supported algorithms in their original order and
+fail if none remains. Go's `fips140=on` is not equivalent to
+`fips140=only`. The current DATA_V2 implementation cannot operate in
+strict FIPS-only mode with the tested Go toolchains: GCM with an
+application-supplied nonce and ChaCha20-Poly1305 are refused.
+This is not a FIPS certification claim; the implementation never bypasses
+runtime policy or substitutes a different on-wire nonce format.
+
 ## Inner packet size and MSS
 
-The effective inner ceiling is the smallest configured `TunnelMTU`,
-accepted authenticated `tun-mtu` and transport packet limit minus the
-24-byte DATA_V2 AEAD overhead. A configured IPv6 tunnel requires a
+The unfragmented inner ceiling is the minimum of configured `TunnelMTU`,
+accepted authenticated `tun-mtu` and the effective outer frame budget
+minus the 24-byte DATA_V2 AEAD overhead. Native UDP sockets cap that
+outer budget at 65,507 bytes for IPv4 or 65,527 for ordinary IPv6;
+TCP retains the 65,535-byte frame limit. These are absolute ceilings,
+not path MTU guarantees. Custom packet transports retain their configured
+limit unless they expose a smaller positive `PacketSizeLimit() int`.
+The legacy UDP fragment path budgets each encrypted fragment separately,
+including its four-byte fragment header and the uncompressed LZO marker,
+and bounds the reassembled packet by the configured packet limit and
+32-fragment capacity. A configured IPv6 tunnel requires a
 ceiling of at least 1280. `ControlInfo.Tunnel.MTU` reports the effective
 value when a local or peer tunnel MTU was specified.
 `ControlInfo.MaxTunnelPacketSize` also reports the ceiling when only the

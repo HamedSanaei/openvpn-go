@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"slices"
+	"sync"
 
 	"golang.org/x/crypto/chacha20poly1305"
 )
@@ -36,6 +37,39 @@ func DataCiphers(allowed []string) ([]string, error) {
 		}
 	}
 	return slices.Clone(allowed), nil
+}
+
+// Probe the same nonce-taking constructors used for the actual data channel.
+// Go applies runtime cryptographic mode restrictions for the whole process.
+var runtimeCiphers = sync.OnceValue(func() map[string]bool {
+	names, _ := DataCiphers(nil)
+	available := make(map[string]bool, len(names))
+	var synthetic [128]byte
+	for _, name := range names {
+		_, err := direction(name, synthetic[:])
+		available[name] = err == nil
+	}
+	return available
+})
+
+// RuntimeDataCiphers filters a validated default offer and rejects an explicit
+// offer containing any cipher unavailable in this Go runtime. The caller
+// owns the validated slice and must use the returned offer.
+func RuntimeDataCiphers(offer []string, explicit bool) ([]string, error) {
+	available := runtimeCiphers()
+	if explicit {
+		for _, name := range offer {
+			if !available[name] {
+				return nil, ErrDataKeys
+			}
+		}
+	} else {
+		offer = slices.DeleteFunc(offer, func(name string) bool { return !available[name] })
+	}
+	if len(offer) == 0 {
+		return nil, ErrDataKeys
+	}
+	return offer, nil
 }
 
 type Direction struct {

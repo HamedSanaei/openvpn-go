@@ -19,6 +19,8 @@ const (
 	PhasePush            Phase = "authenticated_push"
 	PhaseKeyDerivation   Phase = "key_derivation"
 	PhaseDataSetup       Phase = "data_channel_setup"
+	PhaseRekeyDrain      Phase = "rekey_drain"
+	PhaseRekeyInstall    Phase = "rekey_install"
 )
 
 // Progress is written only by the synchronous attempt owner.

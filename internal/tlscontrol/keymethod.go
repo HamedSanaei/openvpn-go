@@ -23,6 +23,7 @@ const (
 	protoTLSExporter = 1 << 3
 	protoAuthPending = 1 << 4
 	protoDNS26       = 1 << 6
+	protoDNS27       = 1 << 11
 	protoExitNotify  = 1 << 7
 )
 
@@ -76,7 +77,7 @@ func writeKeyMethodOptions(w io.Writer, network, digest string, ciphers []string
 	if cfg.FixedAEAD == "" {
 		flags |= protoTLSExporter
 		if cfg.AdvertiseDNS && cfg.PushPolicy.DNS == tunnel.PushAccept {
-			flags |= protoDNS26
+			flags |= protoDNS26 | protoDNS27
 		}
 	}
 	extra := cfg.Interaction.peerInfo()

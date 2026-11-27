@@ -86,6 +86,7 @@ type Client struct {
 	events      observability.History[Event]
 	attempts    *observability.History[AttemptReport]
 	generations *observability.History[GenerationReport]
+	rekeys      *observability.History[RekeyReport]
 	sent        observability.Traffic
 	recv        observability.Traffic
 	packetDrops atomic.Uint64
