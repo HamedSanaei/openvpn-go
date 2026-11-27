@@ -54,6 +54,21 @@ together before publication.
 | MTU | `tun-mtu` from 68 to 65535. When IPv6 is assigned, the minimum is 1280. The application sets its device MTU and selects a client packet-size limit that accommodates it. |
 | DNS | Numeric `dhcp-option DNS` and `DNS6`, `DOMAIN`, `ADAPTER_DOMAIN_SUFFIX` and `DOMAIN-SEARCH`, plus `dns search-domains` and indexed `dns server` settings. Validated legacy hints `WINS`, `NBDD`, `NTP`, `NBT`, `NBT-SCOPE`, `DISABLE-NBT` and `block-outside-dns` have no host effect. Unknown suboptions fail under the accepting policy. |
 
+The authenticated `route-metric` sets the default metric on routes without
+an explicit metric. `route-delay` is a validated host timing hint.
+`dhcp-pre-release`, `dhcp-renew`, `dhcp-release` and `register-dns` are
+validated DNS/platform hints with no automatic host effects. The route
+and DNS push classes govern these directives.
+
+An authenticated `block-ipv6` sets `Tunnel.BlockIPv6`. The core drops
+IPv6 in both data directions, without consuming an outbound packet ID
+or refreshing liveness on a blocked inbound packet. If the Addresses
+policy does not accept the directive, negotiation fails rather than
+silently discarding the restriction. This does not install host-wide
+IPv6 leak prevention, routing rules, or synthesize ICMPv6 unreachable
+responses. The embedding application remains responsible for traffic
+outside the tunnel.
+
 Authenticated `socket-flags TCP_NODELAY`, numeric `sndbuf` and `rcvbuf`
 are validated transport hints. Socket flags and buffer sizes are owned by
 the dialer. The optional legacy `explicit-exit-notify` retry count is

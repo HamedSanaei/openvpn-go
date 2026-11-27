@@ -96,6 +96,9 @@ type Configuration struct {
 	GatewayIPv4, GatewayIPv6 netip.Addr
 	Topology                 Topology
 	MTU                      uint16
+	// BlockIPv6 rejects IPv6 packets in the tunnel. The embedding application
+	// must also enforce its host routing/leak policy outside the tunnel.
+	BlockIPv6 bool
 
 	options *networkOptions
 }

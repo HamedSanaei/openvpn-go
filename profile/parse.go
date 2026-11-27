@@ -38,6 +38,10 @@ type Options struct {
 	ProtonVPNVerifyIP bool
 	// ExpressVPNManual imports trusted ExpressVPN Manual Configuration exports.
 	ExpressVPNManual bool
+	// AccessServerName authorizes modern Access Server exports under the
+	// exact VPN server certificate common name supplied by the administrator.
+	// Legacy cipher hints never enable non-AEAD data negotiation.
+	AccessServerName string
 	// Authentication authorizes caller-managed credentials and interaction.
 	Authentication client.Authentication
 	// Identity supplies a matching key for a profile with cert and no key.
@@ -92,6 +96,7 @@ type parser struct {
 	attemptsLocation  location
 	protonHints       map[string]location
 	express           expressOptions
+	accessNoCert      bool
 
 	defaults connection
 	remotes  []remote
@@ -220,6 +225,14 @@ func (p *parser) readDirective(line string, number int) (location, error) {
 	if !supported && p.opts.protonImportEnabled() {
 		rule, supported = protonDirectives[loc.name]
 	}
+	if !supported && p.opts.AccessServerName != "" {
+		switch loc.name {
+		case "push-peer-info":
+			rule, supported = directive{}, true
+		case "setenv":
+			rule, supported = directive{min: 2, max: 2}, true
+		}
+	}
 	if !supported && p.opts.ExpressVPNManual {
 		rule, supported = expressDirectives[loc.name]
 	}
@@ -253,6 +266,9 @@ func (p *parser) finish() error {
 		return p.versionLocation.diagnostic(CodeConflict)
 	}
 	if err := p.setProtonServerIdentity(); err != nil {
+		return err
+	}
+	if err := p.finishAccessServer(); err != nil {
 		return err
 	}
 	if err := p.finishExpress(); err != nil {

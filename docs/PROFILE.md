@@ -110,8 +110,33 @@ represented by its line and the `unsupported_directive` code.
 | Profile | Directive inventory and security impact |
 |---|---|
 | OpenVPN Community 2.6 client example | Remote selection, `resolv-retry` and `nobind` affect connectivity. `persist-key`, `persist-tun` and `verb` are lifecycle and logging hints. CA, client identity, `remote-cert-tls` and optional `tls-auth` affect trust. Commented proxy, privilege and legacy cipher examples are outside the profile policy. [Community example](https://github.com/OpenVPN/openvpn/blob/v2.6.23/sample/sample-config-files/client.conf) |
-| Access Server 3.2.4 auto-login and user-locked exports | The lab exports use inline CA, client identity and `tls-crypt-v2`, with TLS 1.3. User-locked includes `auth-user-pass`. These alter credential and control protection policy. The observed legacy `cipher AES-256-CBC` declaration is rejected by the AEAD-only parser. [OpenVPN export types](https://openvpn.net/as-docs/v3/using-the-client-web-ui/) · [Lab observations](EXTERNAL_INTEROP.md#provider-and-access-server-profiles) |
+| Access Server 3.2.4 auto-login and user-locked exports | The lab exports use inline CA, client identity and `tls-crypt-v2`, with TLS 1.3. User-locked includes `auth-user-pass`. These alter credential and control protection policy. The strict parser rejects the legacy `cipher AES-256-CBC` declaration; the opt-in Access Server importer treats it as a warning only, never as an enabled cipher. See [Access Server qualification](ACCESS_SERVER.md). [OpenVPN export types](https://openvpn.net/as-docs/v3/using-the-client-web-ui/) · [Lab observations](EXTERNAL_INTEROP.md#provider-and-access-server-profiles) |
 | OpenVPN connection-block examples | Ports, protocol, bind, timeout and retry control endpoint selection. `tun-mtu` and `explicit-exit-notify` control packet sizing and teardown. Control-key directives and key direction remain security-sensitive and are validated for each endpoint. `connect-retry` and `connect-retry-max` configure the client-wide policy in this parser. [OpenVPN 2.6 manual](https://openvpn.net/community-docs/community-articles/openvpn-2-6-manual/) |
+
+## Access Server import
+
+Set `profile.Options.AccessServerName` to the exact VPN server certificate
+common name confirmed independently by the administrator. The CLI equivalent
+is `-access-server-name`. This mode requires the server certificate role
+and normal CA validation, rejects conflicting name policies, and cannot be
+combined with Proton or ExpressVPN import. Supply credentials only for a
+profile requiring them, through the existing credential APIs. A server
+certificate name must not be learned from an unverified network response.
+
+The opt-in mode recognizes the legacy AES-256-CBC hint without offering
+CBC, accepts `push-peer-info` as an advisory warning (only implemented
+capabilities are advertised), and permits `reneg-sec` up to 604800 seconds.
+Explicit non-AEAD data ciphers and cipher fallback remain rejected.
+The default profile timer ceiling stays at 86400 seconds; the direct
+client API accepts up to seven days. Peer resets and key-use limits
+continue to trigger rekey independently of the timer.
+
+Modern server-locked v2 exports can carry `setenv CLIENT_CERT 0`.
+The marker is accepted only with explicit `AllowPasswordOnly` (CLI
+`-allow-password-only`), an auth-user-pass directive and no client
+identity; other environment directives remain unsupported.
+
+See [live evidence and unsupported modes](ACCESS_SERVER.md).
 
 ## Remote precedence
 

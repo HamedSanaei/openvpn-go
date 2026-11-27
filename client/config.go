@@ -169,7 +169,7 @@ func (cfg Config) validated() (Config, error) {
 	}
 	if cfg.RekeyInterval == 0 && !cfg.DisableTimedRekey {
 		cfg.RekeyInterval = time.Hour
-	} else if !cfg.DisableTimedRekey && (cfg.RekeyInterval < time.Second || cfg.RekeyInterval > 24*time.Hour) {
+	} else if !cfg.DisableTimedRekey && (cfg.RekeyInterval < time.Second || cfg.RekeyInterval > 7*24*time.Hour) {
 		return Config{}, configError("rekey interval")
 	}
 	if cfg.MaxPacketSize < 0 || cfg.MaxPacketSize > transport.MaxPacketSize {

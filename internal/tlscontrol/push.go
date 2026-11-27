@@ -39,6 +39,8 @@ type pushState struct {
 	havePingTimeout bool
 	allowLZOStub    bool
 	haveLZOStub     bool
+	haveRouteMetric bool
+	routeMetric     uint32
 	continued       bool
 	parts           int
 	total           int

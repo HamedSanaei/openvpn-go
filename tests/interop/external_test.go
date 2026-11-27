@@ -196,6 +196,7 @@ func probeExternalProfile(ctx context.Context, name string) (result externalResu
 		ProtonVPNServerName: os.Getenv("OVPN_EXTERNAL_PROTON_SERVER_NAME"),
 		ProtonVPNVerifyIP:   os.Getenv("OVPN_EXTERNAL_PROTON_VERIFY_IP") == "1",
 		ExpressVPNManual:    os.Getenv("OVPN_EXTERNAL_EXPRESSVPN") == "1",
+		AccessServerName:    os.Getenv("OVPN_EXTERNAL_ACCESS_SERVER_NAME"),
 	}
 	report, _ := profile.InspectWithOptions(file, options)
 	result.Profile = report.Entries

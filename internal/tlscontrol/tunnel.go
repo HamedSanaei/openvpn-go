@@ -15,11 +15,17 @@ import (
 func (p *pushState) tunnelOption(name, value string) error {
 	var action tunnel.PushAction
 	switch name {
+	case "block-ipv6":
+		if p.policy.Addresses != tunnel.PushAccept || value != "" || p.Tunnel.BlockIPv6 {
+			return ErrNegotiation
+		}
+		p.Tunnel.BlockIPv6 = true
+		return nil
 	case "tun-ipv6", "topology", "ifconfig", "ifconfig-ipv6":
 		action = p.policy.Addresses
-	case "route", "route-ipv6", "route-gateway", "route-ipv6-gateway", "redirect-gateway":
+	case "route", "route-ipv6", "route-gateway", "route-ipv6-gateway", "redirect-gateway", "route-delay", "route-metric":
 		action = p.policy.Routes
-	case "dhcp-option", "dns", "block-outside-dns":
+	case "dhcp-option", "dns", "block-outside-dns", "dhcp-pre-release", "dhcp-renew", "dhcp-release", "register-dns":
 		action = p.policy.DNS
 	case "tun-mtu":
 		action = p.policy.MTU
@@ -36,7 +42,7 @@ func (p *pushState) tunnelOption(name, value string) error {
 	}
 	args := strings.Fields(value)
 	switch name {
-	case "tun-ipv6", "block-outside-dns":
+	case "tun-ipv6", "block-outside-dns", "dhcp-pre-release", "dhcp-renew", "dhcp-release", "register-dns":
 		if len(args) != 0 {
 			return ErrNegotiation
 		}
@@ -64,6 +70,22 @@ func (p *pushState) tunnelOption(name, value string) error {
 		return p.dhcpOption(args)
 	case "dns":
 		return p.dnsOption(args)
+	case "route-metric":
+		n, err := strconv.ParseUint(value, 10, 32)
+		if err != nil || p.haveRouteMetric {
+			return ErrNegotiation
+		}
+		p.haveRouteMetric, p.routeMetric = true, uint32(n)
+	case "route-delay":
+		// The application owns interface readiness and route installation.
+		if len(args) < 1 || len(args) > 2 {
+			return ErrNegotiation
+		}
+		for _, arg := range args {
+			if _, err := strconv.ParseUint(arg, 10, 16); err != nil {
+				return ErrNegotiation
+			}
+		}
 	case "redirect-gateway":
 		// This is a host routing command. Explicit numeric routes are
 		// represented separately and routing remains caller-owned.
@@ -218,6 +240,13 @@ func (p *pushState) finishTunnel() error {
 	}
 	if err := p.finishDNS(); err != nil {
 		return err
+	}
+	if p.haveRouteMetric {
+		for i := range p.routes {
+			if !p.routes[i].HasMetric {
+				p.routes[i].Metric, p.routes[i].HasMetric = p.routeMetric, true
+			}
+		}
 	}
 	p.Tunnel = p.Tunnel.WithNetworkOptions(p.routes, p.dns)
 	return nil
