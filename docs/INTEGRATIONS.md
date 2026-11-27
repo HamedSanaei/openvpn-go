@@ -35,6 +35,26 @@ and teardown have finished. `Stop` requests cancellation and `Wait`
 joins cleanup. Session identifiers are operator labels and must be
 chosen without credentials or host names.
 
+`sessions.New` retains the 64-lease limit. Use `sessions.NewWithResources`
+to configure a higher limit with an explicit aggregate packet-buffer
+estimate and optional file-descriptor budget. Each reservation includes
+both receive queues, working packet buffers, UDP scratch, and fragment
+reassembly when enabled. `StartWithResources` adds caller-declared
+adapter costs. `Usage` includes establishing and closing leases.
+The estimate excludes TLS state, goroutine stacks, kernel socket memory
+and transient allocations. Size the host from measured process and
+kernel resource use.
+
+To bound simultaneous initial attempts, reconnects and TLS rekeys, share
+a `client.HandshakeLimiter` through `client.Config`. Each shared limiter
+has an independent in-flight limit and FIFO wait queue. Full queues
+return `CodeCapacity`. Cancellation releases the slot or removes the
+entry. Waiting initial attempts use the configured dial timeout, and
+rekeys use the existing handshake timeout. Set the queue to cover the
+rekeys and recovery burst the deployment can admit. Healthy packet
+forwarding uses no admission slot between handshakes.
+[Load and reconnect tests](NATIVE_LOAD.md)
+
 `Client.AttemptReports(afterSequence)` returns up to 64 recent completed
 attempts with outcome stage, redacted code, timing, endpoint number,
 retry reason and connection generation. Under the default dialer,

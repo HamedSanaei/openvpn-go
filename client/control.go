@@ -243,6 +243,9 @@ func prepareHandshakes(cfg Config) ([]handshakeFunc, error) {
 		MaxPacketSize: cfg.MaxPacketSize, RekeyInterval: cfg.RekeyInterval, HandshakeLimit: cfg.HandshakeTimeout,
 		TunnelMTU: cfg.TunnelMTU, ReceiveQueueSize: cfg.ReceiveQueueSize,
 	}
+	if cfg.HandshakeLimiter != nil {
+		limits.AcquireHandshake = cfg.HandshakeLimiter.acquire
+	}
 	for i, endpoint := range cfg.Endpoints {
 		protection, wireDigest := common, digest
 		mode := cfg.Control.Mode

@@ -65,6 +65,8 @@ jobs:
         run: go vet ./...
       - name: Test release approval checks
         run: python3 -m unittest discover -s tools -p test_release_approvals.py
+      - name: Test native load evidence validation
+        run: python3 -m unittest discover -s tools -p test_check_native_load.py
       - name: Decoder fuzz smoke tests
         run: make fuzz-smoke
 

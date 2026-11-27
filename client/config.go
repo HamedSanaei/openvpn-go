@@ -77,6 +77,9 @@ type Config struct {
 	RemoteRandom bool
 	// Retry controls endpoint failover and reconnect during Run.
 	Retry RetryPolicy
+	// HandshakeLimiter optionally shares admission across initial attempts,
+	// reconnect and TLS rekeys. A full waiting queue returns CodeCapacity.
+	HandshakeLimiter *HandshakeLimiter
 	// PushPolicy selects how authenticated tunnel metadata is handled.
 	PushPolicy tunnel.PushPolicy
 	// AdvertiseDNS opts into the OpenVPN 2.6 and 2.7 DNS metadata capabilities with
@@ -125,6 +128,9 @@ type Config struct {
 }
 
 func (cfg Config) validated() (Config, error) {
+	if cfg.HandshakeLimiter != nil && cfg.HandshakeLimiter.max == 0 {
+		return Config{}, configError("handshake admission limits")
+	}
 	if cfg.ReceiveQueueSize < 0 || cfg.ReceiveQueueSize > control.MaxDataQueueSize {
 		return Config{}, configError("receive queue size")
 	}

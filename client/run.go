@@ -254,6 +254,9 @@ func forwardError(op string, err error, fromSession bool) forwardingError {
 }
 
 func packetErrorCode(err error, fallback ErrorCode) ErrorCode {
+	if failure, ok := errors.AsType[*Error](err); ok && failure.Code == CodeCapacity {
+		return CodeCapacity
+	}
 	switch {
 	case errors.Is(err, tlscontrol.ErrAuth):
 		return CodeAuthentication

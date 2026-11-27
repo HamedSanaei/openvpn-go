@@ -33,6 +33,7 @@ type Options struct {
 	TunnelMTU        int
 	FragmentSize     int
 	ReceiveQueueSize int
+	AcquireHandshake func(context.Context) (func(), error)
 }
 
 // Session owns one authenticated OpenVPN link. Control generations share its
@@ -49,6 +50,7 @@ type Session struct {
 	inbound      chan []byte
 	inboundQueue observability.Queue
 	writeGate    chan struct{}
+	writeBuffer  []byte // Accessed only by the write gate owner.
 	rotate       chan struct{}
 	notify       sync.Once
 	packetMTU    int
@@ -290,8 +292,11 @@ func (s *Session) write(ctx context.Context, plain []byte) error {
 	if s.fragments != nil {
 		packets, err = s.fragments.seal(s.channel, plain)
 	} else {
+		if s.writeBuffer == nil {
+			s.writeBuffer = make([]byte, 0, s.packetMTU+data.Overhead)
+		}
 		var packet []byte
-		packet, err = s.channel.Seal(plain)
+		packet, err = s.channel.SealInto(s.writeBuffer, plain)
 		packets = [][]byte{packet}
 	}
 	due := s.channel.RekeyDue()
@@ -326,7 +331,7 @@ func (s *Session) requestRekey() {
 func (s *Session) receive(wrapped []byte) {
 	now := time.Now()
 	s.mu.Lock()
-	packet, epoch, err := s.channel.OpenWithEpoch(wrapped, now)
+	packet, epoch, err := s.channel.OpenOwned(wrapped, now)
 	keepalive, validIP := false, false
 	if err == nil {
 		keepalive = data.IsKeepalive(packet)

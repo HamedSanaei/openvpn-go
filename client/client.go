@@ -194,6 +194,19 @@ func (c *Client) dial(ctx context.Context, index int, cursor *candidateCursor) (
 	if timeout == 0 {
 		timeout = c.config.ConnectTimeout
 	}
+	if limiter := c.config.HandshakeLimiter; limiter != nil {
+		observability.Enter(ctx, observability.PhaseAdmission)
+		// Admission is bounded by the endpoint's normal dial budget and
+		// cancellation. Start socket-specific timers after the permit.
+		waitCtx, cancel := context.WithTimeout(ctx, timeout)
+		release, err := limiter.acquire(waitCtx)
+		cancel()
+		if err != nil {
+			return nil, StageDial, &Error{Op: "admit handshake", Code: errorCode(err)}
+		}
+		defer release()
+		observability.Enter(ctx, observability.PhaseTransport)
+	}
 	var pollDeadline time.Time
 	if endpoint.ServerPollTimeout != 0 {
 		pollDeadline = time.Now().Add(endpoint.ServerPollTimeout)

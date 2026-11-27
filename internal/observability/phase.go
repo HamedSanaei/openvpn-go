@@ -9,6 +9,7 @@ import (
 type Phase string
 
 const (
+	PhaseAdmission       Phase = "handshake_admission"
 	PhaseTransport       Phase = "transport"
 	PhaseResetACK        Phase = "reset_ack"
 	PhaseTLS             Phase = "tls_verification"
