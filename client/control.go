@@ -74,6 +74,12 @@ type Authentication struct {
 	PendingTimeout time.Duration
 }
 
+// Interactive reports whether the configuration permits a pending server
+// decision or an interactive authentication exchange.
+func (a Authentication) Interactive() bool {
+	return a.Challenge != nil || a.WebAuth != nil || a.AllowPassivePending
+}
+
 // ControlMode selects the optional outer protection of the TLS control channel.
 type ControlMode uint8
 
@@ -266,7 +272,7 @@ func prepareHandshakes(cfg Config) ([]handshakeFunc, error) {
 			if endpoint.FixedAEADDataV1 && (len(cfg.TLS.CA) == 0 || cfg.TLS.UseSystemRoots ||
 				!cfg.TLS.RequireServerUsage || endpoint.VerifyX509Name.Mode != X509CommonName ||
 				cfg.Credentials == nil && auth.Credentials == nil ||
-				cfg.AdvertiseDNS || auth.Challenge != nil || auth.WebAuth != nil || auth.AllowPassivePending) {
+				cfg.AdvertiseDNS || cfg.Authentication.Interactive()) {
 				return nil, configError("fixed DATA_V1 policy")
 			}
 			offer = []string{fixed}

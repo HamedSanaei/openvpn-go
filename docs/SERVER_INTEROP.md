@@ -33,6 +33,16 @@ reneg-sec 0
 
 Use `profile.Options.AllowPasswordOnly=true` only for this explicitly authorized password-only endpoint. With the direct client API set `Endpoint.FixedAEAD` and `Endpoint.FixedAEADDataV1=true`, require server usage, exact common name, explicit CA and credentials. System-root-only trust, TLS control protection modes, FIPS mode, DNS capability advertisement and interactive auth callbacks are not supported by this compatibility policy. The profile directive is not inferred from an error or an incomplete push.
 
+Profile import reports a conflict at `compat-fixed-aead-v1` when the
+caller configures passive `AUTH_PENDING`, a challenge callback or a web
+authentication callback. Static credentials and a credential provider
+remain available for this endpoint.
+
+The import-policy regression was checked using the same packaged binary
+in a fresh WSL2 namespace. All four fixed-GCM combinations passed
+synthetic IPv4 traffic before and after reconnect. The server confinement
+used a private mount for its state. [Developer Edition OpenVPN lab commands](https://github.com/SoftEtherVPN/SoftEtherVPN/blob/master/.ci/start-se-openvpn.sh)
+
 The control-channel trace revealed a peer that retransmits its key-method response when sent five ACK IDs. Limit outbound ACK history to four only in this mode. The full four-field key-method response must contain the configured cipher in its options field. The authenticated push must not contain a peer ID or select TLS exporter derivation. Classic KM2 produces fresh per-generation keys; the AEAD DATA_V1 frame uses a one-byte opcode/key ID, four-byte packet ID authenticated as AAD, 16-byte tag, and ciphertext. Replay checks, key limits, old-generation overlap and conservative DATA_V2 MTU budgeting remain active. Unlike DATA_V2, DATA_V1 does not carry an authenticated peer ID; do not use this mode for modern peers.
 
 ### Observed results (2026-11-27)
