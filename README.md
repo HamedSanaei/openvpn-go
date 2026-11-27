@@ -175,6 +175,6 @@ make audit
 
 ## Project documents
 
-Start with docs/PROJECT_PLAN.md, then docs/REQUIREMENTS.md, docs/ARCHITECTURE.md, docs/CLEAN_ROOM.md and docs/MILESTONES.md.
+Start with docs/PROJECT_PLAN.md, then docs/REQUIREMENTS.md, docs/ARCHITECTURE.md, docs/SECURITY_MODEL.md, docs/INDEPENDENT_AUDIT_PLAN.md, docs/CLEAN_ROOM.md and docs/MILESTONES.md.
 
 [Protocol feature ledger](docs/FEATURE_LEDGER.md) · [Stress and comparative resource evidence](docs/RESOURCE_EVIDENCE.md)
