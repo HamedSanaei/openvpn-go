@@ -19,6 +19,7 @@ epoch=${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}
 [[ "$epoch" =~ ^[0-9]+$ ]]
 
 python3 tools/release_audit.py --check docs/sbom.spdx.json >&2
+umask 022
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 name="openvpn-go-$version-$system-$arch"
@@ -48,6 +49,10 @@ for namepart in crypto sys; do
     fi
 done
 printf '%s\n' "$version" > "$stage/VERSION"
+find "$stage" -type d -exec chmod 0755 {} +
+find "$stage" -type f -exec chmod 0644 {} +
+chmod 0755 "$stage/ovpn-inspect$suffix"
+if [ "$system" = linux ]; then chmod 0755 "$stage/ovpn-xray"; fi
 tar --sort=name --mtime="@$epoch" --owner=0 --group=0 --numeric-owner -C "$work" -cf - "$name" \
     | gzip -n > "$work/$name.tar.gz"
 mv -- "$work/$name.tar.gz" "$output/$name.tar.gz"

@@ -41,7 +41,10 @@ func (a *Adapter) ActiveDNS() (generation uint64, config tunnel.DNSConfig, activ
 
 // DialDNS opens UDP or TCP only to a server announced by the active
 // generation. TLS-based DNS endpoints require TCP. On disconnect all
-// returned sockets close before the caller's tunnel rollback runs.
+// returned sockets close before the caller's tunnel rollback runs. An
+// authorized dial reports its caller's cancellation or deadline, even
+// if its generation retires in flight. Requests for already retired
+// generations and retirement without caller cancellation are unavailable.
 func (a *Adapter) DialDNS(ctx context.Context, generation uint64, network string, server netip.AddrPort) (net.Conn, error) {
 	s := a.dns.Load()
 	if s == nil || s.generation != generation || (network != "udp" && network != "tcp") {
@@ -54,9 +57,13 @@ func (a *Adapter) DialDNS(ctx context.Context, generation uint64, network string
 		return nil, ErrDNSUnavailable
 	}
 	s.mu.Lock()
-	if s.closed || s.ctx.Err() != nil || ctx.Err() != nil {
+	if s.closed || s.ctx.Err() != nil {
 		s.mu.Unlock()
 		return nil, ErrDNSUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		s.mu.Unlock()
+		return nil, err
 	}
 	s.dials.Add(1)
 	s.mu.Unlock()
@@ -72,6 +79,9 @@ func (a *Adapter) DialDNS(ctx context.Context, generation uint64, network string
 		s.mu.Unlock()
 		if conn != nil {
 			conn.Close()
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 		return nil, ErrDNSUnavailable
 	}

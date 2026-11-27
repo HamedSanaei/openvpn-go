@@ -10,8 +10,8 @@ import (
 	"io"
 	"math"
 	"net"
-	"net/http"
 	"net/netip"
+	"net/textproto"
 	"strconv"
 	"strings"
 	"time"
@@ -32,7 +32,14 @@ type Config struct {
 }
 
 // HTTPConnect uses the HTTP/1.1 CONNECT method for TCP endpoints.
-func HTTPConnect(c Config) (transport.Dialer, error) { return newDialer(c, connectHTTP) }
+func HTTPConnect(c Config) (transport.Dialer, error) {
+	if strings.ContainsRune(c.Username, ':') || strings.ContainsFunc(c.Username+c.Password, func(r rune) bool {
+		return r < 0x20 || r == 0x7f
+	}) {
+		return nil, ErrProxy
+	}
+	return newDialer(c, connectHTTP)
+}
 
 // SOCKS5 uses the SOCKS5 CONNECT command for TCP endpoints.
 func SOCKS5(c Config) (transport.Dialer, error) { return newDialer(c, connectSOCKS) }
@@ -92,6 +99,7 @@ func newDialer(c Config, negotiate func(net.Conn, string, string, uint16, Config
 			close(interrupted)
 		})
 		var conn net.Conn = raw
+		var trustFailure *tls.CertificateVerificationError
 		if c.TLS != nil {
 			secured := tls.Client(raw, c.TLS)
 			err = secured.HandshakeContext(ctx)
@@ -105,6 +113,9 @@ func newDialer(c Config, negotiate func(net.Conn, string, string, uint16, Config
 		}
 		if err != nil || ctx.Err() != nil || raw.SetDeadline(time.Time{}) != nil {
 			raw.Close()
+			if ctx.Err() == nil && errors.As(err, &trustFailure) {
+				return nil, errors.Join(ErrProxy, transport.ErrPeerCertificate)
+			}
 			return nil, proxyError(ctx)
 		}
 		return conn, nil
@@ -151,9 +162,6 @@ type bufferedConn struct {
 func (c bufferedConn) Read(b []byte) (int, error) { return c.reader.Read(b) }
 
 func connectHTTP(conn net.Conn, address, _ string, _ uint16, c Config) (net.Conn, error) {
-	if strings.ContainsRune(c.Username, ':') {
-		return nil, ErrProxy
-	}
 	request := "CONNECT " + address + " HTTP/1.1\r\nHost: " + address + "\r\n"
 	if c.Username != "" {
 		request += "Proxy-Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte(c.Username+":"+c.Password)) + "\r\n"
@@ -163,14 +171,31 @@ func connectHTTP(conn net.Conn, address, _ string, _ uint16, c Config) (net.Conn
 	}
 	limit := &io.LimitedReader{R: conn, N: 16 << 10}
 	reader := bufio.NewReaderSize(limit, 1024)
-	response, err := http.ReadResponse(reader, &http.Request{Method: http.MethodConnect})
-	if err != nil || response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, ErrProxy
+	headers := textproto.NewReader(reader)
+	const maxInterim = 8
+	for interim := 0; ; interim++ {
+		line, err := headers.ReadLine()
+		version, rest, _ := strings.Cut(line, " ")
+		code, reason, ok := strings.Cut(rest, " ")
+		status, parseErr := strconv.Atoi(code)
+		if err != nil || !ok || version != "HTTP/1.0" && version != "HTTP/1.1" ||
+			len(code) != 3 || parseErr != nil || status < 100 || status >= 600 ||
+			strings.ContainsFunc(reason, func(r rune) bool { return r < 0x20 && r != '\t' || r == 0x7f }) {
+			return nil, ErrProxy
+		}
+		if _, err := headers.ReadMIMEHeader(); err != nil {
+			return nil, ErrProxy
+		}
+		switch {
+		case status >= 200 && status < 300:
+			// Successful CONNECT framing ends at the blank line. Keep the
+			// buffered bytes and leave body framing fields uninterpreted.
+			limit.N = math.MaxInt64
+			return bufferedConn{conn, reader}, nil
+		case status >= 200 || status == 101 || interim >= maxInterim:
+			return nil, ErrProxy
+		}
 	}
-	// CONNECT switches to a byte stream. Ignore response body metadata
-	// and preserve bytes already buffered by the HTTP parser.
-	limit.N = math.MaxInt64
-	return bufferedConn{conn, reader}, nil
 }
 
 func connectSOCKS(conn net.Conn, _ string, host string, port uint16, c Config) (net.Conn, error) {

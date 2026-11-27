@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/hamedsanaei/openvpn-go/internal/pemutil"
 )
 
 const maxKeyString = 4096
@@ -51,8 +53,14 @@ func ClientConfig(ca, certificate, key []byte, systemRoots, allowPasswordOnly bo
 	} else {
 		roots = x509.NewCertPool()
 	}
-	if len(ca) != 0 && !roots.AppendCertsFromPEM(ca) {
-		return nil, ErrConfig
+	if len(ca) != 0 {
+		anchors, ok := pemutil.Certificates(ca)
+		if !ok {
+			return nil, ErrConfig
+		}
+		for _, anchor := range anchors {
+			roots.AddCert(anchor)
+		}
 	}
 	cfg := &tls.Config{
 		RootCAs:                roots,
@@ -63,9 +71,21 @@ func ClientConfig(ca, certificate, key []byte, systemRoots, allowPasswordOnly bo
 	if len(certificate) == 0 && len(key) == 0 && allowPasswordOnly {
 		return cfg, nil
 	}
-	pair, err := tls.X509KeyPair(certificate, key)
-	if err != nil {
+	// X509KeyPair decodes and matches the leaf and key. Check the
+	// envelopes first so its permissive PEM scan cannot skip material.
+	certCount, ok := pemutil.EnvelopeCount(certificate, false)
+	keyCount, validKey := pemutil.EnvelopeCount(key, true)
+	if !ok || !validKey || keyCount != 1 {
 		return nil, ErrConfig
+	}
+	pair, err := tls.X509KeyPair(certificate, key)
+	if err != nil || len(pair.Certificate) != certCount {
+		return nil, ErrConfig
+	}
+	for _, der := range pair.Certificate[1:] {
+		if _, err := x509.ParseCertificate(der); err != nil {
+			return nil, ErrConfig
+		}
 	}
 	cfg.Certificates = []tls.Certificate{pair}
 	return cfg, nil

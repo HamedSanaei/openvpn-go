@@ -9,11 +9,12 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
 func TestPendingAuthenticationExchange(t *testing.T) {
-	for _, scenario := range []string{"roundtrip", "web", "denied", "canceled", "callback-canceled", "unsolicited", "deadline", "callback-error"} {
+	for _, scenario := range []string{"roundtrip", "optional-empty", "web", "denied", "canceled", "callback-canceled", "unsolicited", "deadline", "callback-error"} {
 		t.Run(scenario, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
 			defer cancel()
@@ -37,18 +38,24 @@ func TestPendingAuthenticationExchange(t *testing.T) {
 					verdict = "AUTH_PENDING,timeout 2\x00AUTH_FAILED,synthetic-private-details\x00"
 				case "deadline":
 					verdict = "AUTH_PENDING,timeout 1\x00"
+				case "optional-empty":
+					verdict = "INFO,testing\x00AUTH_PENDING,timeout 2\x00INFO_PRE,CR_TEXT:E:One-time code\x00"
 				case "web":
 					verdict = "AUTH_PENDING,timeout 2\x00INFO_PRE,WEB_AUTH:external:https://login.example.test/saml?opaque=secret\x00"
 				default:
 					verdict = "AUTH_PENDING,timeout 2\x00INFO_PRE,CR_TEXT:E,R:One-time code\x00"
 				}
-				if _, err := io.WriteString(peer, verdict); err != nil || scenario != "roundtrip" && scenario != "web" {
+				if _, err := io.WriteString(peer, verdict); err != nil || scenario != "roundtrip" && scenario != "optional-empty" && scenario != "web" {
 					peerDone <- err
 					return
 				}
-				if scenario == "roundtrip" {
+				if scenario == "roundtrip" || scenario == "optional-empty" {
 					answer, err := r.ReadString(0)
-					if err != nil || answer != "CR_RESPONSE,MTIzNDU2\x00" {
+					want := "CR_RESPONSE,MTIzNDU2\x00"
+					if scenario == "optional-empty" {
+						want = "CR_RESPONSE,\x00"
+					}
+					if err != nil || answer != want {
 						peerDone <- errors.New("unexpected challenge response")
 						return
 					}
@@ -60,7 +67,7 @@ func TestPendingAuthenticationExchange(t *testing.T) {
 			push := pushState{allowed: []string{"AES-256-GCM"}}
 			interaction := Interaction{Challenge: func(cb context.Context, challenge Challenge) (string, error) {
 				calls++
-				if challenge.Prompt != "One-time code" || !challenge.Echo || !challenge.Required {
+				if challenge.Prompt != "One-time code" || !challenge.Echo || challenge.Required != (scenario != "optional-empty") {
 					t.Errorf("unexpected challenge: %+v", challenge)
 				}
 				switch scenario {
@@ -71,6 +78,9 @@ func TestPendingAuthenticationExchange(t *testing.T) {
 					return "", errors.New("synthetic-private-details")
 				case "callback-canceled":
 					return "", fmt.Errorf("synthetic-private-details: %w", context.Canceled)
+				}
+				if scenario == "optional-empty" {
+					return "", nil
 				}
 				return "123456", nil
 			}}
@@ -84,7 +94,7 @@ func TestPendingAuthenticationExchange(t *testing.T) {
 			err := readPushInteractive(ctx, local, bufio.NewReader(local), &push, interaction)
 			want := ErrAuth
 			switch scenario {
-			case "roundtrip", "web":
+			case "roundtrip", "optional-empty", "web":
 				want = nil
 				if calls != 1 || push.PeerID != 7 || string(push.token) != "test-token" {
 					t.Fatal("challenge or authenticated push did not complete")
@@ -130,5 +140,67 @@ func TestCredentialProviderTokenLifecycle(t *testing.T) {
 	fresh, err := next.forHandshake(t.Context(), provider)
 	if err != nil || calls != 2 || fresh.Password != initial.Password {
 		t.Fatal("fresh connection did not reacquire credentials")
+	}
+}
+
+func TestPassivePendingBudget(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		owner, stopOwner := context.WithTimeout(t.Context(), 2*time.Second)
+		defer stopOwner()
+		setup, stopSetup := context.WithTimeout(owner, 100*time.Millisecond)
+		defer stopSetup()
+		setup, extended := WithPendingParent(setup, owner)
+		local, peer := net.Pipe()
+		defer local.Close()
+		defer peer.Close()
+		pendingSeen := make(chan struct{})
+		done := make(chan error, 1)
+		go func() {
+			if _, err := bufio.NewReader(peer).ReadString(0); err != nil {
+				done <- err
+				return
+			}
+			if _, err := io.WriteString(peer, "AUTH_PENDING,timeout 3\x00"); err != nil {
+				done <- err
+				return
+			}
+			<-pendingSeen
+			time.Sleep(200 * time.Millisecond)
+			_, err := io.WriteString(peer, "PUSH_REPLY,peer-id 7,key-derivation tls-ekm,cipher AES-256-GCM\x00")
+			done <- err
+		}()
+		push := pushState{allowed: []string{"AES-256-GCM"}}
+		pending := pendingAuth{Interaction: Interaction{AllowPassivePending: true, PendingTimeout: time.Second}}
+		defer pending.close()
+		if err := readPushWithPending(setup, local, bufio.NewReader(local), &push, &pending,
+			func(context.Context) error { close(pendingSeen); return nil }); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		if !extended() || setup.Err() != context.DeadlineExceeded || push.PeerID != 7 {
+			t.Fatal("passive authentication did not extend the setup budget")
+		}
+	})
+}
+
+func TestInitialTokenUsernameIsOnlyMetadata(t *testing.T) {
+	auth := NewAuthentication(Credentials{Username: "original", Password: "password"})
+	defer auth.Clear()
+	auth.set(nil, "token-name")
+	before, err := auth.forHandshake(t.Context(), nil)
+	if err != nil || before.Username != "original" || before.Password != "password" {
+		t.Fatal("token metadata changed ordinary credentials")
+	}
+	if err := auth.update([]byte("auth-token-user c29tZS1uYW1l")); !errors.Is(err, ErrNegotiation) {
+		t.Fatal("a username-only refresh was accepted")
+	}
+	if err := auth.update([]byte("auth-token synthetic-token")); err != nil {
+		t.Fatal(err)
+	}
+	after, err := auth.forHandshake(t.Context(), nil)
+	if err != nil || after.Username != "token-name" || after.Password != "synthetic-token" {
+		t.Fatal("the authenticated token did not inherit the initial metadata")
 	}
 }

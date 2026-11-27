@@ -114,7 +114,7 @@ func TestDirectiveRegistry(t *testing.T) {
 		{"bind", "bind", "bind\nnobind", false},
 		{"local", "local 127.0.0.1", "local not-a-literal", false},
 		{"lport", "lport 1195", "lport 0", false},
-		{"connect-timeout", "connect-timeout 5", "connect-timeout 121", false},
+		{"connect-timeout", "connect-timeout 5", "connect-timeout 301", false},
 		{"server-poll-timeout", "server-poll-timeout 20", "server-poll-timeout 301", false},
 		{"connect-retry", "connect-retry 1 30", "connect-retry 30 1", false},
 		{"connect-retry-max", "connect-retry-max 3", "connect-retry-max 1025", false},
@@ -280,7 +280,7 @@ func TestPerConnectionProtectionAndTLS(t *testing.T) {
 		"<connection>\nremote first.example.test\n</connection>\n" +
 		"<connection>\nremote second.example.test 443 tcp4\n" + section("tls-crypt", staticFixture()) + "</connection>\n" +
 		"<connection>\nremote third.example.test\n" + section("tls-crypt-v2", wrappedFixture()) + "</connection>\n" +
-		"key-direction 0\n<connection>\nremote fourth.example.test\n</connection>\n" +
+		"<connection>\nremote fourth.example.test\nkey-direction 0\n</connection>\n" +
 		"remote-cert-tls server\nverify-x509-name prefix name-prefix\ntls-version-min 1.3\ntls-version-max 1.3\n" +
 		"data-ciphers CHACHA20-POLY1305:AES-128-GCM\n" + pki
 	cfg, _, err := Parse(strings.NewReader(source), Options{})

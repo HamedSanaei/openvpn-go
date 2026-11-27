@@ -25,6 +25,9 @@ var (
 	ErrUnsupportedNetwork = errors.New("unsupported packet network")
 	// ErrInvalidConnection indicates a dialer returned success without a connection.
 	ErrInvalidConnection = errors.New("missing transport connection")
+	// ErrPeerCertificate classifies a dialer's sanitized TLS trust failure,
+	// for example when validating a TLS proxy before talking to the VPN peer.
+	ErrPeerCertificate = errors.New("transport peer certificate verification failed")
 )
 
 // PacketConn exchanges complete OpenVPN protocol packets.

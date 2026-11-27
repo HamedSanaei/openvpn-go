@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"time"
 
@@ -75,8 +76,7 @@ func resolvedHosts(addresses []netip.Addr, family string) []string {
 	seen := make(map[netip.Addr]bool, limit)
 	for _, address := range addresses {
 		addr := address.Unmap()
-		if !addr.IsValid() || addr.IsUnspecified() || addr.IsMulticast() ||
-			family == "ip4" && !addr.Is4() || family == "ip6" && !addr.Is6() || seen[addr] {
+		if !validRemoteIP(addr, family) || seen[addr] {
 			continue
 		}
 		seen[addr] = true
@@ -86,6 +86,12 @@ func resolvedHosts(addresses []netip.Addr, family string) []string {
 		}
 	}
 	return result
+}
+
+func validRemoteIP(addr netip.Addr, family string) bool {
+	addr = addr.Unmap()
+	return addr.IsValid() && !addr.IsUnspecified() && !addr.IsMulticast() &&
+		(family != "ip4" || addr.Is4()) && (family != "ip6" || addr.Is6())
 }
 
 func (e Endpoint) addressFamily() string {
@@ -100,19 +106,24 @@ func (e Endpoint) addressFamily() string {
 }
 
 func (e Endpoint) socketDialer(limit int) transport.Dialer {
-	dialer := net.Dialer{}
+	var local net.Addr
 	ip := net.IP(e.LocalAddress.AsSlice())
 	if strings.HasPrefix(e.Network, "udp") {
-		dialer.LocalAddr = &net.UDPAddr{IP: ip, Port: int(e.LocalPort), Zone: e.LocalAddress.Zone()}
+		local = &net.UDPAddr{IP: ip, Port: int(e.LocalPort), Zone: e.LocalAddress.Zone()}
 	} else {
-		dialer.LocalAddr = &net.TCPAddr{IP: ip, Port: int(e.LocalPort), Zone: e.LocalAddress.Zone()}
+		local = &net.TCPAddr{IP: ip, Port: int(e.LocalPort), Zone: e.LocalAddress.Zone()}
 	}
-	return (transport.SocketDialer{MaxPacketSize: limit}).WithDialContext(dialer.DialContext)
+	return (transport.SocketDialer{MaxPacketSize: limit}).WithLocalAddr(local)
 }
 
 func (e Endpoint) hasLocalBind() bool { return e.LocalAddress.IsValid() || e.LocalPort != 0 }
 
-func (c *Client) connectSocket(ctx context.Context, endpoint Endpoint, visit int) (transport.PacketConn, string, error) {
+type candidateCursor struct {
+	host     string
+	position int
+}
+
+func (c *Client) connectSocket(ctx context.Context, endpoint Endpoint, cursor *candidateCursor) (transport.PacketConn, string, error) {
 	dialer := c.config.Dialer
 	if endpoint.hasLocalBind() {
 		dialer = endpoint.socketDialer(c.config.MaxPacketSize)
@@ -121,14 +132,20 @@ func (c *Client) connectSocket(ctx context.Context, endpoint Endpoint, visit int
 	if err != nil {
 		return nil, "", errors.Join(errResolution, err)
 	}
-	// A UDP socket can connect before its remote has replied. On a
-	// subsequent visit start with a different address from the fresh lookup.
-	if !strings.HasPrefix(endpoint.Network, "udp") {
-		visit = 0
+	// A socket can connect before OpenVPN has replied. Start after the
+	// selected address when retrying with freshly resolved candidates.
+	start := 0
+	if cursor.host != "" {
+		if previous := slices.Index(hosts, cursor.host); previous >= 0 {
+			start = (previous + 1) % len(hosts)
+		} else {
+			start = min(cursor.position, len(hosts)-1)
+		}
 	}
 	var lastErr error
 	for i := range hosts {
-		host := hosts[(visit+i)%len(hosts)]
+		position := (start + i) % len(hosts)
+		host := hosts[position]
 		candidate := endpoint
 		candidate.Host = host
 		conn, err := dialer.DialPacket(ctx, candidate.Network, candidate.address())
@@ -137,17 +154,24 @@ func (c *Client) connectSocket(ctx context.Context, endpoint Endpoint, visit int
 		}
 		if err == nil && conn != nil {
 			tlsNetwork := endpoint.Network
-			if addr, parseErr := netip.ParseAddr(host); parseErr == nil && addr.Unmap().Is6() &&
-				(tlsNetwork == "tcp" || tlsNetwork == "udp") {
+			addr, _ := netip.ParseAddr(host)
+			if !addr.IsValid() {
+				if peer, ok := conn.(interface{ PeerIP() netip.Addr }); ok {
+					addr = peer.PeerIP()
+				}
+			}
+			if addr.Unmap().Is6() && (tlsNetwork == "tcp" || tlsNetwork == "udp") {
 				tlsNetwork += "6"
 			}
+			*cursor = candidateCursor{host: host, position: position}
 			return conn, tlsNetwork, nil
 		}
 		if conn != nil {
 			conn.Close()
 		}
 		if err == nil || errors.Is(err, transport.ErrInvalidPacketLimit) ||
-			errors.Is(err, transport.ErrUnsupportedNetwork) || errors.Is(err, transport.ErrInvalidConnection) {
+			errors.Is(err, transport.ErrUnsupportedNetwork) || errors.Is(err, transport.ErrInvalidConnection) ||
+			errors.Is(err, transport.ErrPeerCertificate) {
 			if err == nil {
 				err = transport.ErrInvalidConnection
 			}

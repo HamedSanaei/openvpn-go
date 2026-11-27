@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -40,5 +41,24 @@ func TestPasswordOnlyRequiresOptInTrustAndCredentials(t *testing.T) {
 	}
 	if _, err := client.New(cfg); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPasswordOnlyCallbackRequiresDirective(t *testing.T) {
+	pki := testkit.NewPKI(t)
+	base := testProfile + section("ca", pki.CA)
+	callback := func(context.Context) (client.Credentials, error) {
+		t.Fatal("parsing invoked the credential callback")
+		return client.Credentials{}, nil
+	}
+	opt := Options{AllowPasswordOnly: true, Authentication: client.Authentication{Credentials: callback}}
+	cfg, _, err := Parse(strings.NewReader(base), opt)
+	var diag *Diagnostic
+	if !errors.As(err, &diag) || diag.Code != CodeRequired || diag.Directive != "auth-user-pass" || cfg.TLS != nil {
+		t.Fatalf("unexpected callback-only parse result: %v", err)
+	}
+	cfg, _, err = Parse(strings.NewReader(base+"auth-user-pass\n"), opt)
+	if err != nil || !cfg.TLS.AllowPasswordOnly || cfg.Authentication.Credentials == nil {
+		t.Fatalf("explicit callback-only import: %v", err)
 	}
 }

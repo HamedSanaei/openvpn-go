@@ -123,11 +123,20 @@ func (b linuxBackend) Clear(ctx context.Context, plan Plan) error {
 }
 
 func (b linuxBackend) routeAbsent(ctx context.Context, route netip.Prefix) bool {
-	cmd := exec.CommandContext(ctx, ipCommand, "-j", family(route), "route", "show", "table", "all", "exact", route.String(), "dev", b.link, "proto", routeProtocol)
-	var out bytes.Buffer
+	cmd := exec.CommandContext(ctx, ipCommand, "-j", family(route), "route", "show", "table",
+		strconv.FormatUint(uint64(b.table), 10), "exact", route.String(), "dev", b.link, "proto", routeProtocol)
+	cmd.Env = append(cmd.Environ(), "LC_ALL=C")
+	var out, stderr bytes.Buffer
 	cmd.Stdout = &boundedOutput{out: &out}
+	cmd.Stderr = &boundedOutput{out: &stderr}
 	if err := cmd.Run(); err != nil {
-		return false
+		// iproute2 reports ENOENT on the dump of an unallocated table.
+		var exit *exec.ExitError
+		diagnostic := stderr.String()
+		return ctx.Err() == nil && errors.As(err, &exit) && exit.ExitCode() == 2 &&
+			(diagnostic == "Error: ipv4: FIB table does not exist.\nDump terminated\n" ||
+				diagnostic == "Error: ipv6: FIB table does not exist.\nDump terminated\n" ||
+				diagnostic == "RTNETLINK answers: No such file or directory\nDump terminated\n")
 	}
 	var entries []json.RawMessage
 	return json.Unmarshal(out.Bytes(), &entries) == nil && len(entries) == 0

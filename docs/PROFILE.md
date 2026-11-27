@@ -71,12 +71,12 @@ their own lines.
 | `tls-auth` | Relative Static Key V1 path with optional direction `0` or `1`, or `<tls-auth>` block. |
 | `tls-crypt` | Relative Static Key V1 path or `<tls-crypt>` block. |
 | `tls-crypt-v2` | Relative wrapped client PEM key path or `<tls-crypt-v2>` block. |
-| `key-direction` | `0` or `1` for `tls-auth`. Omission allows bidirectional mode. Both forms must agree when supplied together. |
+| `key-direction` | `0` or `1` for `tls-auth`. Omission allows bidirectional mode. Both forms must agree when supplied together. A conflicting repeat in the same scope is rejected. A connection block can override the inherited value. |
 | `auth` | `SHA1`, `SHA256`, `SHA384` or `SHA512`, case-insensitive. Selects the OpenVPN auth digest, including the HMAC for `tls-auth`. The default is `SHA1`. |
 | `data-ciphers` | Ordered, colon-separated subset of `AES-256-GCM`, `AES-128-GCM` and `CHACHA20-POLY1305`, with each cipher listed at most once. Omission offers all three. |
 | `cipher` | A single supported AEAD produces an `ignored_directive` warning. Configure the negotiated offer with `data-ciphers`. |
 | `compat-fixed-aead` | Explicit fixed `AES-128-GCM` or `AES-256-GCM` for one remote. Selects the concise server key-method-2 reply, classic derivation and DATA_V2 for that endpoint. Requires a client certificate and plain outer control with verified TLS. |
-| `remote-cert-tls` | `server`. Requires explicit leaf Key Usage and TLS server Extended Key Usage. |
+| `remote-cert-tls` | `server`. Requires the Digital Signature bit in leaf Key Usage and TLS server Extended Key Usage. |
 | `peer-fingerprint` | SHA-256 leaf fingerprint with 32 colon-separated hex octets, a relative file path, or an inline block with one fingerprint per line. Up to 32 distinct pins are accepted across all declarations. |
 | `crl-verify` | Relative file path or inline block containing PEM X.509 CRLs in complete issuer list format. |
 | `verify-x509-name` | `value [subject\|name\|name-prefix]`, with `subject` as the default. See identity policy below. |
@@ -88,13 +88,13 @@ their own lines.
 | `disable-dco` | Requests the standard userspace data path. |
 | `persist-key`, `persist-tun` | Accepted with an `ignored_directive` warning. The library owns session keys and the caller manages the tunnel. |
 | `resolv-retry` | DNS retry budget of 0–120 seconds. Each dial has its own deadline. `infinite` retries DNS until that deadline or cancellation. |
-| `connect-timeout` | Dial deadline in seconds, 1–120. |
+| `connect-timeout` | Alias for `server-poll-timeout`. The last assignment in a scope wins. |
 | `server-poll-timeout` | Per-remote deadline in seconds, 1–300, covering dialing and the initial OpenVPN control response. The handshake and authentication use their existing deadlines after that response. |
 | `connect-retry` | Initial and optional maximum retry delay ceilings in seconds, 1–300. Uses the client retry policy's jitter. |
 | `connect-retry-max` | Number of visits per remote in rotating order. The total per sequence must be at most 1024. |
 | `hand-window` | Initial TLS/control deadline and rekey deadline in seconds, 1–300. |
 | `reneg-sec` | Client timer-driven rekey interval in seconds, 1–86400. Zero disables the timer. The key usage limit and peer resets still trigger rekey. |
-| `explicit-exit-notify` | Optional count from 0–255, default 1. A positive value enables authenticated exit on a capable UDP peer when the application calls `Close`. The count applies to legacy OpenVPN data-channel retransmissions. This client uses the reliable control channel. |
+| `explicit-exit-notify` | Optional count from 0–255, default 1. A positive value enables authenticated exit on a capable UDP peer when the application calls `Close`. The count applies to legacy OpenVPN data-channel retransmissions. This client uses the reliable control channel. ExpressVPN imports default to enabled when omitted, with explicit zero honored in global and connection settings. |
 | `tun-mtu` | Inner IP packet ceiling, 68–65535 bytes. See the packet size policy. |
 | `verb` | Levels 0 through 11. Reports `ignored_directive`. |
 

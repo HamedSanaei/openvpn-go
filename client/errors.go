@@ -24,6 +24,7 @@ const (
 	CodeTunnel         ErrorCode = "tunnel failure"
 	CodePeerRestart    ErrorCode = "peer requested a restart"
 	CodePeerStopped    ErrorCode = "peer stopped the session"
+	CodeCleanup        ErrorCode = "session cleanup failed"
 )
 
 // Error is a redacted error returned by the client. Code supports programmatic
@@ -54,6 +55,11 @@ func (e *Error) Is(target error) bool {
 	}
 }
 
+type restartSameError struct{ failure *Error }
+
+func (e restartSameError) Error() string { return e.failure.Error() }
+func (e restartSameError) Unwrap() error { return e.failure }
+
 func configError(field string) *Error {
 	return &Error{Op: "configure", Code: CodeConfig, Field: field}
 }
@@ -73,6 +79,10 @@ func contextCode(err error, fallback ErrorCode) ErrorCode {
 	case errors.Is(err, context.DeadlineExceeded):
 		return CodeTimeout
 	default:
+		var timeout net.Error
+		if errors.As(err, &timeout) && timeout.Timeout() {
+			return CodeTimeout
+		}
 		return fallback
 	}
 }

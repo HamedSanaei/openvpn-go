@@ -16,20 +16,25 @@ var ErrDNS = errors.New("invalid or unavailable userspace DNS exchange")
 
 // ExchangeDNS sends a bounded DNS wire query to an explicitly configured
 // resolver. A truncated UDP reply retries over TCP at the same endpoint.
-// The caller supplies the query and interprets the DNS response.
+// The reply must repeat the query's single question. The caller interprets
+// the response records and DNS response code.
 func (a *Adapter) ExchangeDNS(ctx context.Context, server netip.AddrPort, request []byte) ([]byte, error) {
 	if !slices.Contains(a.dns, server) || len(request) < 12 || len(request) > maxDNSPacket ||
-		request[2]&0x80 != 0 || binary.BigEndian.Uint16(request[4:6]) != 1 {
+		request[2]&0x80 != 0 {
+		return nil, ErrDNS
+	}
+	question, ok := dnsQuestionOf(request)
+	if !ok {
 		return nil, ErrDNS
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	response, err := a.dnsExchange(ctx, "udp", server, request)
+	response, err := a.dnsExchange(ctx, "udp", server, request, question)
 	if err != nil {
 		return nil, err
 	}
 	if response[2]&0x02 != 0 {
-		response, err = a.dnsExchange(ctx, "tcp", server, request)
+		response, err = a.dnsExchange(ctx, "tcp", server, request, question)
 		if err == nil && response[2]&0x02 != 0 {
 			return nil, ErrDNS
 		}
@@ -37,7 +42,7 @@ func (a *Adapter) ExchangeDNS(ctx context.Context, server netip.AddrPort, reques
 	return response, err
 }
 
-func (a *Adapter) dnsExchange(ctx context.Context, network string, server netip.AddrPort, request []byte) ([]byte, error) {
+func (a *Adapter) dnsExchange(ctx context.Context, network string, server netip.AddrPort, request []byte, question dnsQuestion) ([]byte, error) {
 	conn, err := a.dial(ctx, network, server)
 	if err != nil {
 		return nil, err
@@ -87,6 +92,9 @@ func (a *Adapter) dnsExchange(ctx context.Context, network string, server netip.
 		response[2]&0x80 == 0 || response[2]&0x78 != request[2]&0x78 {
 		return nil, ErrDNS
 	}
+	if actual, ok := dnsQuestionOf(response); !ok || actual != question {
+		return nil, ErrDNS
+	}
 	return response, ctx.Err()
 }
 
@@ -98,4 +106,64 @@ func (a *Adapter) dnsFailure(ctx context.Context) error {
 		return err
 	}
 	return ErrDNS
+}
+
+type dnsQuestion struct {
+	name  [255]byte
+	qtype uint16
+	class uint16
+}
+
+func dnsQuestionOf(message []byte) (dnsQuestion, bool) {
+	var question dnsQuestion
+	if len(message) < 12 || binary.BigEndian.Uint16(message[4:6]) != 1 {
+		return question, false
+	}
+	// Compression pointers point backwards. Keep the offset to QTYPE
+	// after the encoded name while bounding the expanded wire name.
+	pos, size, tail, ceiling := 12, 0, 0, len(message)
+	for {
+		if pos >= ceiling {
+			return question, false
+		}
+		label := int(message[pos])
+		switch {
+		case label == 0:
+			if tail == 0 {
+				tail = pos + 1
+			}
+			if tail+4 > len(message) {
+				return question, false
+			}
+			question.qtype = binary.BigEndian.Uint16(message[tail:])
+			question.class = binary.BigEndian.Uint16(message[tail+2:])
+			return question, true
+		case label&0xc0 == 0xc0:
+			if pos+1 >= ceiling {
+				return question, false
+			}
+			pointer := (label&0x3f)<<8 | int(message[pos+1])
+			if pointer < 12 || pointer >= pos {
+				return question, false
+			}
+			if tail == 0 {
+				tail = pos + 2
+			}
+			ceiling, pos = pos, pointer
+		case label > 63 || pos+1+label > ceiling || size+1+label >= len(question.name):
+			return question, false
+		default:
+			question.name[size] = byte(label)
+			pos++
+			size++
+			for _, ch := range message[pos : pos+label] {
+				if 'A' <= ch && ch <= 'Z' {
+					ch += 'a' - 'A'
+				}
+				question.name[size] = ch
+				size++
+			}
+			pos += label
+		}
+	}
 }

@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -38,7 +39,7 @@ func New(loginOrigin, callbackLocation string, timeout time.Duration, browser Br
 			return err
 		}
 		login := secureURL(address)
-		if login == nil || !strings.EqualFold(login.Host, origin.Host) || !active.CompareAndSwap(false, true) {
+		if login == nil || !sameOrigin(login, origin) || !active.CompareAndSwap(false, true) {
 			return ErrWebAuth
 		}
 		defer active.Store(false)
@@ -60,7 +61,7 @@ func New(loginOrigin, callbackLocation string, timeout time.Duration, browser Br
 			return context.DeadlineExceeded
 		}
 		result := secureURL(address)
-		if err != nil || result == nil || !strings.EqualFold(result.Host, callback.Host) ||
+		if err != nil || result == nil || !sameOrigin(result, callback) ||
 			result.EscapedPath() != callback.EscapedPath() {
 			return ErrWebAuth
 		}
@@ -75,13 +76,31 @@ func New(loginOrigin, callbackLocation string, timeout time.Duration, browser Br
 }
 
 func secureURL(value string) *url.URL {
-	if len(value) > 4096 || strings.ContainsRune(value, '\\') || strings.ContainsFunc(value, unicode.IsControl) {
+	if len(value) > 4096 || strings.ContainsAny(value, "\\#") || strings.ContainsFunc(value, unicode.IsControl) {
 		return nil
 	}
 	uri, err := url.Parse(value)
 	if err != nil || uri.Scheme != "https" || uri.Hostname() == "" ||
-		uri.User != nil || uri.Fragment != "" {
+		uri.User != nil || strings.HasSuffix(uri.Host, ":") {
 		return nil
 	}
+	if port := uri.Port(); port != "" {
+		n, err := strconv.ParseUint(port, 10, 16)
+		if err != nil || n == 0 {
+			return nil
+		}
+	}
 	return uri
+}
+
+func sameOrigin(a, b *url.URL) bool {
+	return strings.EqualFold(a.Hostname(), b.Hostname()) && httpsPort(a) == httpsPort(b)
+}
+
+func httpsPort(uri *url.URL) string {
+	port := uri.Port()
+	if port == "" || strings.TrimLeft(port, "0") == "443" {
+		return "443"
+	}
+	return port
 }

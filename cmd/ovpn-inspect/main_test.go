@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -41,5 +42,30 @@ func TestInspectProfile(t *testing.T) {
 	}
 	if code := run([]string{"-root", root, path}, nil, stdout, stderr); code != 0 {
 		t.Fatalf("could not inspect profile with references: %d", code)
+	}
+}
+
+type brokenOutput struct{}
+
+func (brokenOutput) Write(p []byte) (int, error) {
+	return len(p) / 2, errors.New("private output detail")
+}
+
+func TestInspectOutputFailures(t *testing.T) {
+	pki := testkit.NewPKI(t)
+	text := "client\ndev tun\nremote localhost\n" + fmt.Sprintf("<ca>\n%s</ca>\n<cert>\n%s</cert>\n<key>\n%s</key>\n",
+		pki.CA, pki.Client.Certificate, pki.Client.PrivateKey)
+	for _, args := range [][]string{{"-"}, {"-capabilities", "-"}, {"-help"}} {
+		var diagnostics bytes.Buffer
+		if code := run(args, strings.NewReader(text), brokenOutput{}, &diagnostics); code != 1 ||
+			strings.Contains(diagnostics.String(), "private output detail") {
+			t.Fatalf("failed writer: exit %d, diagnostics %q", code, diagnostics.String())
+		}
+		if code := run(args, strings.NewReader(text), brokenOutput{}, brokenOutput{}); code != 1 {
+			t.Fatalf("failed stderr changed exit status: %d", code)
+		}
+	}
+	if code := run(nil, nil, brokenOutput{}, brokenOutput{}); code != 2 {
+		t.Fatalf("invalid usage changed exit status: %d", code)
 	}
 }

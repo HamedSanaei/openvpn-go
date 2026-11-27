@@ -72,9 +72,6 @@ func PeerConfigWithTrust(base *tls.Config, serverName, mode, value string, requi
 		if (requireUsage || mode == "common-name-prefix") && !serverUsage(leaf) {
 			return ErrCertificate
 		}
-		if mode == "common-name-prefix" && leaf.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
-			return ErrCertificate
-		}
 		if !matchName(leaf, mode, value, subject) || !trust.verify(leaf, chains, now) {
 			return ErrCertificate
 		}
@@ -84,7 +81,7 @@ func PeerConfigWithTrust(base *tls.Config, serverName, mode, value string, requi
 }
 
 func serverUsage(leaf *x509.Certificate) bool {
-	if !slices.Contains(leaf.ExtKeyUsage, x509.ExtKeyUsageServerAuth) {
+	if leaf.KeyUsage&x509.KeyUsageDigitalSignature == 0 || !slices.Contains(leaf.ExtKeyUsage, x509.ExtKeyUsageServerAuth) {
 		return false
 	}
 	for _, extension := range leaf.Extensions {

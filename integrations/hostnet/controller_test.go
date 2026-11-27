@@ -105,3 +105,70 @@ func TestPartialFailureAndRecovery(t *testing.T) {
 		t.Fatal("rollback did not clear its owned resources")
 	}
 }
+
+type uncertainJournal struct {
+	memoryJournal
+	saveFails, deleteFails bool
+}
+
+func (j *uncertainJournal) Save(plan Plan) error {
+	j.memoryJournal.Save(plan)
+	if j.saveFails {
+		return ErrJournal
+	}
+	return nil
+}
+
+func (j *uncertainJournal) Delete() error {
+	j.memoryJournal.Delete()
+	if j.deleteFails {
+		return ErrJournal
+	}
+	return nil
+}
+
+func TestJournalDurabilityBlocksAdmission(t *testing.T) {
+	for _, failSave := range []bool{false, true} {
+		store := &uncertainJournal{saveFails: failSave, deleteFails: true}
+		backend := &simulatedHost{journal: &store.memoryJournal}
+		c, err := New(samplePolicy(), backend, store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rollback, err := c.Configure(t.Context(), generation())
+		if failSave {
+			if !errors.Is(err, ErrJournal) || rollback != nil || len(backend.steps) != 0 {
+				t.Fatal("a failed journal save applied host resources")
+			}
+		} else {
+			if err != nil || rollback == nil {
+				t.Fatal(err)
+			}
+			rollback()
+			rollback()
+		}
+		if !errors.Is(c.CleanupError(), ErrJournal) {
+			t.Fatal("journal error was lost")
+		}
+		for range 2 {
+			if _, err := c.Configure(t.Context(), generation()); !errors.Is(err, ErrPending) {
+				t.Fatal("lease was admitted before journal durability was confirmed")
+			}
+			if err := c.Recover(t.Context()); !errors.Is(err, ErrJournal) || store.pending != nil {
+				t.Fatal("a missing entry was treated as durable cleanup")
+			}
+		}
+		if failSave && len(backend.steps) != 0 {
+			t.Fatal("recovering an unapplied save touched host resources")
+		}
+		store.saveFails, store.deleteFails = false, false
+		if err := c.Recover(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		rollback, err = c.Configure(t.Context(), generation())
+		if err != nil {
+			t.Fatal(err)
+		}
+		rollback()
+	}
+}

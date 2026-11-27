@@ -9,6 +9,15 @@ import (
 // ErrMTUExceeded reports an IP packet larger than the active tunnel MTU.
 var ErrMTUExceeded = errors.New("IP packet exceeds the OpenVPN tunnel MTU")
 
+// ErrInvalidPacket identifies malformed IP supplied by the local adapter.
+var ErrInvalidPacket = errors.New("invalid local IP packet")
+
+// IsMTUExceeded recognizes the core error and the adapter MTU error contract.
+func IsMTUExceeded(err error) bool {
+	var limit interface{ MTUExceeded() bool }
+	return errors.Is(err, ErrMTUExceeded) || errors.As(err, &limit) && limit.MTUExceeded()
+}
+
 // ValidMTU reports whether mtu is unset or within the supported IP range.
 func ValidMTU(mtu int) bool { return mtu == 0 || mtu >= 68 && mtu <= 65535 }
 

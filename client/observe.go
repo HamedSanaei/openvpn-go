@@ -31,6 +31,13 @@ type Event struct {
 	RetryAfter    time.Duration
 }
 
+// QueueStats contains drops and the observed maximum occupancy in packets
+// for one class of bounded queue.
+type QueueStats struct {
+	Dropped   uint64
+	HighWater uint64
+}
+
 // Stats reports lifetime counters and the current connection snapshot.
 // Traffic counters count successfully forwarded IP packets and bytes.
 type Stats struct {
@@ -46,6 +53,9 @@ type Stats struct {
 	BytesSent           uint64
 	PacketsReceived     uint64
 	BytesReceived       uint64
+	PacketDrops         uint64     // packet-local MTU or invalid local input drops
+	CiphertextQueue     QueueStats // received DATA_V2 frames before authentication
+	InboundQueue        QueueStats // complete authenticated IP packets
 	LastError           ErrorCode
 }
 
@@ -60,6 +70,9 @@ func (c *Client) Stats() Stats {
 	stats.ActiveEndpointIndex = -1
 	if active != nil {
 		stats.ActiveEndpointIndex = active.index
+		raw, inbound := connectionQueues(active)
+		mergeQueue(&stats.CiphertextQueue, raw)
+		mergeQueue(&stats.InboundQueue, inbound)
 	} else {
 		stats.ConnectedSince = time.Time{}
 		if stats.State == StateConnected {
@@ -68,6 +81,7 @@ func (c *Client) Stats() Stats {
 	}
 	stats.PacketsSent, stats.BytesSent = c.sent.Load()
 	stats.PacketsReceived, stats.BytesReceived = c.recv.Load()
+	stats.PacketDrops = c.packetDrops.Load()
 	return stats
 }
 
@@ -168,6 +182,7 @@ type GenerationReport struct {
 	ConnectedAt     time.Time `json:"connected_at"`
 	EndedAt         time.Time `json:"ended_at,omitzero"`
 	Code            ErrorCode `json:"code,omitempty"`
+	CleanupFailed   bool      `json:"cleanup_failed,omitempty"`
 	PacketsSent     uint64    `json:"packets_sent"`
 	BytesSent       uint64    `json:"bytes_sent"`
 	PacketsReceived uint64    `json:"packets_received"`
@@ -175,7 +190,9 @@ type GenerationReport struct {
 }
 
 // GenerationReports returns up to 64 completed generations and the active
-// snapshot, if any, newer than afterGeneration.
+// snapshot, if any, newer than afterGeneration. Advance the exclusive
+// cursor only from a record with a nonzero EndedAt. Polling with the ID of
+// an active snapshot would skip that connection's final record.
 func (c *Client) GenerationReports(afterGeneration uint64) []GenerationReport {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -190,9 +207,24 @@ func (c *Client) GenerationReports(afterGeneration uint64) []GenerationReport {
 	return reports
 }
 
+// CompletedGenerationReports returns only finalized generations newer than
+// the exclusive cursor. A gap can indicate eviction from the 64-record history.
+func (c *Client) CompletedGenerationReports(afterGeneration uint64) []GenerationReport {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.liveConnection()
+	if c.generations == nil {
+		return nil
+	}
+	return c.generations.After(afterGeneration)
+}
+
 func (c *Client) finishGeneration(active *connection, code ErrorCode) {
 	report := generationReport(active)
 	report.EndedAt, report.Code = time.Now(), code
+	raw, inbound := connectionQueues(active)
+	mergeQueue(&c.stats.CiphertextQueue, raw)
+	mergeQueue(&c.stats.InboundQueue, inbound)
 	if c.generations == nil {
 		c.generations = new(observability.History[GenerationReport])
 	}
@@ -200,10 +232,25 @@ func (c *Client) finishGeneration(active *connection, code ErrorCode) {
 }
 
 func generationReport(active *connection) GenerationReport {
-	out := GenerationReport{Generation: active.generation, EndpointIndex: active.index, ConnectedAt: active.started}
+	out := GenerationReport{Generation: active.generation, EndpointIndex: active.index, ConnectedAt: active.started,
+		CleanupFailed: active.cleanupFailed}
 	out.PacketsSent, out.BytesSent = active.sent.Load()
 	out.PacketsReceived, out.BytesReceived = active.recv.Load()
 	return out
+}
+
+func connectionQueues(active *connection) (observability.QueueStats, observability.QueueStats) {
+	if reporter, ok := active.link.(interface {
+		QueueStats() (observability.QueueStats, observability.QueueStats)
+	}); ok {
+		return reporter.QueueStats()
+	}
+	return observability.QueueStats{}, observability.QueueStats{}
+}
+
+func mergeQueue(dst *QueueStats, snapshot observability.QueueStats) {
+	dst.Dropped += snapshot.Dropped
+	dst.HighWater = max(dst.HighWater, snapshot.HighWater)
 }
 
 func (c *Client) stateSnapshot() ClientState {
@@ -232,7 +279,14 @@ func (c *Client) liveConnection() *connection {
 		if c.run == nil {
 			c.active = nil
 			c.state = StateIdle
-			c.disconnected(active, packetErrorCode(link.Err(), CodeNetwork))
+			code := packetErrorCode(link.Err(), CodeNetwork)
+			if cleanup, ok := link.(interface{ CleanupError() error }); ok && failedCleanup(cleanup.CleanupError()) {
+				active.cleanupFailed, c.cleanupFailed = true, true
+				if canRetry(code) {
+					code = CodeCleanup
+				}
+			}
+			c.disconnected(active, code)
 		}
 		return nil
 	default:

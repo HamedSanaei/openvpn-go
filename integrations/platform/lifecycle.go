@@ -13,16 +13,24 @@ import (
 // generation settings, while changes signals that new sockets are needed.
 // A closed change channel disables further notifications. Calls into native
 // code must honor their contexts so teardown can finish. Keep config
-// immutable while Run may use it to start new leases.
+// immutable while Run may use it to start new leases. The returned status is
+// from the last completed lease, including a lease joined before readmission.
 func Run(ctx context.Context, manager *sessions.Manager, id string, config client.Config,
 	open sessions.DeviceFactory, changes <-chan struct{}) (sessions.Status, error) {
 	if manager == nil {
 		return sessions.Status{}, sessions.ErrConfig
 	}
+	var previous sessions.Status
 	for {
+		if err := ctx.Err(); err != nil {
+			return previous, err
+		}
 		lease, err := manager.Start(ctx, id, config, open)
 		if err != nil {
-			return sessions.Status{}, err
+			if cause := ctx.Err(); cause != nil {
+				return previous, cause
+			}
+			return previous, err
 		}
 		restart := false
 		for !restart {
@@ -40,7 +48,7 @@ func Run(ctx context.Context, manager *sessions.Manager, id string, config clien
 					continue
 				}
 				lease.Stop()
-				_, _ = lease.Wait(context.Background())
+				previous, _ = lease.Wait(context.Background())
 				restart = true
 			}
 		}

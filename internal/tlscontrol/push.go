@@ -35,6 +35,8 @@ type pushState struct {
 	exporter        bool
 	allowExit       bool
 	haveFlags       bool
+	havePing        bool
+	havePingTimeout bool
 	allowLZOStub    bool
 	haveLZOStub     bool
 	continued       bool
@@ -178,21 +180,21 @@ func (p *pushState) option(name string, arg []byte) error {
 		p.tokenUser = user
 	case "ping", "ping-restart", "ping-exit":
 		seconds, err := strconv.ParseUint(string(arg), 10, 16)
-		if err != nil || seconds == 0 {
+		if err != nil {
 			return ErrNegotiation
 		}
 		value := time.Duration(seconds) * time.Second
 		if name == "ping" {
-			if p.PingInterval != 0 {
+			if p.havePing {
 				return ErrNegotiation
 			}
-			p.PingInterval = value
+			p.PingInterval, p.havePing = value, true
 		} else {
 			exit := name == "ping-exit"
-			if p.PingTimeout != 0 {
+			if p.havePingTimeout {
 				return ErrNegotiation
 			}
-			p.PingTimeout, p.PingExit = value, exit
+			p.PingTimeout, p.PingExit, p.havePingTimeout = value, exit && value != 0, true
 		}
 	default:
 		return p.tunnelOption(name, string(arg))

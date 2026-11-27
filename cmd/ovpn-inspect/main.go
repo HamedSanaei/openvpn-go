@@ -25,7 +25,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	err := flags.Parse(args)
 	if err != nil || flags.NArg() != 1 {
 		if err == flag.ErrHelp {
-			fmt.Fprintln(stdout, "Usage: ovpn-inspect [-capabilities] [-root directory] [-allow-password-only] [-auth-file path] [-expressvpn | -protonvpn-server-name name | -protonvpn-verify-ip] profile.ovpn|-")
+			if _, err := fmt.Fprintln(stdout, "Usage: ovpn-inspect [-capabilities] [-root directory] [-allow-password-only] [-auth-file path] [-expressvpn | -protonvpn-server-name name | -protonvpn-verify-ip] profile.ovpn|-"); err != nil {
+				return outputFailure(stderr)
+			}
 			return 0
 		}
 		fmt.Fprintln(stderr, "Usage: ovpn-inspect [-capabilities] [-root directory] [-allow-password-only] [-auth-file path] [-expressvpn | -protonvpn-server-name name | -protonvpn-verify-ip] profile.ovpn|-")
@@ -58,7 +60,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return 1
 		}
 		if err := json.NewEncoder(stdout).Encode(report); err != nil {
-			return 1
+			return outputFailure(stderr)
 		}
 		for _, entry := range report.Entries {
 			if entry.Capability == profile.Rejected || entry.Capability == profile.PolicyDisabled {
@@ -91,6 +93,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "Valid profile. Remotes: %d. Remote random: %t.\n", len(cfg.Endpoints), cfg.RemoteRandom)
+	if _, err := fmt.Fprintf(stdout, "Valid profile. Remotes: %d. Remote random: %t.\n", len(cfg.Endpoints), cfg.RemoteRandom); err != nil {
+		return outputFailure(stderr)
+	}
 	return 0
+}
+
+func outputFailure(stderr io.Writer) int {
+	fmt.Fprintln(stderr, "ovpn-inspect: could not write output")
+	return 1
 }

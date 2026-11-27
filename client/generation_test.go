@@ -163,3 +163,79 @@ func TestRunConfiguredGatesBothGenerationsAndRollsBack(t *testing.T) {
 		})
 	}
 }
+
+type mtuTestConn struct {
+	transport.PacketConn
+	failClose bool
+}
+
+func (c mtuTestConn) WritePacket(ctx context.Context, p []byte) error {
+	if len(p) == 32 {
+		return tunnel.ErrMTUExceeded
+	}
+	return c.PacketConn.WritePacket(ctx, p)
+}
+
+func (c mtuTestConn) Close() error {
+	err := c.PacketConn.Close()
+	if c.failClose {
+		return errors.New("private cleanup detail")
+	}
+	return err
+}
+
+func TestRunConfiguredPacketDropsAndCleanup(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		raw, peer := testkit.PacketPipe(2, 256)
+		defer peer.Close()
+		c := retryClient(t, fallbackEndpoints[:2], RetryPolicy{MaxAttempts: 2},
+			testkit.DialerFunc(func(context.Context, string, string) (transport.PacketConn, error) {
+				return raw, nil
+			}))
+		c.config.MaxPacketSize = 64
+		c.handshakes[0] = func(_ context.Context, _ Endpoint, raw transport.PacketConn) (tunnel.PacketConn, error) {
+			return metadataLink{PacketConn: mtuTestConn{raw, true}, done: make(chan struct{})}, nil
+		}
+		if err := c.Connect(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		device, app := testkit.PacketPipe(2, 256)
+		defer device.Close()
+		defer app.Close()
+		results := make(chan error, 1)
+		go func() {
+			results <- c.RunConfigured(t.Context(), mtuTestConn{PacketConn: device}, func(context.Context, TunnelGeneration) (func(), error) {
+				return nil, nil
+			})
+		}()
+		for _, size := range []int{65, 32, 20} {
+			if err := app.WritePacket(t.Context(), make([]byte, size)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var got [64]byte
+		if n, err := peer.ReadPacket(t.Context(), got[:]); err != nil || n != 20 {
+			t.Fatalf("subsequent outbound packet: %d, %v", n, err)
+		}
+		for _, size := range []int{32, 20} {
+			if err := peer.WritePacket(t.Context(), make([]byte, size)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if n, err := app.ReadPacket(t.Context(), got[:]); err != nil || n != 20 {
+			t.Fatalf("subsequent inbound packet: %d, %v", n, err)
+		}
+		synctest.Wait()
+		stats := c.Stats()
+		if stats.PacketDrops != 3 || stats.Reconnects != 0 || stats.PacketsSent != 1 || stats.PacketsReceived != 1 {
+			t.Fatalf("unexpected packet accounting: %+v", stats)
+		}
+		peer.Close()
+		assertCode(t, <-results, CodeCleanup)
+		assertCode(t, c.Connect(t.Context()), CodeCleanup)
+		reports := c.CompletedGenerationReports(0)
+		if len(reports) != 1 || !reports[0].CleanupFailed || reports[0].Code != CodeCleanup {
+			t.Fatalf("cleanup report = %+v", reports)
+		}
+	})
+}

@@ -386,3 +386,30 @@ func TestEventHistoryIsBoundedAndRedacted(t *testing.T) {
 		}
 	})
 }
+
+func TestInitialSameEndpointRestart(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var addresses []string
+		var failures int
+		c := retryClient(t, fallbackEndpoints[:2], RetryPolicy{MaxAttempts: 2},
+			testkit.DialerFunc(func(_ context.Context, _, address string) (transport.PacketConn, error) {
+				addresses = append(addresses, address)
+				packets, _ := testkit.PacketPipe(0, 64)
+				return packets, nil
+			}))
+		c.handshakes[0] = func(ctx context.Context, ep Endpoint, packets transport.PacketConn) (tunnel.PacketConn, error) {
+			if failures == 0 {
+				failures++
+				return nil, setControlError(tlscontrol.ErrPeerRestartSame)
+			}
+			return acceptTestSession(ctx, ep, packets)
+		}
+		if err := c.Connect(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		first := fallbackEndpoints[0].address()
+		if !slices.Equal(addresses, []string{first, first}) {
+			t.Fatalf("same-endpoint restart dialed %v", addresses)
+		}
+	})
+}

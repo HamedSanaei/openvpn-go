@@ -53,6 +53,7 @@ type externalAttempt struct {
 	PhaseDuration time.Duration       `json:"phase_duration_ns"`
 	PhaseSteps    uint8               `json:"phase_steps,omitempty"`
 	Code          client.ErrorCode    `json:"code,omitempty"`
+	RetryReason   client.ErrorCode    `json:"retry_reason,omitempty"`
 }
 
 type externalGeneration struct {
@@ -250,7 +251,15 @@ func probeExternalProfile(ctx context.Context, name string) (result externalResu
 	cfg.Retry = client.RetryPolicy{MaxAttempts: 1}
 	rekey := os.Getenv("OVPN_EXTERNAL_REKEY") == "1"
 	if rekey {
-		cfg.DisableTimedRekey, cfg.RekeyInterval = false, 2*time.Second
+		interval := 2
+		if value := os.Getenv("OVPN_EXTERNAL_REKEY_SECONDS"); value != "" {
+			interval, err = strconv.Atoi(value)
+			if err != nil || interval < 1 || interval > 20 {
+				result.Code = "invalid_rekey_interval"
+				return result
+			}
+		}
+		cfg.DisableTimedRekey, cfg.RekeyInterval = false, time.Duration(interval)*time.Second
 	}
 
 	peer := netip.Addr{}
@@ -286,7 +295,7 @@ func probeExternalProfile(ctx context.Context, name string) (result externalResu
 		c.Close()
 		for _, a := range c.AttemptReports(0) {
 			result.Attempts = append(result.Attempts, externalAttempt{
-				Stage: a.Stage, Phase: a.Phase, PhaseDuration: a.PhaseDuration, PhaseSteps: a.PhaseSteps, Code: a.Code,
+				Stage: a.Stage, Phase: a.Phase, PhaseDuration: a.PhaseDuration, PhaseSteps: a.PhaseSteps, Code: a.Code, RetryReason: a.RetryReason,
 			})
 		}
 		for _, g := range c.GenerationReports(0) {

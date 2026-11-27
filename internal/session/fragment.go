@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/hamedsanaei/openvpn-go/internal/data"
+	"github.com/hamedsanaei/openvpn-go/tunnel"
 )
 
 const (
@@ -25,7 +26,7 @@ type fragmenter struct {
 
 type fragmentKey struct {
 	firstPacket uint32
-	generation  byte
+	epoch       uint64
 	sequence    byte
 }
 
@@ -38,6 +39,10 @@ type fragmentSet struct {
 }
 
 func (f *fragmenter) seal(ch *data.Channel, packet []byte) ([][]byte, error) {
+	if f.chunkSize <= 0 || f.chunkSize%4 != 0 || f.chunkSize > 65507-fragmentHeaderSize-data.Overhead ||
+		len(packet) >= f.chunkSize*maxFragments {
+		return nil, tunnel.ErrMTUExceeded
+	}
 	// Reuse one scratch buffer. Seal owns the resulting ciphertext.
 	body := append(make([]byte, 0, len(packet)+1), uncompressedLZO)
 	body = append(body, packet...)
@@ -69,7 +74,7 @@ func (f *fragmenter) seal(ch *data.Channel, packet []byte) ([][]byte, error) {
 	return packets, nil
 }
 
-func (f *fragmenter) open(wrapped, plaintext []byte, mtu int, now time.Time) []byte {
+func (f *fragmenter) open(wrapped, plaintext []byte, epoch uint64, mtu int, now time.Time) []byte {
 	if len(plaintext) <= fragmentHeaderSize {
 		clear(plaintext)
 		return nil
@@ -104,9 +109,9 @@ func (f *fragmenter) open(wrapped, plaintext []byte, mtu int, now time.Time) []b
 	if pid <= uint32(index) {
 		return nil
 	}
-	// All records of a datagram use one key generation and consecutive
-	// packet IDs. Include both to isolate replay, sequence wrap and rekey.
-	key := fragmentKey{pid - uint32(index), wrapped[0] & 7, byte(header >> 2)}
+	// The receive-key epoch is local and survives wire key-ID recycling.
+	// Consecutive packet IDs distinguish wrapped fragment sequence numbers.
+	key := fragmentKey{pid - uint32(index), epoch, byte(header >> 2)}
 	set := f.pending[key]
 	if set != nil && !now.Before(set.expires) {
 		f.drop(key)
@@ -156,6 +161,14 @@ func stripLZO(packet []byte) []byte {
 func (f *fragmenter) expire(now time.Time) {
 	for key, set := range f.pending {
 		if !now.Before(set.expires) {
+			f.drop(key)
+		}
+	}
+}
+
+func (f *fragmenter) retire(ch *data.Channel) {
+	for key := range f.pending {
+		if !ch.HasEpoch(key.epoch) {
 			f.drop(key)
 		}
 	}

@@ -20,10 +20,12 @@ The usual SAN-plus-prefix behavior continues for ordinary imports.
 Place the uncompressed LZO marker inside the fragment payload. Encode
 fragment headers in network byte order and authenticate each fragment
 using DATA_V2. Reassemble only authenticated records with the same
-data key ID, first packet ID, sequence and stride. Bound a datagram to
+local receive-key generation, first packet ID, sequence and stride. Bound a datagram to
 the tunnel MTU and 32 fragments. Keep at most 32 incomplete datagrams
 per session and expire them after ten seconds. Reject compressed
-payloads and server attempts to enable compression.
+payloads and server attempts to enable compression. Outbound keepalives
+use the same framing as IP packets. A bare keepalive received inside
+authenticated DATA_V2 remains acceptable for legacy peers.
 
 The `fragment` ceiling limits the OpenVPN UDP payload. The tunnel MTU
 and UDP fragment ceiling can therefore differ. TLS exporter derivation

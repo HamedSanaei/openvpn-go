@@ -236,6 +236,7 @@ jobs:
       - name: Verify benchmark budgets
         run: |
           make bench | tee evidence/benchmarks.txt
+          python3 -m unittest discover -s tools -p test_check_benchmarks.py
           python3 tools/check_benchmarks.py evidence/benchmarks.txt
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()

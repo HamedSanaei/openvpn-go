@@ -48,8 +48,8 @@ jobs:
         id: package
         shell: bash
         run: |
-          first="$(bash tools/build-release.sh v0.1.0-beta "$RELEASE_OS" "$RELEASE_ARCH" dist)"
-          second="$(bash tools/build-release.sh v0.1.0-beta "$RELEASE_OS" "$RELEASE_ARCH" "$RUNNER_TEMP/reproduction")"
+          first="$(umask 022; bash tools/build-release.sh v0.1.0-beta "$RELEASE_OS" "$RELEASE_ARCH" dist)"
+          second="$(umask 077; bash tools/build-release.sh v0.1.0-beta "$RELEASE_OS" "$RELEASE_ARCH" "$RUNNER_TEMP/reproduction")"
           cmp "$first" "$second"
           archive="$(basename "$first")"
           (cd dist && sha256sum "$archive" > "$archive.sha256")

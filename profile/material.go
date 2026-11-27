@@ -5,8 +5,6 @@ import (
 	"context"
 	"crypto"
 	"crypto/tls"
-	"crypto/x509"
-	"encoding/pem"
 	"io"
 	"io/fs"
 	"os"
@@ -15,6 +13,7 @@ import (
 	"unicode"
 
 	"github.com/hamedsanaei/openvpn-go/client"
+	"github.com/hamedsanaei/openvpn-go/internal/pemutil"
 	"github.com/hamedsanaei/openvpn-go/internal/tlscontrol"
 )
 
@@ -68,14 +67,22 @@ func (p *parser) setMaterial(m *material) error {
 	return nil
 }
 
+func (p *parser) usesPasswordOnly() bool {
+	return p.opts.AllowPasswordOnly && p.opts.Identity.Signer == nil && p.opts.Identity.Provider == nil &&
+		p.auth != nil && p.cert == nil && p.key == nil
+}
+
 func (p *parser) loadTLS() error {
 	identity := p.opts.Identity
 	external := identity.Signer != nil || identity.Provider != nil
 	if external && (p.key != nil || identity.Signer != nil && identity.Provider != nil) {
 		return (location{name: "key"}).diagnostic(CodeConflict)
 	}
-	passwordOnly := !external && p.opts.AllowPasswordOnly &&
-		(p.auth != nil || p.opts.Authentication.Credentials != nil) && p.cert == nil && p.key == nil
+	passwordOnly := p.usesPasswordOnly()
+	if !external && p.opts.AllowPasswordOnly && p.cert == nil && p.key == nil &&
+		p.auth == nil && p.opts.Authentication.Credentials != nil {
+		return (location{name: "auth-user-pass"}).diagnostic(CodeRequired)
+	}
 	for _, required := range []struct {
 		name string
 		ref  *material
@@ -97,7 +104,7 @@ func (p *parser) loadTLS() error {
 		}
 		valid := validCertificatePEM
 		if required.name == "key" {
-			valid = validPrivateKeyPEM
+			valid = pemutil.PrivateKey
 		}
 		if !valid(raw) {
 			return required.ref.loc.diagnostic(CodeMaterial)
@@ -204,59 +211,8 @@ func (p *parser) loadCredentials() error {
 }
 
 func validCertificatePEM(raw []byte) bool {
-	rest := bytes.TrimRightFunc(raw, unicode.IsSpace)
-	if len(rest) == 0 {
-		return false
-	}
-	for len(rest) != 0 {
-		block, next := nextPEM(rest)
-		if block == nil || block.Type != "CERTIFICATE" {
-			return false
-		}
-		if _, err := x509.ParseCertificate(block.Bytes); err != nil {
-			return false
-		}
-		rest = next
-	}
-	return true
-}
-
-func validPrivateKeyPEM(raw []byte) bool {
-	block, rest := nextPEM(raw)
-	if block == nil {
-		return false
-	}
-	defer clear(block.Bytes)
-	switch block.Type {
-	case "PRIVATE KEY", "RSA PRIVATE KEY", "EC PRIVATE KEY":
-		return len(bytes.TrimSpace(rest)) == 0
-	default:
-		return false
-	}
-}
-
-// nextPEM rejects skipped content, including an invalid block preceding a
-// valid one. pem.Decode alone scans forward until it finds a valid block.
-func nextPEM(raw []byte) (*pem.Block, []byte) {
-	const begin = "-----BEGIN "
-	content := bytes.TrimLeftFunc(raw, unicode.IsSpace)
-	offset := len(raw) - len(content)
-	if offset != 0 && raw[offset-1] != '\n' {
-		return nil, nil
-	}
-	raw = content
-	if !bytes.HasPrefix(raw, []byte(begin)) {
-		return nil, nil
-	}
-	block, rest := pem.Decode(raw)
-	if block == nil {
-		return nil, nil
-	}
-	if len(block.Headers) != 0 || bytes.Contains(raw[:len(raw)-len(rest)], []byte("\n"+begin)) {
-		clear(block.Bytes)
-		return nil, nil
-	}
-	return block, rest
+	_, ok := pemutil.Certificates(raw)
+	return ok
 }
 
 func (p *parser) load(m *material) ([]byte, error) {

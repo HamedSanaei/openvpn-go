@@ -37,7 +37,8 @@ func TestProxyTCPAdapters(t *testing.T) {
 				req.Header.Get("Proxy-Authorization") != "Basic dXNlcjpzZWNyZXQ=" {
 				return errors.New("invalid proxy CONNECT request")
 			}
-			_, err = conn.Write([]byte("HTTP/1.1 200 Connected\r\n\r\n\x00\x02ok"))
+			_, err = conn.Write([]byte("HTTP/1.1 103 Early Hints\r\nLink: </hint>\r\n\r\n" +
+				"HTTP/1.1 200 Connected\r\nContent-Length: unknown\r\nTransfer-Encoding: arbitrary\r\n\r\n\x00\x02ok"))
 			return err
 		}},
 		{"socks5", SOCKS5, func(conn net.Conn) error {
@@ -158,5 +159,53 @@ func TestProxyFailureAndCancellationAreRedacted(t *testing.T) {
 	}
 	if _, err := HTTPConnect(Config{Address: "localhost:8080", Username: "u", Password: "p"}); err != ErrProxy {
 		t.Fatal("credentials permitted on cleartext proxy hop")
+	}
+}
+
+func TestTLSProxyTrustFailureIsRedacted(t *testing.T) {
+	pki := testkit.NewPKI(t)
+	identity, err := tls.X509KeyPair(pki.Server.Certificate, pki.Server.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trusted := x509.NewCertPool()
+	trusted.AppendCertsFromPEM(pki.CA)
+	for _, create := range []func(Config) (transport.Dialer, error){HTTPConnect, SOCKS5} {
+		for _, config := range []*tls.Config{
+			{RootCAs: x509.NewCertPool()},
+			{RootCAs: trusted, ServerName: "private.invalid"},
+			{RootCAs: trusted, Time: func() time.Time { return time.Now().Add(2 * time.Hour) }},
+		} {
+			ln, err := tls.Listen("tcp4", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{identity}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			serverRead := make(chan int, 1)
+			go func() {
+				conn, err := ln.Accept()
+				if err != nil {
+					serverRead <- -1
+					return
+				}
+				defer conn.Close()
+				var buf [1]byte
+				n, _ := conn.Read(buf[:])
+				serverRead <- n
+			}()
+			dialer, err := create(Config{Address: ln.Addr().String(), TLS: config, Username: "test-user", Password: "test-password"})
+			if err != nil {
+				ln.Close()
+				t.Fatal(err)
+			}
+			_, err = dialer.DialPacket(t.Context(), "tcp", "vpn.example.test:443")
+			ln.Close()
+			if !errors.Is(err, ErrProxy) || !errors.Is(err, transport.ErrPeerCertificate) ||
+				strings.Contains(err.Error(), "private.invalid") || strings.Contains(err.Error(), "127.0.0.1") {
+				t.Fatalf("unexpected proxy error: %v", err)
+			}
+			if n := <-serverRead; n != 0 {
+				t.Fatal("application bytes reached an unverified proxy")
+			}
+		}
 	}
 }

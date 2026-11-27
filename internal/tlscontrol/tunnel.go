@@ -1,6 +1,7 @@
 package tlscontrol
 
 import (
+	"encoding/binary"
 	"net"
 	"net/netip"
 	"slices"
@@ -173,6 +174,16 @@ func (p *pushState) route(ipv4 bool, args []string) error {
 	return nil
 }
 
+func usableSubnetHost(addr netip.Addr, bits int) bool {
+	if bits >= 31 {
+		return true
+	}
+	raw := addr.As4()
+	mask := uint32(1)<<(32-bits) - 1
+	host := binary.BigEndian.Uint32(raw[:]) & mask
+	return host != 0 && host != mask
+}
+
 func (p *pushState) finishTunnel() error {
 	if p.ipv4.IsValid() {
 		if p.Tunnel.Topology == "" {
@@ -184,7 +195,7 @@ func (p *pushState) finishTunnel() error {
 		switch p.Tunnel.Topology {
 		case tunnel.TopologySubnet:
 			bits := maskBits(p.ipv4Param)
-			if bits < 0 {
+			if bits < 0 || !usableSubnetHost(p.ipv4, bits) {
 				return ErrNegotiation
 			}
 			p.Tunnel.IPv4 = netip.PrefixFrom(p.ipv4, bits)
@@ -195,7 +206,8 @@ func (p *pushState) finishTunnel() error {
 			}
 			prefix := netip.PrefixFrom(p.ipv4, bits)
 			if !vpnAddress(p.ipv4Param, true) || p.ipv4 == p.ipv4Param ||
-				(bits == 30 && !prefix.Contains(p.ipv4Param)) {
+				(bits == 30 && (!prefix.Contains(p.ipv4Param) ||
+					!usableSubnetHost(p.ipv4, bits) || !usableSubnetHost(p.ipv4Param, bits))) {
 				return ErrNegotiation
 			}
 			p.Tunnel.IPv4, p.Tunnel.IPv4Peer = prefix, p.ipv4Param

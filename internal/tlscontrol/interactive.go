@@ -19,9 +19,11 @@ type Challenge struct {
 }
 
 type Interaction struct {
-	Credentials func(context.Context) (Credentials, error)
-	Challenge   func(context.Context, Challenge) (string, error)
-	WebAuth     func(context.Context, string) error
+	Credentials         func(context.Context) (Credentials, error)
+	Challenge           func(context.Context, Challenge) (string, error)
+	WebAuth             func(context.Context, string) error
+	AllowPassivePending bool
+	PendingTimeout      time.Duration
 }
 
 func (i Interaction) peerInfo() string {
@@ -56,11 +58,10 @@ func (p *pendingAuth) handle(parent context.Context, message []byte) (bool, []by
 	command, detail, _ := bytes.Cut(message, []byte{','})
 	switch string(command) {
 	case "AUTH_PENDING":
-		if p.ctx != nil || p.Challenge == nil && p.WebAuth == nil {
+		if p.ctx != nil || !p.AllowPassivePending && p.Challenge == nil && p.WebAuth == nil {
 			return true, nil, ErrAuth
 		}
-		const maximum = 5 * time.Minute
-		duration := maximum
+		duration := MaxPendingTimeout
 		if len(detail) != 0 {
 			key, value, ok := strings.Cut(string(detail), " ")
 			if !ok {
@@ -70,7 +71,17 @@ func (p *pendingAuth) handle(parent context.Context, message []byte) (bool, []by
 			if !ok || key != "timeout" || err != nil || seconds == 0 {
 				return true, nil, ErrAuth
 			}
-			duration = min(maximum, time.Duration(seconds)*time.Second)
+			duration = min(MaxPendingTimeout, time.Duration(seconds)*time.Second)
+		}
+		if err := parent.Err(); err != nil {
+			return true, nil, err
+		}
+		if p.PendingTimeout > 0 {
+			if timing, ok := parent.Value(pendingParentKey{}).(*pendingTiming); ok {
+				timing.extended = true
+				parent = timing.owner
+				duration = min(duration, p.PendingTimeout)
+			}
 		}
 		p.ctx, p.cancel = context.WithTimeout(parent, duration)
 		return true, nil, nil
@@ -123,9 +134,6 @@ func (p *pendingAuth) textChallenge(flags, prompt string) ([]byte, error) {
 	if len(answer) > 750 || !validKeyString(answer) || challenge.Required && answer == "" {
 		return nil, ErrAuth
 	}
-	if answer == "" {
-		return nil, nil
-	}
 	reply := base64.StdEncoding.AppendEncode([]byte("CR_RESPONSE,"), []byte(answer))
 	return append(reply, 0), nil
 }
@@ -139,4 +147,21 @@ func (p *pendingAuth) webAuth(flags, address string) error {
 	}
 	p.webUsed = true
 	return authCallbackError(p.ctx, p.WebAuth(p.ctx, address))
+}
+
+// MaxPendingTimeout bounds one verified deferred authentication decision.
+const MaxPendingTimeout = 5 * time.Minute
+
+type pendingParentKey struct{}
+
+type pendingTiming struct {
+	owner    context.Context
+	extended bool
+}
+
+// WithPendingParent keeps the connection owner's deadline available if an
+// authenticated AUTH_PENDING activates the optional interaction budget.
+func WithPendingParent(setup, owner context.Context) (context.Context, func() bool) {
+	timing := &pendingTiming{owner: owner}
+	return context.WithValue(setup, pendingParentKey{}, timing), func() bool { return timing.extended }
 }

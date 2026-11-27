@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	"github.com/hamedsanaei/openvpn-go/internal/control"
 	"github.com/hamedsanaei/openvpn-go/internal/crypt"
@@ -145,8 +146,9 @@ func (c *Client) endSession(ctx context.Context, active *connection, result forw
 	}
 	c.mu.Unlock()
 
+	var cleanupFailed bool
 	if ownsSession {
-		active.link.Close()
+		cleanupFailed = failedCleanup(active.link.Close())
 		// A session can cancel I/O to release a blocked writer before the
 		// writer sees the typed shutdown cause. Close joins session cleanup.
 		if link, ok := active.link.(sessionStatus); ok && result.fromSession {
@@ -158,12 +160,17 @@ func (c *Client) endSession(ctx context.Context, active *connection, result forw
 				}
 			}
 		}
+		if cleanupFailed && result.err != nil && canRetry(result.err.Code) {
+			result.err = &Error{Op: "close session", Code: CodeCleanup}
+		}
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	stopped := c.operationError(ctx, "run")
 	if ownsSession {
+		active.cleanupFailed = cleanupFailed
+		c.cleanupFailed = cleanupFailed
 		var code ErrorCode
 		if stopped == nil {
 			c.state = StateIdle
@@ -185,10 +192,10 @@ func (c *Client) forwardSession(ctx context.Context, device tunnel.PacketConn, a
 	results := make(chan forwardingError, 2)
 	var workers sync.WaitGroup
 	workers.Go(func() {
-		results <- forward(ctx, device, active.link, inbound, true, &c.recv, &active.recv)
+		results <- forward(ctx, device, active.link, inbound, true, &c.recv, &active.recv, &c.packetDrops)
 	})
 	workers.Go(func() {
-		results <- forward(ctx, active.link, device, outbound, false, &c.sent, &active.sent)
+		results <- forward(ctx, active.link, device, outbound, false, &c.sent, &active.sent, &c.packetDrops)
 	})
 	result := <-results
 	cancel()
@@ -201,11 +208,15 @@ func (c *Client) forwardSession(ctx context.Context, device tunnel.PacketConn, a
 	return result
 }
 
-func forward(ctx context.Context, dst, src tunnel.PacketConn, packet []byte, readsSession bool, total, generation *observability.Traffic) forwardingError {
+func forward(ctx context.Context, dst, src tunnel.PacketConn, packet []byte, readsSession bool, total, generation *observability.Traffic, localDrops *atomic.Uint64) forwardingError {
 	defer clear(packet)
 	for ctx.Err() == nil {
 		n, err := src.ReadPacket(ctx, packet)
 		if err != nil {
+			if !readsSession && errors.Is(err, io.ErrShortBuffer) {
+				localDrops.Add(1)
+				continue
+			}
 			return forwardError("read packet", err, readsSession)
 		}
 		if n <= 0 || n > len(packet) {
@@ -215,7 +226,8 @@ func forward(ctx context.Context, dst, src tunnel.PacketConn, packet []byte, rea
 			return forwardError("forward", err, readsSession)
 		}
 		if err := dst.WritePacket(ctx, packet[:n]); err != nil {
-			if !readsSession && errors.Is(err, tunnel.ErrMTUExceeded) {
+			if tunnel.IsMTUExceeded(err) || !readsSession && errors.Is(err, tunnel.ErrInvalidPacket) {
+				localDrops.Add(1)
 				continue
 			}
 			return forwardError("write packet", err, !readsSession)
@@ -224,6 +236,10 @@ func forward(ctx context.Context, dst, src tunnel.PacketConn, packet []byte, rea
 		generation.Add(n)
 	}
 	return forwardError("forward", ctx.Err(), readsSession)
+}
+
+func failedCleanup(err error) bool {
+	return err != nil && !errors.Is(err, net.ErrClosed)
 }
 
 func forwardError(op string, err error, fromSession bool) forwardingError {
@@ -247,26 +263,24 @@ func packetErrorCode(err error, fallback ErrorCode) ErrorCode {
 		return CodePeerRestart
 	case errors.Is(err, tlscontrol.ErrPeerStopped):
 		return CodePeerStopped
+	case errors.Is(err, control.ErrProtection):
+		return CodeConfig
+	case errors.Is(err, data.ErrKeyLimit), errors.Is(err, data.ErrPacket), errors.Is(err, crypt.ErrDataKeys),
+		errors.Is(err, tlscontrol.ErrNegotiation):
+		return CodeProtocol
+	}
+	if code := contextCode(err, ""); code != "" {
+		return code
+	}
+	switch {
 	case errors.Is(err, control.ErrTransport), errors.Is(err, control.ErrRetransmit),
 		errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, io.ErrClosedPipe),
 		errors.Is(err, net.ErrClosed):
 		return CodeNetwork
-	case errors.Is(err, context.DeadlineExceeded):
-		return CodeTimeout
-	case errors.Is(err, context.Canceled):
-		return CodeCanceled
-	case errors.Is(err, control.ErrProtection):
-		return CodeConfig
-	case errors.Is(err, session.ErrRekey), errors.Is(err, data.ErrKeyLimit), errors.Is(err, data.ErrPacket),
-		errors.Is(err, control.ErrReliable), errors.Is(err, crypt.ErrDataKeys),
-		errors.Is(err, transport.ErrPacketTooLarge), errors.Is(err, transport.ErrEmptyPacket), errors.Is(err, io.ErrShortBuffer),
-		errors.Is(err, tlscontrol.ErrNegotiation):
+	case errors.Is(err, session.ErrRekey), errors.Is(err, control.ErrReliable),
+		errors.Is(err, transport.ErrPacketTooLarge), errors.Is(err, transport.ErrEmptyPacket), errors.Is(err, io.ErrShortBuffer):
 		return CodeProtocol
 	default:
-		var timeout net.Error
-		if errors.As(err, &timeout) && timeout.Timeout() {
-			return CodeTimeout
-		}
 		return fallback
 	}
 }
