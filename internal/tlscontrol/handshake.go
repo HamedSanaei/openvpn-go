@@ -40,6 +40,7 @@ type Options struct {
 	ExitNotify        bool
 	TunnelMTU         int
 	FixedAEAD         string
+	FixedDataV1       bool
 	AllowLZOStub      bool
 	AdvertiseDNS      bool
 	ServerPollTimeout time.Duration
@@ -116,7 +117,7 @@ func Establish(ctx context.Context, stream *control.Stream, opts Options, previo
 		return nil, ctxError(ctx, err)
 	}
 	observability.Enter(ctx, observability.PhaseKeyMethodRead)
-	if err := readPeerKeyMethod(ctx, reader, opts.FixedAEAD, classic); err != nil {
+	if err := readPeerKeyMethodForFormat(ctx, reader, opts.FixedAEAD, classic, opts.FixedDataV1); err != nil {
 		return nil, ctxError(ctx, err)
 	}
 
@@ -130,7 +131,7 @@ func Establish(ctx context.Context, stream *control.Stream, opts Options, previo
 		info = *previous
 	} else {
 		observability.Enter(ctx, observability.PhasePush)
-		push := pushState{allowed: opts.Ciphers, policy: opts.PushPolicy, allowExit: opts.ExitNotify, fixedAEAD: opts.FixedAEAD, allowLZOStub: opts.AllowLZOStub}
+		push := pushState{allowed: opts.Ciphers, policy: opts.PushPolicy, allowExit: opts.ExitNotify, fixedAEAD: opts.FixedAEAD, fixedDataV1: opts.FixedDataV1, allowLZOStub: opts.AllowLZOStub}
 		pending := pendingAuth{Interaction: opts.Interaction}
 		defer pending.close()
 		if err := readPushWithPending(ctx, conn, reader, &push, &pending, setPhaseDeadline); err != nil {

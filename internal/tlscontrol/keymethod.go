@@ -74,6 +74,9 @@ func writeKeyMethodOptions(w io.Writer, network, digest string, ciphers []string
 	// Bit 1 advertises DATA_V2. Bit 3 selects the TLS exporter when both
 	// peers support it. Address floating and dynamic wrapping are omitted.
 	flags := protoDataV2
+	if cfg.FixedDataV1 {
+		flags = 0
+	}
 	if cfg.FixedAEAD == "" {
 		flags |= protoTLSExporter
 		if cfg.AdvertiseDNS && cfg.PushPolicy.DNS == tunnel.PushAccept {
@@ -109,6 +112,9 @@ func readKeyMethod(r *bufio.Reader) error {
 }
 
 func readPeerKeyMethod(ctx context.Context, r *bufio.Reader, fixed string, classic *crypt.ClassicMaterial) error {
+	return readPeerKeyMethodForFormat(ctx, r, fixed, classic, false)
+}
+func readPeerKeyMethodForFormat(ctx context.Context, r *bufio.Reader, fixed string, classic *crypt.ClassicMaterial, fixedDataV1 bool) error {
 	first, err := r.Peek(1)
 	if err != nil {
 		return err
@@ -139,7 +145,7 @@ func readPeerKeyMethod(ctx context.Context, r *bufio.Reader, fixed string, class
 	var field [maxKeyString]byte
 	defer clear(field[:])
 	fields := 4
-	if fixed != "" {
+	if fixed != "" && !fixedDataV1 {
 		fields = 1
 	}
 	for i := range fields {
@@ -152,7 +158,7 @@ func readPeerKeyMethod(ctx context.Context, r *bufio.Reader, fixed string, class
 			return ErrNegotiation
 		}
 		if n == 0 {
-			if fixed != "" {
+			if fixed != "" && !fixedDataV1 {
 				return ErrNegotiation
 			}
 			observability.Step(ctx)
@@ -165,7 +171,7 @@ func readPeerKeyMethod(ctx context.Context, r *bufio.Reader, fixed string, class
 			return ErrNegotiation
 		}
 		observability.Step(ctx)
-		if fixed != "" && !matchFixedOptions(field[:n-1], fixed) {
+		if fixed != "" && i == 0 && !matchFixedOptions(field[:n-1], fixed) {
 			return ErrNegotiation
 		}
 	}

@@ -30,6 +30,7 @@ type connection struct {
 	exit           bool
 	exitSet        bool
 	fixedAEAD      string
+	fixedDataV1    bool
 	fixedLoc       location
 
 	protection      *material
@@ -144,14 +145,14 @@ func (p *parser) applyConnection(loc location, args []string) error {
 			exit = n != 0
 		}
 		c.exit, c.exitSet = exit, true
-	case "compat-fixed-aead":
+	case "compat-fixed-aead", "compat-fixed-aead-v1":
 		if c.fixedAEAD != "" {
 			return loc.diagnostic(CodeConflict)
 		}
 		if args[0] != crypt.AES128GCM && args[0] != crypt.AES256GCM {
 			return loc.diagnostic(CodeUnsupported)
 		}
-		c.fixedAEAD, c.fixedLoc = args[0], loc
+		c.fixedAEAD, c.fixedLoc, c.fixedDataV1 = args[0], loc, loc.name == "compat-fixed-aead-v1"
 	case "key-direction":
 		direction, ok := keyDirection(args[0])
 		if !ok {
@@ -245,11 +246,15 @@ func (p *parser) endpoints() error {
 
 func (p *parser) appendEndpoint(e client.Endpoint, loc location, c connection) error {
 	if c.fixedAEAD != "" && (c.protection != nil ||
-		p.usesPasswordOnly() ||
+		p.usesPasswordOnly() && !c.fixedDataV1 ||
 		len(p.cfg.DataCiphers) != 0 && (len(p.cfg.DataCiphers) != 1 || p.cfg.DataCiphers[0] != c.fixedAEAD)) {
 		return c.fixedLoc.diagnostic(CodeConflict)
 	}
-	e.FixedAEAD = c.fixedAEAD
+	if c.fixedDataV1 && (!p.cfg.TLS.RequireServerUsage || p.identity.Mode != client.X509CommonName ||
+		p.ca == nil || p.auth == nil) {
+		return c.fixedLoc.diagnostic(CodeConflict)
+	}
+	e.FixedAEAD, e.FixedAEADDataV1 = c.fixedAEAD, c.fixedDataV1
 	if p.opts.ProtonVPNVerifyIP {
 		ip, err := netip.ParseAddr(e.Host)
 		if err != nil || ip.Zone() != "" || ip.Is4In6() {

@@ -49,18 +49,20 @@ type driver struct {
 	tx     []flight
 	rx     map[uint32][]byte
 
-	acks    []uint32
-	ackTime time.Time
+	ackLimit int
+	acks     []uint32
+	ackTime  time.Time
 }
 
 func newDriver(packets transport.PacketConn, codec *frameProtection, udp bool) *driver {
 	return &driver{
-		packets: packets,
-		codec:   codec,
-		udp:     udp,
-		tx:      make([]flight, 0, windowSize),
-		rx:      make(map[uint32][]byte, windowSize),
-		acks:    make([]uint32, 0, wire.MaxACKs),
+		packets:  packets,
+		codec:    codec,
+		udp:      udp,
+		tx:       make([]flight, 0, windowSize),
+		rx:       make(map[uint32][]byte, windowSize),
+		ackLimit: wire.MaxACKs,
+		acks:     make([]uint32, 0, wire.MaxACKs),
 	}
 }
 
@@ -186,7 +188,7 @@ func (d *driver) send(ctx context.Context, p wire.ControlPacket) error {
 	p.Sender = d.local
 	p.ACKTarget = d.peer
 	for _, id := range d.acks {
-		if p.ACKCount == len(p.ACKs) {
+		if p.ACKCount == d.ackLimit {
 			break
 		}
 		if !slices.Contains(p.ACKs[:p.ACKCount], id) {
@@ -321,13 +323,13 @@ func (d *driver) acknowledge(ids []uint32) {
 func (d *driver) queueACK(ctx context.Context, id uint32) error {
 	if index := slices.Index(d.acks, id); index >= 0 {
 		d.acks = slices.Delete(d.acks, index, index+1)
-	} else if len(d.acks) == wire.MaxACKs {
+	} else if len(d.acks) == d.ackLimit {
 		if !d.ackTime.IsZero() {
 			if err := d.send(ctx, wire.ControlPacket{Header: wire.Header{Opcode: wire.ACK}}); err != nil {
 				return err
 			}
 		}
-		d.acks = d.acks[:wire.MaxACKs-1]
+		d.acks = d.acks[:d.ackLimit-1]
 	}
 	d.acks = slices.Insert(d.acks, 0, id)
 	if d.ackTime.IsZero() {

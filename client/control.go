@@ -109,6 +109,7 @@ const (
 	KeyDerivationTLSExporter = crypt.TLSExporter
 	KeyDerivationClassicKM2  = crypt.ClassicKM2
 	DataFormatV2             = "data_v2"
+	DataFormatV1             = "data_v1"
 )
 
 // ControlInfo describes the authenticated control negotiation.
@@ -145,9 +146,13 @@ func controlInfo(active *connection) (ControlInfo, bool) {
 		return ControlInfo{}, false
 	}
 	info, keyID := link.Info()
+	format := DataFormatV2
+	if info.DataV1 {
+		format = DataFormatV1
+	}
 	return ControlInfo{
 		TLSVersion: info.TLSVersion, DataCipher: info.Cipher, PeerID: info.PeerID,
-		KeyDerivation: info.Derivation, DataFormat: DataFormatV2,
+		KeyDerivation: info.Derivation, DataFormat: format,
 		KeyID: keyID, TunnelIP: info.Tunnel.IPv4.Addr(), TunnelIPv6: info.Tunnel.IPv6, Tunnel: info.Tunnel,
 		MaxTunnelPacketSize: info.PacketMTU,
 	}, true
@@ -254,9 +259,15 @@ func prepareHandshakes(cfg Config) ([]handshakeFunc, error) {
 		}
 		offer := ciphers
 		if fixed := endpoint.FixedAEAD; fixed != "" {
-			if settings == nil || len(cfg.TLS.Certificate) == 0 || mode != ControlPlain || fips140.Enabled() ||
+			if settings == nil || (!endpoint.FixedAEADDataV1 && len(cfg.TLS.Certificate) == 0) || mode != ControlPlain || fips140.Enabled() ||
 				len(cfg.DataCiphers) != 0 && (len(ciphers) != 1 || ciphers[0] != fixed) {
 				return nil, configError("fixed AEAD policy")
+			}
+			if endpoint.FixedAEADDataV1 && (len(cfg.TLS.CA) == 0 || cfg.TLS.UseSystemRoots ||
+				!cfg.TLS.RequireServerUsage || endpoint.VerifyX509Name.Mode != X509CommonName ||
+				cfg.Credentials == nil && auth.Credentials == nil ||
+				cfg.AdvertiseDNS || auth.Challenge != nil || auth.WebAuth != nil || auth.AllowPassivePending) {
+				return nil, configError("fixed DATA_V1 policy")
 			}
 			offer = []string{fixed}
 		}
@@ -278,7 +289,7 @@ func prepareHandshakes(cfg Config) ([]handshakeFunc, error) {
 		}
 		opts.TLS = tlscontrol.Options{TLS: peer, Digest: wireDigest, Ciphers: offer, PushPolicy: cfg.PushPolicy,
 			Interaction: auth, ExitNotify: (cfg.ExplicitExitNotify || endpoint.ExplicitExitNotify) && strings.HasPrefix(endpoint.Network, "udp"),
-			TunnelMTU: opts.TunnelMTU, FixedAEAD: endpoint.FixedAEAD,
+			TunnelMTU: opts.TunnelMTU, FixedAEAD: endpoint.FixedAEAD, FixedDataV1: endpoint.FixedAEADDataV1,
 			AllowLZOStub: endpoint.ExpressVPNFragmentSize != 0, AdvertiseDNS: cfg.AdvertiseDNS}
 		opts.Protection = protection
 		opts.FragmentSize = endpoint.ExpressVPNFragmentSize

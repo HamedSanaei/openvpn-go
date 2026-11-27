@@ -43,6 +43,9 @@ type Endpoint struct {
 	// FixedAEAD explicitly selects the fixed AES-GCM compatibility policy
 	// for this endpoint. An empty string requires modern negotiation.
 	FixedAEAD string
+	// FixedAEADDataV1 explicitly selects the legacy AEAD DATA_V1 framing
+	// for a fixed AES-GCM endpoint. Never inferred from a peer response.
+	FixedAEADDataV1 bool
 	// ExpressVPNFragmentSize enables legacy UDP fragmentation and uncompressed
 	// LZO framing for this endpoint. It bounds the outer OpenVPN UDP payload;
 	// zero selects the standard data channel framing.
@@ -191,7 +194,7 @@ func (e *Endpoint) normalize() error {
 	if err := e.VerifyX509Name.Validate(); err != nil {
 		return err
 	}
-	if e.FixedAEAD != "" && e.FixedAEAD != crypt.AES128GCM && e.FixedAEAD != crypt.AES256GCM {
+	if e.FixedAEADDataV1 && e.FixedAEAD == "" || e.FixedAEAD != "" && e.FixedAEAD != crypt.AES128GCM && e.FixedAEAD != crypt.AES256GCM {
 		return configError("fixed AEAD policy")
 	}
 	if e.Network == "" {

@@ -27,6 +27,7 @@ type Mux struct {
 	limit      int
 	chunkSize  int
 	udp        bool
+	dataV1     bool
 
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -61,6 +62,10 @@ func (p Protection) ControlChunkSize(limit int) (int, error) {
 }
 
 func NewMux(packets transport.PacketConn, protection Protection, limit int, udp bool, capacity int) (*Mux, error) {
+	return NewMuxForDataFormat(packets, protection, limit, udp, capacity, false)
+}
+
+func NewMuxForDataFormat(packets transport.PacketConn, protection Protection, limit int, udp bool, capacity int, dataV1 bool) (*Mux, error) {
 	if capacity < 0 || capacity > MaxDataQueueSize {
 		return nil, ErrProtection
 	}
@@ -74,7 +79,7 @@ func NewMux(packets transport.PacketConn, protection Protection, limit int, udp 
 	c := newCodec(protection, uint32(time.Now().Unix()))
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &Mux{
-		raw: packets, limit: limit, chunkSize: chunkSize, udp: udp,
+		raw: packets, limit: limit, chunkSize: chunkSize, udp: udp, dataV1: dataV1,
 		protection: &frameProtection{codec: c},
 		ctx:        ctx, cancel: cancel, done: make(chan struct{}), send: make(chan struct{}, 1),
 		data: make(chan []byte, capacity), resets: make(chan Reset, 1),
@@ -140,6 +145,9 @@ func (m *Mux) start(id uint8, local, peer wire.SessionID, prepend []byte) (*Stre
 	m.mu.Unlock()
 
 	d := newDriver(l, m.protection, m.udp)
+	if m.dataV1 {
+		d.ackLimit = 4
+	}
 	d.local, d.peer, d.keyID = local, peer, id
 	return startStream(d, m.limit, m.chunkSize), nil
 }
@@ -217,7 +225,7 @@ func (m *Mux) read() {
 			continue
 		}
 		if h.IsData() {
-			if h.Opcode == wire.DataV2 {
+			if h.Opcode == wire.DataV1 && m.dataV1 || h.Opcode == wire.DataV2 && !m.dataV1 {
 				depth := len(m.data)
 				if depth == cap(m.data) {
 					m.dataQueue.Drop(depth)

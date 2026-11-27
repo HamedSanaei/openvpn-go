@@ -78,7 +78,7 @@ func Open(ctx context.Context, raw transport.PacketConn, opts Options) (*Session
 	if opts.TunnelMTU != 0 || mtu < 1500 {
 		opts.TLS.TunnelMTU = mtu
 	}
-	mux, err := control.NewMux(raw, opts.Protection, frameLimit, udp, opts.ReceiveQueueSize)
+	mux, err := control.NewMuxForDataFormat(raw, opts.Protection, frameLimit, udp, opts.ReceiveQueueSize, opts.TLS.FixedDataV1)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +120,7 @@ func Open(ctx context.Context, raw transport.PacketConn, opts Options) (*Session
 		return nil, err
 	}
 	observability.Enter(ctx, observability.PhaseDataSetup)
-	ch, err := data.NewChannel(link.Info.PeerID, udp, keys)
+	ch, err := data.NewChannelForFormat(link.Info.PeerID, udp, keys, link.Info.DataV1)
 	if err != nil {
 		return nil, err
 	}
