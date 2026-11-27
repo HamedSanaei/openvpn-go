@@ -109,6 +109,8 @@ The old parser rejected the vendor export at ignore-unknown-option. The opt-in P
 
 Wrong CN was rejected in both AES-256-GCM cases; each rekey run verified three echoes in the same generation. All tests used actual certificate-only profiles. Do not infer PIN, OTP, SSO, site-to-site, high availability, DCO or performance qualification from these results.
 
+Six additional synthetic Pritunl-shaped certificate-plus-password cases exchanged tunnel traffic against Community 2.7.0. Their coverage is recorded separately from the real-service tests above. [Profile policy and reference matrix](PRITUNL.md)
+
 ### Reproduce
 
 Use [Pritunl installation documentation](https://docs.pritunl.com/docs/installation) and a disposable Ubuntu 24.04 environment. For the versions above, start the dedicated MongoDB instance and Pritunl, provision a local organization and user, attach it to both test servers, choose the cipher, disable OTP/SSO for this certificate-only test, and wait for DH generation and listener readiness. Obtain each exact CN from the trusted public server certificate using the administrator's server configuration. Download each original profile from the management interface. Run:

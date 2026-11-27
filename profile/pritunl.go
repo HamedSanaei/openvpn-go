@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -16,6 +17,7 @@ var pritunlDirectives = map[string]directive{
 	"setenv":                {min: 2, max: 2},
 	"mute":                  {min: 1, max: 1},
 	"push-peer-info":        {},
+	"block-outside-dns":     {},
 	"ping":                  {min: 1, max: 1},
 	"ping-restart":          {min: 1, max: 1},
 	"sndbuf":                {min: 1, max: 1},
@@ -27,6 +29,12 @@ var pritunlDirectives = map[string]directive{
 
 func (p *parser) applyPritunl(loc location, args []string) error {
 	key := loc.name
+	if key == "ignore-unknown-option" {
+		if args[0] != "data-ciphers" && args[0] != "block-outside-dns" {
+			return loc.diagnostic(CodeUnsupported)
+		}
+		key += ":" + args[0]
+	}
 	if key == "setenv" {
 		if args[0] != "UV_ID" && args[0] != "UV_NAME" {
 			return loc.diagnostic(CodeUnsupported)
@@ -44,18 +52,14 @@ func (p *parser) applyPritunl(loc location, args []string) error {
 	}
 	p.pritunlSeen[key] = loc
 	switch loc.name {
-	case "ignore-unknown-option":
-		if args[0] != "data-ciphers" {
-			return loc.diagnostic(CodeUnsupported)
-		}
-	case "setenv", "push-peer-info":
-		// Advisory metadata only; do not transmit user/device identifiers.
+	case "ignore-unknown-option", "setenv", "push-peer-info", "block-outside-dns":
+		// Leave host DNS policy and exporter metadata to the caller.
 	case "mute":
 		if _, ok := uintValue(args[0], 16); !ok {
 			return loc.diagnostic(CodeValue)
 		}
 	case "ping", "ping-restart":
-		if _, ok := seconds(args[0], 1, 65535); !ok {
+		if _, ok := seconds(args[0], 0, 65535); !ok {
 			return loc.diagnostic(CodeValue)
 		}
 		// The authenticated push governs tunnel liveness. Local hints are not applied.
@@ -120,28 +124,30 @@ func (p *parser) finishPritunl() error {
 	if !p.cfg.TLS.RequireServerUsage {
 		return (location{name: "remote-cert-tls"}).diagnostic(CodeRequired)
 	}
-	if p.ca == nil || p.cert == nil {
+	if p.ca == nil {
+		return (location{name: "ca"}).diagnostic(CodeRequired)
+	}
+	if p.cert == nil {
 		return (location{name: "cert"}).diagnostic(CodeRequired)
 	}
 	if p.pritunlSeen["data-ciphers"].line == 0 || len(p.cfg.DataCiphers) == 0 {
 		return (location{name: "data-ciphers"}).diagnostic(CodeRequired)
 	}
-	if p.pritunlCBC != "" {
-		if p.pritunlHint != p.pritunlCBC {
-			return (location{name: "cipher"}).diagnostic(CodeConflict)
+	cipherLoc := p.pritunlSeen["cipher"]
+	cipherLoc.name = "cipher"
+	if p.pritunlCBC != "" && p.pritunlHint != p.pritunlCBC {
+		return cipherLoc.diagnostic(CodeConflict)
+	}
+	switch p.pritunlHint {
+	case "":
+	case "AES-128-CBC", "AES-256-CBC":
+		match := strings.TrimSuffix(p.pritunlHint, "CBC") + "GCM"
+		if len(p.cfg.DataCiphers) != 1 || p.cfg.DataCiphers[0] != match {
+			return cipherLoc.diagnostic(CodeConflict)
 		}
-	} else if p.pritunlHint != "" {
-		if _, err := crypt.DataCiphers([]string{p.pritunlHint}); err != nil {
-			return (location{name: "cipher"}).diagnostic(CodeConflict)
-		}
-		found := false
-		for _, c := range p.cfg.DataCiphers {
-			if c == p.pritunlHint {
-				found = true
-			}
-		}
-		if !found {
-			return (location{name: "cipher"}).diagnostic(CodeConflict)
+	default:
+		if !slices.Contains(p.cfg.DataCiphers, p.pritunlHint) {
+			return cipherLoc.diagnostic(CodeConflict)
 		}
 	}
 	p.identity = name

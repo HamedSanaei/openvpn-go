@@ -27,12 +27,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	err := flags.Parse(args)
 	if err != nil || flags.NArg() != 1 {
 		if err == flag.ErrHelp {
-			if _, err := fmt.Fprintln(stdout, "Usage: ovpn-inspect [-capabilities] [-root directory] [-allow-password-only] [-auth-file path] [-access-server-name name | -pritunl-server-name name | -expressvpn | -protonvpn-server-name name | -protonvpn-verify-ip] profile.ovpn|-"); err != nil {
+			if _, err := fmt.Fprintln(stdout, "Usage: ovpn-inspect [-capabilities] [-root directory] [-allow-password-only] [-auth-file path] [-pritunl-server-name name | -access-server-name name | -expressvpn | -protonvpn-server-name name | -protonvpn-verify-ip] profile.ovpn|-"); err != nil {
 				return outputFailure(stderr)
 			}
 			return 0
 		}
-		fmt.Fprintln(stderr, "Usage: ovpn-inspect [-capabilities] [-root directory] [-allow-password-only] [-auth-file path] [-access-server-name name | -pritunl-server-name name | -expressvpn | -protonvpn-server-name name | -protonvpn-verify-ip] profile.ovpn|-")
+		fmt.Fprintln(stderr, "Usage: ovpn-inspect [-capabilities] [-root directory] [-allow-password-only] [-auth-file path] [-pritunl-server-name name | -access-server-name name | -expressvpn | -protonvpn-server-name name | -protonvpn-verify-ip] profile.ovpn|-")
 		return 2
 	}
 
@@ -47,6 +47,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		r = file
 	}
 	opts := profile.Options{AllowPasswordOnly: *passwordOnly, ProtonVPNServerName: *protonName, ProtonVPNVerifyIP: *protonVerifyIP, ExpressVPNManual: *express, AccessServerName: *accessName, PritunlServerName: *pritunlName}
+	if *pritunlName != "" && (*accessName != "" || *express || *protonVerifyIP || *protonName != "" || *passwordOnly) {
+		fmt.Fprintln(stderr, "Pritunl import requires its own certificate and identity policy")
+		return 2
+	}
 	if *protonVerifyIP && *protonName != "" {
 		fmt.Fprintln(stderr, "choose one Proton VPN server identity option")
 		return 2

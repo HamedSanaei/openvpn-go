@@ -40,7 +40,7 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 	pritunlName := flags.String("pritunl-server-name", "", "trusted exact Pritunl VPN certificate common name")
 	passwordOnly := flags.Bool("allow-password-only", false, "allow verified profiles without a client certificate")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *path == "" || *tun == "" || (*v4 == "" && *v6 == "") {
-		fmt.Fprintln(stderr, "Usage: ovpn-xray -profile client.ovpn -tun ovpn0 [-root directory] [-ipv4 addr] [-ipv6 prefix] [-attempts n] [-mss-mtu n] [-allow-password-only] [-auth-file path] [-access-server-name name | -pritunl-server-name name | -expressvpn | -protonvpn-server-name name | -protonvpn-verify-ip]")
+		fmt.Fprintln(stderr, "Usage: ovpn-xray -profile client.ovpn -tun ovpn0 [-root directory] [-ipv4 addr] [-ipv6 prefix] [-attempts n] [-mss-mtu n] [-allow-password-only] [-auth-file path] [-pritunl-server-name name | -access-server-name name | -expressvpn | -protonvpn-server-name name | -protonvpn-verify-ip]")
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
@@ -63,6 +63,10 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 		}
 	}
 	opts := profile.Options{AllowPasswordOnly: *passwordOnly, ProtonVPNServerName: *protonName, ProtonVPNVerifyIP: *protonVerifyIP, ExpressVPNManual: *express, AccessServerName: *accessName, PritunlServerName: *pritunlName}
+	if *pritunlName != "" && (*accessName != "" || *express || *protonVerifyIP || *protonName != "" || *passwordOnly) {
+		fmt.Fprintln(stderr, "Pritunl import requires its own certificate and identity policy")
+		return 2
+	}
 	if *protonVerifyIP && *protonName != "" {
 		fmt.Fprintln(stderr, "choose one Proton VPN server identity option")
 		return 2
