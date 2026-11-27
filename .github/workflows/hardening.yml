@@ -48,7 +48,7 @@ jobs:
           sudo env PATH="$PATH" GOTOOLCHAIN=local GOMODCACHE="$(go env GOMODCACHE)" GOPROXY=off \
             OPENVPN_INTEROP_BIN="$OPENVPN_INTEROP_BIN" OPENVPN3_INTEROP_BIN="$OPENVPN3_INTEROP_BIN" \
             OPENVPN3_INTEROP_SHA256="$OPENVPN3_INTEROP_SHA256" OPENVPN3_COMPARISON_JSON="$report" \
-            unshare --net --mount bash -c 'ip link set lo up && exec go test -race -count=1 -timeout 3m -v -run "^TestOpenVPN3Differential$" ./tests/interop' \
+            unshare --net --mount bash -c 'ip link set lo up && exec go test -race -count=1 -timeout 3m -v -run "^(TestOpenVPN3Differential|TestDNSCapabilitiesOpenVPN3)$" ./tests/interop' \
             | tee evidence/openvpn3-tests.txt
       - name: Collect comparison on pass or failure
         if: always()
@@ -238,6 +238,8 @@ jobs:
           make bench | tee evidence/benchmarks.txt
           python3 -m unittest discover -s tools -p test_check_benchmarks.py
           python3 tools/check_benchmarks.py evidence/benchmarks.txt
+      - name: Compare bounded receive queues
+        run: go test ./internal/control ./internal/session -run '^$' -bench 'Benchmark(ReceiveMuxBurst|AuthenticatedReceiveBurst)$' -benchtime=20x -count=3 -benchmem | tee evidence/receive-queues.txt
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:

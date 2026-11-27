@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hamedsanaei/openvpn-go/internal/control"
 	"github.com/hamedsanaei/openvpn-go/internal/crypt"
 	"github.com/hamedsanaei/openvpn-go/transport"
 	"github.com/hamedsanaei/openvpn-go/tunnel"
@@ -75,7 +76,7 @@ type Config struct {
 	Retry RetryPolicy
 	// PushPolicy selects how authenticated tunnel metadata is handled.
 	PushPolicy tunnel.PushPolicy
-	// AdvertiseDNS opts into the OpenVPN 2.6 DNS metadata capability with
+	// AdvertiseDNS opts into the OpenVPN 2.6 and 2.7 DNS metadata capabilities with
 	// PushAccept. The application is responsible for applying the metadata.
 	AdvertiseDNS bool
 
@@ -115,9 +116,15 @@ type Config struct {
 	// transport.DefaultPacketSize. A custom Dialer must enforce this limit
 	// in its transport adapter.
 	MaxPacketSize int
+	// ReceiveQueueSize sets the capacity of each receive queue per
+	// connection. Zero uses 32. Values from 1 to 128 are supported.
+	ReceiveQueueSize int
 }
 
 func (cfg Config) validated() (Config, error) {
+	if cfg.ReceiveQueueSize < 0 || cfg.ReceiveQueueSize > control.MaxDataQueueSize {
+		return Config{}, configError("receive queue size")
+	}
 	policy := cfg.PushPolicy
 	if policy.Addresses > tunnel.PushReject || policy.Routes > tunnel.PushReject ||
 		policy.DNS > tunnel.PushReject || policy.MTU > tunnel.PushReject {

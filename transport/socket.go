@@ -74,16 +74,29 @@ func (d socketDialer) DialPacket(ctx context.Context, network, address string) (
 		return nil, ErrInvalidConnection
 	}
 
-	socket := newSocket(conn, limit)
-	if d.dial == nil {
+	udp := network == "udp" || network == "udp4" || network == "udp6"
+	_, nativeDatagram := conn.(*net.UDPConn)
+	var peerIP netip.Addr
+	if d.dial == nil || udp && nativeDatagram {
 		switch addr := conn.RemoteAddr().(type) {
 		case *net.TCPAddr:
-			socket.peerIP = addr.AddrPort().Addr().Unmap()
+			peerIP = addr.AddrPort().Addr().Unmap()
 		case *net.UDPAddr:
-			socket.peerIP = addr.AddrPort().Addr().Unmap()
+			peerIP = addr.AddrPort().Addr().Unmap()
 		}
 	}
-	if network == "udp" || network == "udp4" || network == "udp6" {
+	if udp && (d.dial == nil || nativeDatagram) {
+		// IPv4's total length includes its header. IPv6's payload length
+		// only includes the UDP header in the absence of extension headers.
+		maxPayload := 65507
+		if peerIP.Is6() {
+			maxPayload = 65527
+		}
+		limit = min(limit, maxPayload)
+	}
+	socket := newSocket(conn, limit)
+	socket.peerIP = peerIP
+	if udp {
 		return &udpConn{socket: socket}, nil
 	}
 	return &tcpConn{socket: socket}, nil
@@ -102,6 +115,9 @@ type socket struct {
 
 // PeerIP reports the VPN peer for native sockets. It is unset for custom streams.
 func (s *socket) PeerIP() netip.Addr { return s.peerIP }
+
+// PacketSizeLimit reports the adapter's absolute frame ceiling before path MTU limits.
+func (s *socket) PacketSizeLimit() int { return s.limit }
 
 func newSocket(conn net.Conn, limit int) *socket {
 	return &socket{

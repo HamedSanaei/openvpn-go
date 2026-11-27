@@ -11,15 +11,63 @@ import (
 	"github.com/hamedsanaei/openvpn-go/internal/control"
 	"github.com/hamedsanaei/openvpn-go/internal/crypt"
 	"github.com/hamedsanaei/openvpn-go/internal/data"
+	"github.com/hamedsanaei/openvpn-go/internal/observability"
 	"github.com/hamedsanaei/openvpn-go/internal/tlscontrol"
 )
 
+const rekeyHistorySize = 8
+
+// RekeyResult is an internal snapshot of one soft reset attempt.
+type RekeyResult struct {
+	KeyID         uint8
+	PeerInitiated bool
+	Started       time.Time
+	Duration      time.Duration
+	Phase         observability.Phase
+	Err           error
+}
+
 type replacement struct {
-	id     uint8
 	stream *control.Stream
 	link   *tlscontrol.Link
 	keys   crypt.DataKeys
-	err    error
+	report RekeyResult
+}
+
+type rekeyHistory struct {
+	entries [rekeyHistorySize]RekeyResult
+	count   uint64
+}
+
+func (s *Session) RekeyResults() []RekeyResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rekeys == nil {
+		return nil
+	}
+	retained := min(s.rekeys.count, rekeyHistorySize)
+	out := make([]RekeyResult, 0, retained)
+	for i := s.rekeys.count - retained; i < s.rekeys.count; i++ {
+		out = append(out, s.rekeys.entries[i%rekeyHistorySize])
+	}
+	return out
+}
+
+func (s *Session) recordRekey(report RekeyResult) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recordRekeyLocked(report)
+}
+
+// Record installation under the same lock as the new key ID so readers
+// cannot observe a promoted generation without its completed report.
+func (s *Session) recordRekeyLocked(report RekeyResult) {
+	report.Duration = time.Since(report.Started)
+	if s.rekeys == nil {
+		s.rekeys = new(rekeyHistory)
+	}
+	s.rekeys.entries[s.rekeys.count%rekeyHistorySize] = report
+	s.rekeys.count++
 }
 
 type controlEnd struct {
@@ -52,6 +100,14 @@ func (s *Session) run(active *tlscontrol.Link) {
 		s.mux.Close()
 		s.closeErr = s.raw.Close()
 		workers.Wait()
+		select {
+		case result := <-rekeyResults:
+			if result.report.Err == nil {
+				result.report.Err = s.ctx.Err()
+			}
+			s.recordRekey(result.report)
+		default:
+		}
 		s.opts.TLS.Auth.Clear()
 		s.mu.Lock()
 		if s.fragments != nil {
@@ -91,8 +147,11 @@ func (s *Session) run(active *tlscontrol.Link) {
 		s.link = nil
 		s.mu.Unlock()
 		active.Close()
+		report := RekeyResult{KeyID: id, PeerInitiated: first.KeyID != 0, Started: time.Now(), Phase: observability.PhaseResetACK}
 		stream, err := s.mux.StartRekey(id, first)
 		if err != nil {
+			report.Err = err
+			s.recordRekey(report)
 			return rekeyError(err)
 		}
 		pending = stream
@@ -100,11 +159,15 @@ func (s *Session) run(active *tlscontrol.Link) {
 		workers.Go(func() {
 			ctx, cancel := context.WithTimeout(s.ctx, s.opts.HandshakeLimit)
 			defer cancel()
-			result := replacement{id: id, stream: stream}
-			result.link, result.err = tlscontrol.Establish(ctx, stream, s.opts.TLS, &previous)
-			if result.err == nil {
-				result.keys, result.err = result.link.DataKeys()
+			progress := new(observability.Progress)
+			ctx = observability.WithProgress(ctx, progress)
+			result := replacement{stream: stream, report: report}
+			result.link, result.report.Err = tlscontrol.Establish(ctx, stream, s.opts.TLS, &previous)
+			if result.report.Err == nil {
+				observability.Enter(ctx, observability.PhaseKeyDerivation)
+				result.keys, result.report.Err = result.link.DataKeys()
 			}
+			result.report.Phase = progress.Phase
 			rekeyResults <- result
 		})
 		return nil
@@ -127,27 +190,31 @@ func (s *Session) run(active *tlscontrol.Link) {
 				return
 			}
 		case result := <-rekeyResults:
-			if result.err != nil {
-				s.terminal = rekeyError(result.err)
+			if result.report.Err != nil {
+				s.recordRekey(result.report)
+				s.terminal = rekeyError(result.report.Err)
 				return
 			}
 			s.mu.Lock()
-			err := s.channel.Promote(result.id, result.keys, time.Now().Add(rekeyOverlap))
+			err := s.channel.Promote(result.report.KeyID, result.keys, time.Now().Add(rekeyOverlap))
 			if err == nil {
 				if s.fragments != nil {
 					s.fragments.retire(s.channel)
 				}
 				s.info = result.link.Info
 				s.link = result.link
-				s.keyID = result.id
+				s.keyID = result.report.KeyID
 			}
+			result.report.Err = err
+			result.report.Phase = observability.PhaseRekeyInstall
+			s.recordRekeyLocked(result.report)
 			s.mu.Unlock()
 			if err != nil {
 				s.terminal = rekeyError(err)
 				return
 			}
 
-			s.mux.Expect(result.stream, data.NextKeyID(result.id))
+			s.mux.Expect(result.stream, data.NextKeyID(result.report.KeyID))
 			active, pending = result.link, nil
 			watch(active)
 			nextRekey = time.Now().Add(s.opts.RekeyInterval)

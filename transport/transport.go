@@ -51,6 +51,8 @@ type PacketConn interface {
 // tcp or an IP-family variant. Address is a host:port value. A successful
 // dial transfers ownership of the connection to the caller. Implementations
 // must return promptly on context cancellation and clean up failed dials.
+// A connection may report a smaller absolute frame limit by implementing
+// PacketSizeLimit() int. A positive value limits the configured frame size.
 type Dialer interface {
 	DialPacket(ctx context.Context, network, address string) (PacketConn, error)
 }

@@ -418,7 +418,7 @@ func TestMuxQueueBoundsAndDiscardedDatagrams(t *testing.T) {
 		t.Run(strconv.FormatBool(udp), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				packets, peer := testkit.PacketPipe(4, 1024)
-				mux, err := NewMux(packets, Protection{}, 512, udp)
+				mux, err := NewMux(packets, Protection{}, 512, udp, 0)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -430,14 +430,14 @@ func TestMuxQueueBoundsAndDiscardedDatagrams(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				for range dataQueueSize + 5 {
+				for range DefaultDataQueueSize + 5 {
 					if err := peer.WritePacket(t.Context(), frame); err != nil {
 						t.Fatal(err)
 					}
 				}
 				synctest.Wait()
 				stats := mux.DataQueueStats()
-				if stats.Dropped != 5 || stats.HighWater != dataQueueSize || len(mux.Data()) != dataQueueSize {
+				if stats.Dropped != 5 || stats.HighWater != DefaultDataQueueSize || len(mux.Data()) != DefaultDataQueueSize {
 					t.Fatalf("unexpected mux queue: %+v", stats)
 				}
 				if got := <-mux.Data(); !bytes.Equal(got, frame) {

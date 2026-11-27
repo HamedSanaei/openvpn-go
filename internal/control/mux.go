@@ -14,7 +14,10 @@ import (
 	"github.com/hamedsanaei/openvpn-go/transport"
 )
 
-const dataQueueSize = 32
+const (
+	DefaultDataQueueSize = 32
+	MaxDataQueueSize     = 128
+)
 
 // Mux separates data datagrams from reliable control traffic. The connection
 // has a single reader and all writers share the same cancellable send gate.
@@ -57,7 +60,13 @@ func (p Protection) ControlChunkSize(limit int) (int, error) {
 	return frameLimit - header, nil
 }
 
-func NewMux(packets transport.PacketConn, protection Protection, limit int, udp bool) (*Mux, error) {
+func NewMux(packets transport.PacketConn, protection Protection, limit int, udp bool, capacity int) (*Mux, error) {
+	if capacity < 0 || capacity > MaxDataQueueSize {
+		return nil, ErrProtection
+	}
+	if capacity == 0 {
+		capacity = DefaultDataQueueSize
+	}
 	chunkSize, err := protection.ControlChunkSize(limit)
 	if err != nil {
 		return nil, err
@@ -68,7 +77,7 @@ func NewMux(packets transport.PacketConn, protection Protection, limit int, udp 
 		raw: packets, limit: limit, chunkSize: chunkSize, udp: udp,
 		protection: &frameProtection{codec: c},
 		ctx:        ctx, cancel: cancel, done: make(chan struct{}), send: make(chan struct{}, 1),
-		data: make(chan []byte, dataQueueSize), resets: make(chan Reset, 1),
+		data: make(chan []byte, capacity), resets: make(chan Reset, 1),
 	}
 	go m.read()
 	return m, nil
@@ -214,7 +223,7 @@ func (m *Mux) read() {
 					m.dataQueue.Drop(depth)
 				} else {
 					m.data <- bytes.Clone(packet)
-					m.dataQueue.Observe(depth + 1)
+					m.dataQueue.Observe(max(1, len(m.data)))
 				}
 			}
 			continue

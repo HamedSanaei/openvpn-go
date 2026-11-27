@@ -18,7 +18,6 @@ import (
 )
 
 const (
-	queueSize     = 32
 	rekeyOverlap  = 30 * time.Second
 	writeDeadline = 5 * time.Second
 )
@@ -26,13 +25,14 @@ const (
 var ErrRekey = errors.New("OpenVPN data rekey failed")
 
 type Options struct {
-	TLS            tlscontrol.Options
-	Protection     control.Protection
-	MaxPacketSize  int
-	RekeyInterval  time.Duration
-	HandshakeLimit time.Duration
-	TunnelMTU      int
-	FragmentSize   int
+	TLS              tlscontrol.Options
+	Protection       control.Protection
+	MaxPacketSize    int
+	RekeyInterval    time.Duration
+	HandshakeLimit   time.Duration
+	TunnelMTU        int
+	FragmentSize     int
+	ReceiveQueueSize int
 }
 
 // Session owns one authenticated OpenVPN link. Control generations share its
@@ -61,6 +61,7 @@ type Session struct {
 	keyID    uint8
 	lastSent time.Time
 	lastRecv time.Time
+	rekeys   *rekeyHistory
 
 	terminal error
 	closeErr error
@@ -70,7 +71,14 @@ type Session struct {
 // On failure the caller still owns raw and may close it.
 func Open(ctx context.Context, raw transport.PacketConn, opts Options) (*Session, error) {
 	udp := strings.HasPrefix(opts.TLS.Network, "udp")
-	mux, err := control.NewMux(raw, opts.Protection, opts.MaxPacketSize, udp)
+	frameLimit, mtu, fragments, err := packetBudget(raw, opts, udp)
+	if err != nil {
+		return nil, err
+	}
+	if opts.TunnelMTU != 0 || mtu < 1500 {
+		opts.TLS.TunnelMTU = mtu
+	}
+	mux, err := control.NewMux(raw, opts.Protection, frameLimit, udp, opts.ReceiveQueueSize)
 	if err != nil {
 		return nil, err
 	}
@@ -95,26 +103,10 @@ func Open(ctx context.Context, raw transport.PacketConn, opts Options) (*Session
 		return nil, err
 	}
 	observability.Enter(ctx, observability.PhaseDataSetup)
-	mtu := opts.MaxPacketSize - data.Overhead
-	var fragments *fragmenter
-	if opts.FragmentSize != 0 {
-		limit := min(opts.FragmentSize, opts.MaxPacketSize)
-		if !udp || limit < fragmentHeaderSize+data.Overhead+68+1 {
-			return nil, tlscontrol.ErrNegotiation
-		}
-		fragments = &fragmenter{chunkSize: (limit - fragmentHeaderSize - data.Overhead) &^ 3}
-		mtu = min(mtu-1, fragments.chunkSize*maxFragments-1)
+	if link.Info.Tunnel.MTU != 0 {
+		mtu = min(mtu, int(link.Info.Tunnel.MTU))
 	}
 	if link.Info.Tunnel.MTU != 0 || opts.TunnelMTU != 0 || fragments != nil {
-		if opts.TunnelMTU != 0 {
-			mtu = min(mtu, opts.TunnelMTU)
-		}
-		if link.Info.Tunnel.MTU != 0 {
-			mtu = min(mtu, int(link.Info.Tunnel.MTU))
-		}
-		if mtu < 68 {
-			return nil, tlscontrol.ErrNegotiation
-		}
 		link.Info.Tunnel.MTU = uint16(mtu)
 	}
 	if link.Info.Tunnel.IPv6.IsValid() && mtu < 1280 {
@@ -136,13 +128,40 @@ func Open(ctx context.Context, raw transport.PacketConn, opts Options) (*Session
 	now := time.Now()
 	s := &Session{
 		opts: opts, raw: raw, mux: mux, ctx: lifetime, cancel: cancel, done: make(chan struct{}),
-		inbound: make(chan []byte, queueSize), writeGate: make(chan struct{}, 1), rotate: make(chan struct{}, 1),
+		inbound: make(chan []byte, cap(mux.Data())), writeGate: make(chan struct{}, 1), rotate: make(chan struct{}, 1),
 		channel: ch, link: link, packetMTU: mtu, fragments: fragments, info: link.Info, lastSent: now, lastRecv: now,
 	}
 	mux.Expect(stream, data.NextKeyID(ch.KeyID()))
 	opened = true
 	go s.run(link)
 	return s, nil
+}
+
+// packetBudget computes the outer frame limit and the local whole-packet MTU.
+func packetBudget(raw transport.PacketConn, opts Options, udp bool) (int, int, *fragmenter, error) {
+	frameLimit := opts.MaxPacketSize
+	if conn, ok := raw.(interface{ PacketSizeLimit() int }); ok {
+		if limit := conn.PacketSizeLimit(); limit > 0 {
+			frameLimit = min(frameLimit, limit)
+		}
+	}
+	mtu := frameLimit - data.Overhead
+	var fragments *fragmenter
+	if opts.FragmentSize != 0 {
+		limit := min(opts.FragmentSize, frameLimit)
+		if !udp || limit < fragmentHeaderSize+data.Overhead+68+1 {
+			return 0, 0, nil, tlscontrol.ErrNegotiation
+		}
+		fragments = &fragmenter{chunkSize: (limit - fragmentHeaderSize - data.Overhead) &^ 3}
+		mtu = min(opts.MaxPacketSize, fragments.chunkSize*maxFragments-1)
+	}
+	if opts.TunnelMTU != 0 {
+		mtu = min(mtu, opts.TunnelMTU)
+	}
+	if mtu < 68 {
+		return 0, 0, nil, tlscontrol.ErrNegotiation
+	}
+	return frameLimit, mtu, fragments, nil
 }
 
 func (s *Session) Info() (tlscontrol.Negotiation, uint8) {
@@ -329,10 +348,9 @@ func (s *Session) receive(wrapped []byte) {
 		clear(packet)
 		return
 	}
-	depth := len(s.inbound)
 	select {
 	case s.inbound <- packet:
-		s.inboundQueue.Observe(min(cap(s.inbound), depth+1))
+		s.inboundQueue.Observe(max(1, len(s.inbound)))
 	default:
 		s.inboundQueue.Drop(cap(s.inbound))
 		clear(packet)

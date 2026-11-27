@@ -107,7 +107,7 @@ func TestKeepaliveUsesActiveDataFraming(t *testing.T) {
 			t.Fatal(err)
 		}
 		raw, wire := testkit.PacketPipe(1, 1400)
-		mux, err := control.NewMux(raw, control.Protection{}, 1400, true)
+		mux, err := control.NewMux(raw, control.Protection{}, 1400, true, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
