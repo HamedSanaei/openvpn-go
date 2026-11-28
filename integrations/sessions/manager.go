@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"net"
 	"sync"
 
 	"github.com/hamedsanaei/openvpn-go/client"
@@ -71,6 +72,7 @@ type Lease struct {
 	mu       sync.Mutex
 	client   *client.Client
 	result   client.ErrorCode
+	cleanup  CleanupStatus
 	final    client.Stats
 }
 
@@ -79,6 +81,15 @@ type Status struct {
 	Done  bool
 	Code  client.ErrorCode
 	Stats client.Stats
+	// Cleanup reports failures independently of the lease's stop reason.
+	Cleanup CleanupStatus
+}
+
+// CleanupStatus describes which owned resource failed to close. Status keeps
+// these flags after releasing the lease reservation and its identifier.
+type CleanupStatus struct {
+	DeviceFailed bool
+	ClientFailed bool
 }
 
 func New(limits Limits) (*Manager, error) {
@@ -152,7 +163,7 @@ func (m *Manager) StartWithResources(ctx context.Context, id string, config clie
 
 	c, err := client.New(config)
 	if err != nil {
-		m.finish(lease, nil, code(err))
+		m.finish(lease, nil, code(err), CleanupStatus{})
 		m.workers.Done()
 		return nil, err
 	}
@@ -161,46 +172,52 @@ func (m *Manager) StartWithResources(ctx context.Context, id string, config clie
 	lease.mu.Unlock()
 	go func() {
 		defer m.workers.Done()
-		result := run(ctx, c, open)
-		if err := c.Close(); err != nil && result == "" {
-			result = code(err)
+		result, cleanup := run(ctx, c, open)
+		if err := c.Close(); err != nil {
+			cleanup.ClientFailed = true
+			if result == "" {
+				result = code(err)
+			}
 		}
-		m.finish(lease, c, result)
+		m.finish(lease, c, result, cleanup)
 	}()
 	return lease, nil
 }
 
-func run(ctx context.Context, c *client.Client, open DeviceFactory) (result client.ErrorCode) {
+func run(ctx context.Context, c *client.Client, open DeviceFactory) (result client.ErrorCode, cleanup CleanupStatus) {
 	if err := ctx.Err(); err != nil {
-		return code(err)
+		return code(err), cleanup
 	}
 	device, configure, err := open(ctx)
 	if device != nil {
 		defer func() {
-			if err := device.Close(); err != nil && result == "" {
-				result = client.CodeTunnel
+			if err := device.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				cleanup.DeviceFailed = true
+				if result == "" {
+					result = client.CodeTunnel
+				}
 			}
 		}()
 	}
 	if ctx.Err() != nil {
-		return code(ctx.Err())
+		return code(ctx.Err()), cleanup
 	}
 	if err != nil || device == nil {
-		return client.CodeTunnel
+		return client.CodeTunnel, cleanup
 	}
 	if err := c.Connect(ctx); err != nil {
-		return code(err)
+		return code(err), cleanup
 	}
-	return code(c.RunConfigured(ctx, device, configure))
+	return code(c.RunConfigured(ctx, device, configure)), cleanup
 }
 
-func (m *Manager) finish(lease *Lease, c *client.Client, result client.ErrorCode) {
+func (m *Manager) finish(lease *Lease, c *client.Client, result client.ErrorCode, cleanup CleanupStatus) {
 	lease.cancel()
 	lease.mu.Lock()
 	if c != nil {
 		lease.final = c.Stats()
 	}
-	lease.client, lease.result = nil, result
+	lease.client, lease.result, lease.cleanup = nil, result, cleanup
 	m.mu.Lock()
 	delete(m.leases, lease.id)
 	m.usage.PacketBytes -= lease.reserved.PacketBytes
@@ -279,7 +296,7 @@ func (l *Lease) Wait(ctx context.Context) (Status, error) {
 func (l *Lease) Status() Status {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	status := Status{ID: l.id, Code: l.result, Stats: l.final}
+	status := Status{ID: l.id, Code: l.result, Stats: l.final, Cleanup: l.cleanup}
 	if l.client != nil {
 		status.Stats = l.client.Stats()
 	}
