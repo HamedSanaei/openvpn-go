@@ -3,7 +3,9 @@ package tlscontrol
 import (
 	"context"
 	"crypto"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"io"
@@ -41,7 +43,7 @@ func SetKeyProvider(cfg *tls.Config, certificate []byte, signer crypto.Signer, p
 			}
 		}
 		pair := identity
-		pair.PrivateKey = protectedSigner{Signer: key, ctx: ctx}
+		pair.PrivateKey = protectedSigner{Signer: key, ctx: ctx, public: identity.Leaf.PublicKey}
 		if err := request.SupportsCertificate(&pair); err != nil {
 			return nil, ErrAuth
 		}
@@ -71,14 +73,32 @@ func keyMatches(key crypto.Signer, leaf *x509.Certificate) bool {
 			return false
 		}
 	}
-	expected, ok := leaf.PublicKey.(interface{ Equal(crypto.PublicKey) bool })
-	return ok && expected.Equal(key.Public())
+	// The leaf is parsed by x509. Check the external representation before
+	// calling the standard equality routines with it.
+	public := key.Public()
+	switch expected := leaf.PublicKey.(type) {
+	case *rsa.PublicKey:
+		got, ok := public.(*rsa.PublicKey)
+		return ok && got != nil && got.N != nil && got.N.Sign() > 0 && got.E > 1 && expected.Equal(got)
+	case *ecdsa.PublicKey:
+		got, ok := public.(*ecdsa.PublicKey)
+		return ok && got != nil && got.X != nil && got.Y != nil && got.Curve == expected.Curve &&
+			expected.Curve.IsOnCurve(got.X, got.Y) && expected.Equal(got)
+	case ed25519.PublicKey:
+		got, ok := public.(ed25519.PublicKey)
+		return ok && len(got) == ed25519.PublicKeySize && expected.Equal(got)
+	default:
+		return false
+	}
 }
 
 type protectedSigner struct {
 	crypto.Signer
-	ctx context.Context
+	ctx    context.Context
+	public crypto.PublicKey
 }
+
+func (s protectedSigner) Public() crypto.PublicKey { return s.public }
 
 func (s protectedSigner) Sign(random io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
 	if err := s.ctx.Err(); err != nil {
