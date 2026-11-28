@@ -248,7 +248,7 @@ func (s *Session) WritePacket(ctx context.Context, packet []byte) error {
 	if !data.IsIP(packet) {
 		return tunnel.ErrInvalidPacket
 	}
-	return s.write(ctx, packet)
+	return s.write(ctx, packet, false)
 }
 
 func (s *Session) terminalError() error {
@@ -258,7 +258,7 @@ func (s *Session) terminalError() error {
 	return net.ErrClosed
 }
 
-func (s *Session) write(ctx context.Context, plain []byte) error {
+func (s *Session) write(ctx context.Context, plain []byte, onlyIdle bool) error {
 	ctx, cancel := context.WithTimeout(ctx, writeDeadline)
 	defer cancel()
 	stop := context.AfterFunc(s.ctx, cancel)
@@ -282,6 +282,10 @@ func (s *Session) write(ctx context.Context, plain []byte) error {
 	if s.channel == nil || s.ctx.Err() != nil {
 		s.mu.Unlock()
 		return net.ErrClosed
+	}
+	if onlyIdle && (s.info.PingInterval <= 0 || time.Since(s.lastSent) < s.info.PingInterval) {
+		s.mu.Unlock()
+		return nil
 	}
 	if s.info.Tunnel.BlockIPv6 && len(plain) != 0 && plain[0]>>4 == 6 {
 		s.mu.Unlock()
