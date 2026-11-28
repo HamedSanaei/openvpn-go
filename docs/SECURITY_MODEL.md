@@ -101,7 +101,7 @@ allocation cap are both enforced independently.
 | Session generations | One active, at most one retiring and at most one pending. A replacement overlap never exceeds either generation's applicable hard key lifetime. |
 | Early rekey ciphertext | At most 16 frames and 64 KiB per pending lane. The one-second residence deadline is checked before authentication. Valid frames still pass the new generation's replay and AEAD checks. |
 | AEAD use | Schedule a rekey with headroom before the earlier of the cipher's usage limit and the packet counter limit. For AES-GCM, use an initial per-direction hard ceiling of 2^24 sent packets per key, or a lower documented cipher-specific limit. |
-| Data queues and endpoints | Bounded queues, per-attempt timeouts and capped exponential backoff with jitter. Unlimited retry is an explicit caller policy and remains cancellable. |
+| Data queues and endpoints | Bounded queues, per-attempt timeouts and capped exponential backoff with jitter. Direct API callers can opt into unlimited retry. Imported profiles default to unlimited retry. Cancellation and terminal failures end either sequence. |
 
 The usage-triggered rekey samples the two key directions every
 250 ms. It retains a 1,024-packet minimum and estimates the additional

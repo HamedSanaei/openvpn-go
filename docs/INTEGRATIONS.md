@@ -17,8 +17,8 @@ username/password. Credentials require verified TLS to the proxy.
 specify a literal or configure a family-aware `client.Resolver` to
 provide a matching address. A locally rejected target reports `CodeConfig`
 and is skipped for the rest of the current retry sequence. Eligible
-alternates still share the configured attempt budget. UDP ASSOCIATE, HTTP authentication
-negotiation, and proxy directives in untrusted profiles are disabled.
+alternates still share the configured attempt budget. UDP ASSOCIATE, HTTP
+authentication negotiation and proxy directives in untrusted profiles are disabled.
 For imported profiles using delegated TCP DNS, set `resolv-retry 0`
 and leave the explicit resolver unset.
 Rejected replies, malformed responses, and TLS failures produce

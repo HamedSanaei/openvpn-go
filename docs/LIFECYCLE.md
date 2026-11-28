@@ -50,6 +50,10 @@ device. In-flight packets from the failed session are discarded.
 
 Each successful handshake creates fresh control state and data keys. An
 auth token is scoped to the session that received it, including its rekeys.
+During promotion, a terminal decision dispatched by the authenticated
+control link retains authority even if the replacement is already ready.
+Retirement ends that authority. Ordinary closure of a retiring control
+stream lets the pending exchange complete.
 Another session uses the credentials supplied to `client.New`. The embedding
 application owns the device and its addresses and routes. Read `ControlInfo`
 after a connection event to obtain the newly negotiated tunnel settings.
