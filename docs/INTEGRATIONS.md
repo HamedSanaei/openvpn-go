@@ -70,10 +70,13 @@ forwarding uses no admission slot between handshakes.
 attempts with outcome stage, redacted code, timing, endpoint number,
 retry reason and connection generation. Under the default dialer,
 OS-managed DNS is part of the dial stage. Explicit resolver failures
-report the resolve stage. Failed teardown of an unpublished socket
-or session sets `AttemptReport.CleanupFailed`, preserves the primary
-error and prevents the same client from dialing again. A benign
-already-closed result does not trigger the latch.
+report the resolve stage. A resolver timeout or expired explicit DNS
+budget reports `CodeTimeout`. A lookup with an ordinary failure or
+without an eligible address reports `CodeNetwork`.
+Failed teardown of an unpublished socket or session sets
+`AttemptReport.CleanupFailed`, preserves the primary error and
+prevents the same client from dialing again. An already-closed result
+is benign.
 `Client.GenerationReports(afterGeneration)`
 returns up to 64 finished connection generations and the current
 snapshot. Counters count successfully forwarded plaintext packets and
