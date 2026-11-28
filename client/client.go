@@ -80,6 +80,7 @@ type Client struct {
 	attempt       *operation
 	run           *operation
 	active        *connection
+	closing       *connection // retained until final counters are committed
 	cleanupFailed bool
 
 	stats       Stats
@@ -304,7 +305,9 @@ func (c *Client) Close() error {
 		c.state = StateClosing
 		c.record(EventClosing, -1, "", 0)
 		attempt, run, active := c.attempt, c.run, c.active
-		c.active = nil
+		if active != nil {
+			c.active, c.closing = nil, active
+		}
 		c.mu.Unlock()
 
 		if attempt != nil {

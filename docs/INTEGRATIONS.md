@@ -45,6 +45,13 @@ The estimate excludes TLS state, goroutine stacks, kernel socket memory
 and transient allocations. Size the host from measured process and
 kernel resource use.
 
+A completed lease keeps its original outcome in `Status.Code` and
+reports independent device and client teardown failures in
+`Status.Cleanup`. The manager releases its reservation and permits
+identifier reuse after both close calls return. After a cleanup flag,
+the caller must account for resources the device or transport may
+still hold before reusing its external allocation.
+
 To bound simultaneous initial attempts, reconnects and TLS rekeys, share
 a `client.HandshakeLimiter` through `client.Config`. Each shared limiter
 has an independent in-flight limit and FIFO wait queue. Full queues

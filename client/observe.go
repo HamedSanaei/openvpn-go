@@ -41,6 +41,7 @@ type QueueStats struct {
 
 // Stats reports lifetime counters and the current connection snapshot.
 // Traffic counters count successfully forwarded IP packets and bytes.
+// Queue drop totals and high-water marks include a generation through teardown.
 type Stats struct {
 	State               ClientState
 	ActiveEndpointIndex int
@@ -71,14 +72,16 @@ func (c *Client) Stats() Stats {
 	stats.ActiveEndpointIndex = -1
 	if active != nil {
 		stats.ActiveEndpointIndex = active.index
-		raw, inbound := connectionQueues(active)
-		mergeQueue(&stats.CiphertextQueue, raw)
-		mergeQueue(&stats.InboundQueue, inbound)
 	} else {
 		stats.ConnectedSince = time.Time{}
 		if stats.State == StateConnected {
 			stats.State = StateIdle
 		}
+	}
+	if tracked := c.observedConnection(); tracked != nil {
+		raw, inbound := connectionQueues(tracked)
+		mergeQueue(&stats.CiphertextQueue, raw)
+		mergeQueue(&stats.InboundQueue, inbound)
 	}
 	stats.PacketsSent, stats.BytesSent = c.sent.Load()
 	stats.PacketsReceived, stats.BytesReceived = c.recv.Load()
@@ -237,19 +240,28 @@ func (c *Client) CompletedGenerationReports(afterGeneration uint64) []Generation
 }
 
 // RekeyReports returns up to 64 retained soft resets from completed
-// connections followed by up to eight attempts from the active connection.
+// connections followed by up to eight attempts from a live or closing connection.
 func (c *Client) RekeyReports() []RekeyReport {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	active := c.liveConnection()
+	c.liveConnection()
 	var reports []RekeyReport
 	if c.rekeys != nil {
 		reports = c.rekeys.After(0)
 	}
-	if active != nil {
-		reports = appendRekeyReports(reports, active)
+	if tracked := c.observedConnection(); tracked != nil {
+		reports = appendRekeyReports(reports, tracked)
 	}
 	return reports
+}
+
+// observedConnection is used for telemetry under c.mu, after liveConnection
+// has finalized any standalone generation whose teardown already completed.
+func (c *Client) observedConnection() *connection {
+	if c.active != nil {
+		return c.active
+	}
+	return c.closing
 }
 
 func (c *Client) finishGeneration(active *connection, code ErrorCode) {
@@ -258,6 +270,9 @@ func (c *Client) finishGeneration(active *connection, code ErrorCode) {
 	raw, inbound := connectionQueues(active)
 	mergeQueue(&c.stats.CiphertextQueue, raw)
 	mergeQueue(&c.stats.InboundQueue, inbound)
+	if c.closing == active {
+		c.closing = nil
+	}
 	if c.generations == nil {
 		c.generations = new(observability.History[GenerationReport])
 	}
