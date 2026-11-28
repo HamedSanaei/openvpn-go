@@ -50,3 +50,14 @@ isolated namespaces in userspace and with `ovpn` links on both ends.
 This confirms driver availability and basic interoperability. Native
 NIC throughput, CPU attribution, rekey and crash cleanup measurements
 remain required before selecting a shipped DCO backend.
+
+## Decision after the sustained virtual-network comparison
+
+Retain the pure-Go userspace backend. The new two-vCPU lab comparison
+found a substantial benefit for mainline DCO between Community peers
+over a virtual link. It establishes a reason to run a physical-network
+evaluation. A veth throughput measurement cannot qualify a physical
+NIC or the project's client data plane. Backend selection still
+depends on physical-network evidence, scoped key lifecycle and
+privilege handling, and independent security review.
+[Sustained comparison and reproduction](../evidence/dco-veth-2026-11-28.md)
