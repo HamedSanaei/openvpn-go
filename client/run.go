@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/hamedsanaei/openvpn-go/internal/cleanup"
 	"github.com/hamedsanaei/openvpn-go/internal/control"
 	"github.com/hamedsanaei/openvpn-go/internal/crypt"
 	"github.com/hamedsanaei/openvpn-go/internal/data"
@@ -263,7 +264,7 @@ func forward(ctx context.Context, dst, src tunnel.PacketConn, packet []byte, rea
 }
 
 func failedCleanup(err error) bool {
-	return err != nil && !errors.Is(err, net.ErrClosed)
+	return cleanup.Failed(err)
 }
 
 func forwardError(op string, err error, fromSession bool) forwardingError {
