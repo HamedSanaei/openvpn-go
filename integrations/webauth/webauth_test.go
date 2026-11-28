@@ -61,6 +61,9 @@ func TestEquivalentHTTPSAuthorities(t *testing.T) {
 		{"https://login.example.test:443", "https://login.example.test/start", "https://app.example.test/sign-in"},
 		{"https://[2001:db8::1]:443", "https://[2001:db8::1]/start", "https://app.example.test/sign-in"},
 		{"https://login.example.test:8443", "https://login.example.test:8443/start", "https://app.example.test/sign-in"},
+		{"https://login.example.test:8443", "https://login.example.test:08443/start", "https://app.example.test/sign-in"},
+		{"https://login.example.test:0008443", "https://LOGIN.example.test:8443/start", "https://app.example.test/sign-in"},
+		{"https://[2001:db8::1]:065535", "https://[2001:db8::1]:65535/start", "https://app.example.test/sign-in"},
 	} {
 		opened := 0
 		handler, err := webauth.New(tt.origin, tt.callback, time.Second, func(_ context.Context, _, state string) (string, error) {
@@ -74,13 +77,37 @@ func TestEquivalentHTTPSAuthorities(t *testing.T) {
 			t.Fatalf("equivalent authority rejected: %v", err)
 		}
 		for _, input := range []string{"https://login.example.test:444/start", "https://login.example.test:65536/start",
-			"https://login.example.test:/start", "https://other.example.test/start", "http://login.example.test/start"} {
+			"https://login.example.test:0000/start", "https://login.example.test:/start",
+			"https://other.example.test/start", "http://login.example.test/start"} {
 			if err := handler(t.Context(), input); !errors.Is(err, webauth.ErrWebAuth) {
 				t.Fatal("invalid login origin accepted")
 			}
 		}
 		if opened != 1 {
 			t.Fatal("invalid authority reached the browser")
+		}
+	}
+}
+
+func TestEquivalentPortPreservesCallbackPathAndState(t *testing.T) {
+	const origin = "https://login.example.test:8443"
+	const callback = "https://app.example.test:8443/sign-in"
+	for _, respond := range []struct {
+		url  string
+		pass bool
+	}{
+		{"https://app.example.test:0008443/sign-in", true},
+		{"https://app.example.test:08444/sign-in", false},
+		{"https://app.example.test:08443/wrong-path", false},
+	} {
+		handler, err := webauth.New(origin, callback, time.Second, func(_ context.Context, _, state string) (string, error) {
+			return respond.url + "?state=" + state, nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := handler(t.Context(), origin+"/start"); (err == nil) != respond.pass {
+			t.Fatalf("callback %s: %v", respond.url, err)
 		}
 	}
 }
