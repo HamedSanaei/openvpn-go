@@ -126,6 +126,12 @@ type candidateCursor struct {
 	position int
 }
 
+// attemptCleanupFailure preserves the dial cause for internal classification.
+// The raw error never leaves the connection attempt.
+type attemptCleanupFailure struct{ error }
+
+func (e attemptCleanupFailure) Unwrap() error { return e.error }
+
 func (c *Client) connectSocket(ctx context.Context, endpoint Endpoint, cursor *candidateCursor) (transport.PacketConn, string, error) {
 	dialer := c.config.Dialer
 	if endpoint.hasLocalBind() {
@@ -169,8 +175,8 @@ func (c *Client) connectSocket(ctx context.Context, endpoint Endpoint, cursor *c
 			*cursor = candidateCursor{host: host, position: position}
 			return conn, tlsNetwork, nil
 		}
-		if conn != nil {
-			conn.Close()
+		if conn != nil && failedCleanup(conn.Close()) {
+			return nil, "", attemptCleanupFailure{err}
 		}
 		if err == nil || errors.Is(err, transport.ErrInvalidPacketLimit) ||
 			errors.Is(err, transport.ErrUnsupportedNetwork) || errors.Is(err, transport.ErrInvalidConnection) ||

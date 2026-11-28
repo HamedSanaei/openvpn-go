@@ -81,7 +81,7 @@ func (c *Client) establish(ctx context.Context, start int, recovery bool, lost E
 		c.mu.Unlock()
 
 		progress := observability.Progress{Phase: observability.PhaseTransport, Started: started}
-		link, stage, err := c.dial(observability.WithProgress(ctx, &progress), index, &cursors[index])
+		link, stage, err, cleanupFailed := c.dial(observability.WithProgress(ctx, &progress), index, &cursors[index])
 		c.mu.Lock()
 		stopped := c.operationError(ctx, "connect")
 		report := AttemptReport{Sequence: c.stats.Attempts, EndpointIndex: index, Stage: stage,
@@ -103,6 +103,15 @@ func (c *Client) establish(ctx context.Context, start int, recovery bool, lost E
 			c.mu.Unlock()
 			return active, nil
 		}
+		if link != nil {
+			c.mu.Unlock()
+			cleanupFailed = failedCleanup(link.Close()) || cleanupFailed
+			c.mu.Lock()
+			stopped = c.operationError(ctx, "connect")
+		}
+		if cleanupFailed {
+			c.cleanupFailed, report.CleanupFailed = true, true
+		}
 		if stopped == nil {
 			lost = errorCode(err)
 			report.Code = lost
@@ -114,11 +123,14 @@ func (c *Client) establish(ctx context.Context, start int, recovery bool, lost E
 		}
 		c.recordAttempt(report)
 		c.mu.Unlock()
-		if link != nil {
-			link.Close()
+		if stopped != nil {
+			err = stopped
+		}
+		if cleanupFailed {
+			return nil, errors.Join(err, &Error{Op: "close unpublished attempt", Code: CodeCleanup})
 		}
 		if stopped != nil {
-			return nil, stopped
+			return nil, err
 		}
 		if remaining > 0 {
 			remaining--

@@ -4,17 +4,22 @@ on:
   workflow_dispatch:
     inputs:
       baseline:
-        description: Calibrated baseline commit SHA
+        description: Calibrated baseline commit SHA (empty repeats the candidate)
         type: string
-        required: true
+        required: false
       transport:
         type: choice
-        options: [udp, tcp]
+        options: [udp, tcp, both]
         default: udp
       packets:
         type: choice
-        options: [mixed, '64', '256', '1400']
+        options: [mixed, '64', '256', '1400', all]
         default: mixed
+      backend:
+        description: Tunnel ownership mode
+        type: choice
+        options: [direct, managed]
+        default: direct
       sessions:
         type: number
         default: 64
@@ -22,6 +27,14 @@ on:
         description: Maximum median loss per million for the calibrated workload
         type: number
         required: true
+      window_loss_ppm:
+        description: Maximum per-window loss per million (empty uses the median budget)
+        type: string
+        required: false
+      median_only_loss:
+        description: Use only the median loss budget
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -38,6 +51,7 @@ jobs:
       OPENVPN_LOAD_NETWORK: ${{ inputs.transport }}
       OPENVPN_LOAD_PACKETS: ${{ inputs.packets }}
       OPENVPN_LOAD_SESSIONS: ${{ inputs.sessions }}
+      OPENVPN_LOAD_BACKEND: ${{ inputs.backend }}
       OPENVPN_LOAD_WINDOWS: '5'
       OPENVPN_LOAD_SECONDS: '20'
       OPENVPN_LOAD_WARMUP: '10'
@@ -48,11 +62,11 @@ jobs:
           persist-credentials: false
       - name: Validate baseline pin
         env:
-          LOAD_BASELINE: ${{ inputs.baseline }}
+          LOAD_BASELINE: ${{ inputs.baseline || github.sha }}
         run: '[[ "$LOAD_BASELINE" =~ ^[0-9a-f]{40}$ ]]'
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ inputs.baseline }}
+          ref: ${{ inputs.baseline || github.sha }}
           path: baseline
           persist-credentials: false
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -62,24 +76,29 @@ jobs:
       - name: Measure baseline and candidate
         env:
           LOAD_MAX_LOSS: ${{ inputs.loss_ppm }}
+          LOAD_WINDOW_LOSS: ${{ inputs.window_loss_ppm }}
+          MEDIAN_ONLY_LOSS: ${{ inputs.median_only_loss }}
         run: |
           set -euo pipefail
           candidate="$GITHUB_WORKSPACE/candidate"
-          export OPENVPN_LOAD_HARNESS="$candidate/tests/interop/native_load_test.go"
           evidence="$RUNNER_TEMP/native-load-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           mkdir -m 700 "$evidence"
           echo "LOAD_EVIDENCE=$evidence" >> "$GITHUB_ENV"
           peer=$(bash "$candidate/tests/interop/build-peer.sh" 2.6.23 "$evidence/peer")
-          (cd baseline && bash "$candidate/tests/interop/native-load.sh" "$peer" "$evidence/baseline")
-          (cd candidate && bash tests/interop/native-load.sh "$peer" "$evidence/candidate")
-          python3 "$candidate/tools/check_native_load.py" "$evidence/baseline" "$evidence/candidate" \
-            --max-loss-ppm "$LOAD_MAX_LOSS" | tee "$evidence/comparison.json"
+          if [[ "$MEDIAN_ONLY_LOSS" != true ]]; then
+            export OPENVPN_LOAD_WINDOW_LOSS_PPM="${LOAD_WINDOW_LOSS:-$LOAD_MAX_LOSS}"
+          else
+            unset OPENVPN_LOAD_WINDOW_LOSS_PPM
+          fi
+          bash "$candidate/tests/interop/native-compare.sh" \
+            "$GITHUB_WORKSPACE/baseline" "$candidate" "$peer" "$evidence/comparison" "$LOAD_MAX_LOSS"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always() && env.LOAD_EVIDENCE != ''
         with:
           name: native-load-samples
           path: |
-            ${{ env.LOAD_EVIDENCE }}/*/environment.json
-            ${{ env.LOAD_EVIDENCE }}/*/metrics.jsonl
-            ${{ env.LOAD_EVIDENCE }}/*/metrics.jsonl.cleanup.json
-            ${{ env.LOAD_EVIDENCE }}/comparison.json
+            ${{ env.LOAD_EVIDENCE }}/comparison/*/*/environment.json
+            ${{ env.LOAD_EVIDENCE }}/comparison/*/*/metrics.jsonl
+            ${{ env.LOAD_EVIDENCE }}/comparison/*/*/metrics.jsonl.cleanup.json
+            ${{ env.LOAD_EVIDENCE }}/comparison/*/comparison.json
+            ${{ env.LOAD_EVIDENCE }}/comparison/*/comparison.err

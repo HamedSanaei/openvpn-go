@@ -45,6 +45,13 @@ The estimate excludes TLS state, goroutine stacks, kernel socket memory
 and transient allocations. Size the host from measured process and
 kernel resource use.
 
+A completed lease keeps its original outcome in `Status.Code` and
+reports independent device and client teardown failures in
+`Status.Cleanup`. The manager releases its reservation and permits
+identifier reuse after both close calls return. After a cleanup flag,
+the caller must account for resources the device or transport may
+still hold before reusing its external allocation.
+
 To bound simultaneous initial attempts, reconnects and TLS rekeys, share
 a `client.HandshakeLimiter` through `client.Config`. Each shared limiter
 has an independent in-flight limit and FIFO wait queue. Full queues
@@ -66,6 +73,10 @@ OS-managed DNS is part of the dial stage. Explicit resolver failures
 report the resolve stage. A resolver timeout or expired explicit DNS
 budget reports `CodeTimeout`. A lookup with an ordinary failure or
 without an eligible address reports `CodeNetwork`.
+Failed teardown of an unpublished socket or session sets
+`AttemptReport.CleanupFailed`, preserves the primary error and
+prevents the same client from dialing again. An already-closed result
+is benign.
 `Client.GenerationReports(afterGeneration)`
 returns up to 64 finished connection generations and the current
 snapshot. Counters count successfully forwarded plaintext packets and
