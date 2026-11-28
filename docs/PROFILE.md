@@ -87,11 +87,11 @@ their own lines.
 | `bind`, `local`, `lport` | Bind the built-in socket. `local` accepts an IP literal and `lport` a numeric source port. Explicit `bind` uses source port 1194 if neither `lport` nor `port` sets it. Binding conflicts with `nobind` in the same scope. |
 | `disable-dco` | Requests the standard userspace data path. |
 | `persist-key`, `persist-tun` | Accepted with an `ignored_directive` warning. The library owns session keys and the caller manages the tunnel. |
-| `resolv-retry` | DNS retry budget of 0–120 seconds. Each dial has its own deadline. `infinite` retries DNS until that deadline or cancellation. |
+| `resolv-retry` | DNS retry budget of 0–120 seconds. Zero disables DNS retries. `infinite` and omission retry DNS until the dial deadline or cancellation. |
 | `connect-timeout` | Alias for `server-poll-timeout`. The last assignment in a scope wins. |
 | `server-poll-timeout` | Per-remote deadline in seconds, 1–300, covering dialing and the initial OpenVPN control response. The handshake and authentication use their existing deadlines after that response. |
-| `connect-retry` | Initial and optional maximum retry delay ceilings in seconds, 1–300. Uses the client retry policy's jitter. |
-| `connect-retry-max` | Number of visits per remote in rotating order. The total per sequence must be at most 1024. |
+| `connect-retry` | Initial and optional maximum retry delay ceilings in seconds, 1–300. Defaults to 1 and 300 seconds. An omitted maximum uses 300 seconds. Uses the client retry policy's jitter. |
+| `connect-retry-max` | Number of visits per remote in rotating order. The total per sequence must be at most 1024. Omission allows retries until canceled or a terminal failure occurs. |
 | `hand-window` | Initial TLS/control deadline and rekey deadline in seconds, 1–300. |
 | `reneg-sec` | Client timer-driven rekey interval in seconds, 1–86400. Zero disables the timer. The key usage limit and peer resets still trigger rekey. |
 | `explicit-exit-notify` | Optional count from 0–255, default 1. A positive value enables authenticated exit on a capable UDP peer when the application calls `Close`. The count applies to legacy OpenVPN data-channel retransmissions. This client uses the reliable control channel. ExpressVPN imports default to enabled when omitted, with explicit zero honored in global and connection settings. |

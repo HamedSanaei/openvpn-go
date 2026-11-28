@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -92,7 +93,13 @@ func Parse(r io.Reader, opts Options) (client.Config, []Diagnostic, error) {
 		return client.Config{}, nil, (location{}).diagnostic(CodeLimit)
 	}
 	p := parser{
-		opts: opts, cfg: client.Config{TLS: &client.TLSConfig{}, Authentication: opts.Authentication},
+		opts: opts,
+		cfg: client.Config{
+			TLS: &client.TLSConfig{}, Authentication: opts.Authentication,
+			ResolveRetry: client.ResolveUntilDialDeadline,
+			Retry: client.RetryPolicy{MaxAttempts: client.UnlimitedAttempts,
+				InitialBackoff: time.Second, MaxBackoff: profileRetryMaximum},
+		},
 		filesLeft: maxFileBytes, loaded: make(map[*material][]byte),
 	}
 	if err := p.read(bytes.TrimPrefix(data, []byte("\xef\xbb\xbf")), nil); err != nil {
