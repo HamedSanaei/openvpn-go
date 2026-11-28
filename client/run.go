@@ -40,7 +40,15 @@ type TunnelGeneration struct {
 // the setup fails. It must restore any changes made even on partial failure.
 // The context ends on disconnect or stop. Both callbacks must return
 // promptly and must not call Client.Close synchronously.
+// A setup error can report uncertain teardown independently of its cause by
+// implementing TunnelCleanupFailed() bool. The client reports that state as
+// ErrTunnelCleanup and blocks reuse of the client. Reconcile the host
+// resources before opening a new client.
 type TunnelConfigurer func(context.Context, TunnelGeneration) (rollback func(), err error)
+
+// ErrTunnelCleanup indicates that the tunnel configurator could not release
+// all resources after setup. Run reports it alongside the primary outcome.
+var ErrTunnelCleanup = errors.New("tunnel configuration cleanup failed")
 
 // RunConfigured calls configure before any forwarding on each authenticated
 // connection. A rejection stops Run. RunConfigured borrows the packet device.
@@ -74,6 +82,12 @@ func (c *Client) RunConfigured(ctx context.Context, device tunnel.PacketConn, co
 	for {
 		result := c.forwardGeneration(runCtx, device, active, configure, inbound, outbound)
 		result, stopped := c.endSession(runCtx, active, result)
+		if result.tunnelCleanupFailed {
+			if stopped == nil {
+				stopped = result.err
+			}
+			return errors.Join(stopped, ErrTunnelCleanup)
+		}
 		if stopped != nil {
 			return stopped
 		}
@@ -126,6 +140,12 @@ func (c *Client) forwardGeneration(ctx context.Context, device tunnel.PacketConn
 	if generationCtx.Err() == nil {
 		rollback, err = configure(generationCtx, generation)
 	}
+	if outcome, ok := errors.AsType[interface {
+		error
+		TunnelCleanupFailed() bool
+	}](err); ok && outcome.TunnelCleanupFailed() {
+		return forwardingError{err: &Error{Op: "configure tunnel", Code: CodeTunnel}, tunnelCleanupFailed: true}
+	}
 	if err != nil && !errors.Is(err, generationCtx.Err()) {
 		return forwardingError{err: &Error{Op: "configure tunnel", Code: CodeTunnel}}
 	}
@@ -168,9 +188,12 @@ func (c *Client) endSession(ctx context.Context, active *connection, result forw
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	stopped := c.operationError(ctx, "run")
+	if result.tunnelCleanupFailed {
+		active.cleanupFailed, c.cleanupFailed = true, true
+	}
 	if ownsSession {
-		active.cleanupFailed = cleanupFailed
-		c.cleanupFailed = cleanupFailed
+		active.cleanupFailed = active.cleanupFailed || cleanupFailed
+		c.cleanupFailed = c.cleanupFailed || cleanupFailed
 		var code ErrorCode
 		if stopped == nil {
 			c.state = StateIdle
@@ -182,9 +205,10 @@ func (c *Client) endSession(ctx context.Context, active *connection, result forw
 }
 
 type forwardingError struct {
-	err          *Error
-	fromSession  bool
-	sameEndpoint bool
+	err                 *Error
+	fromSession         bool
+	sameEndpoint        bool
+	tunnelCleanupFailed bool
 }
 
 func (c *Client) forwardSession(ctx context.Context, device tunnel.PacketConn, active *connection, inbound, outbound []byte) forwardingError {

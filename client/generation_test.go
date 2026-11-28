@@ -39,6 +39,44 @@ type observedTunnel struct {
 	starts atomic.Int64
 }
 
+type testTunnelCleanupError struct{ error }
+
+func (testTunnelCleanupError) TunnelCleanupFailed() bool { return true }
+
+func TestRunConfiguredRetainsCleanupAfterCancellation(t *testing.T) {
+	local, remote := testkit.PacketPipe(1, 64)
+	defer remote.Close()
+	c := retryClient(t, fallbackEndpoints[:1], RetryPolicy{MaxAttempts: UnlimitedAttempts},
+		testkit.DialerFunc(func(context.Context, string, string) (transport.PacketConn, error) { return local, nil }))
+	c.handshakes[0] = func(_ context.Context, _ Endpoint, conn transport.PacketConn) (tunnel.PacketConn, error) {
+		return metadataLink{conn, tlscontrol.Negotiation{Tunnel: tunnel.Configuration{
+			IPv4: netip.MustParsePrefix("10.8.0.2/24"),
+		}}, make(chan struct{})}, nil
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	if err := c.Connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	device, app := testkit.PacketPipe(1, 64)
+	defer app.Close()
+	defer device.Close()
+	err := c.RunConfigured(ctx, device, func(ctx context.Context, _ TunnelGeneration) (func(), error) {
+		cancel()
+		return nil, errors.Join(ctx.Err(), testTunnelCleanupError{errors.New("private route cleanup failure")})
+	})
+	assertCode(t, err, CodeCanceled)
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, ErrTunnelCleanup) || strings.Contains(err.Error(), "private") {
+		t.Fatalf("lost independent cleanup or cancellation: %v", err)
+	}
+	reports := c.GenerationReports(0)
+	if len(reports) != 1 || !reports[0].CleanupFailed {
+		t.Fatalf("missing generation cleanup outcome: %+v", reports)
+	}
+	assertCode(t, c.Connect(t.Context()), CodeCleanup)
+	assertCode(t, c.Close(), CodeCleanup)
+}
+
 func (d *observedTunnel) ReadPacket(ctx context.Context, dst []byte) (int, error) {
 	d.starts.Add(1)
 	return d.PacketConn.ReadPacket(ctx, dst)

@@ -6,6 +6,8 @@ import (
 	"net/netip"
 	"slices"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/hamedsanaei/openvpn-go/client"
 	"github.com/hamedsanaei/openvpn-go/tunnel"
@@ -109,6 +111,74 @@ func TestPartialFailureAndRecovery(t *testing.T) {
 type uncertainJournal struct {
 	memoryJournal
 	saveFails, deleteFails bool
+}
+
+type canceledApply struct {
+	*simulatedHost
+	stop func(context.Context)
+}
+
+func (b canceledApply) Apply(ctx context.Context, plan Plan) error {
+	_ = b.simulatedHost.Apply(ctx, plan)
+	b.stop(ctx)
+	return ctx.Err()
+}
+
+func TestCanceledApplyPreservesRollbackOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		deadline bool
+		failure  error
+	}{
+		{"clean_cancel", false, nil},
+		{"clean_deadline", true, nil},
+		{"clear_failed", false, ErrCleanup},
+		{"journal_failed", true, ErrJournal},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				stop := func(context.Context) { cancel() }
+				cause := error(context.Canceled)
+				if tc.deadline {
+					var cancelDeadline context.CancelFunc
+					ctx, cancelDeadline = context.WithTimeout(ctx, time.Millisecond)
+					defer cancelDeadline()
+					stop = func(ctx context.Context) { <-ctx.Done() }
+					cause = context.DeadlineExceeded
+				}
+				journal := &uncertainJournal{deleteFails: tc.failure == ErrJournal}
+				host := &simulatedHost{journal: &journal.memoryJournal, failClear: tc.failure == ErrCleanup}
+				controller, err := New(samplePolicy(), canceledApply{host, stop}, journal)
+				if err != nil {
+					t.Fatal(err)
+				}
+				rollback, err := controller.Configure(ctx, generation())
+				if rollback != nil || !errors.Is(err, cause) {
+					t.Fatalf("lost Apply cancellation: %v", err)
+				}
+				if tc.failure == nil {
+					if err != cause || controller.CleanupError() != nil || journal.pending != nil {
+						t.Fatalf("successful rollback changed cancellation: %v", err)
+					}
+					return
+				}
+				if !errors.Is(err, tc.failure) || !errors.Is(controller.CleanupError(), tc.failure) ||
+					(tc.failure == ErrCleanup && journal.pending == nil) ||
+					!errors.As(err, new(setupCleanupError)) {
+					t.Fatalf("lost independent rollback failure: %v", err)
+				}
+				if _, err := controller.Configure(t.Context(), generation()); !errors.Is(err, ErrPending) {
+					t.Fatalf("unresolved lease allowed admission: %v", err)
+				}
+				host.failClear, journal.deleteFails = false, false
+				if err := controller.Recover(t.Context()); err != nil || journal.pending != nil || controller.CleanupError() != nil {
+					t.Fatalf("rollback recovery failed: %v", err)
+				}
+			})
+		})
+	}
 }
 
 func (j *uncertainJournal) Save(plan Plan) error {
