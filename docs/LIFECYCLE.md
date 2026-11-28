@@ -4,6 +4,8 @@
 `RemoteRandom` shuffles that order once and preserves every candidate.
 An endpoint's address family, transport, expected certificate identity,
 SNI and control protection travel together through every attempt.
+Remote socket targets must be unicast. Literal and resolved IPv4 limited
+broadcast addresses are rejected, including IPv4-mapped representations.
 
 `Connect(ctx)` tries the first candidate immediately. A failed recoverable
 attempt advances to the next candidate and waits through backoff. The

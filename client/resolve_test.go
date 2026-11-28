@@ -157,6 +157,37 @@ func TestEndpointResolverAndIdentity(t *testing.T) {
 	}
 }
 
+func TestRemoteRejectsLimitedBroadcast(t *testing.T) {
+	dials := 0
+	dialer := testkit.DialerFunc(func(context.Context, string, string) (transport.PacketConn, error) {
+		dials++
+		return nil, net.ErrClosed
+	})
+	for _, host := range []string{"255.255.255.255", "::ffff:255.255.255.255"} {
+		ep := Endpoint{Host: host}
+		_, err := ep.Validated()
+		assertCode(t, err, CodeConfig)
+		_, err = New(Config{Endpoints: []Endpoint{ep}, Dialer: dialer})
+		assertCode(t, err, CodeConfig)
+	}
+	c := retryClient(t, []Endpoint{{Host: "vpn.example.test", Network: "udp4"}}, RetryPolicy{MaxAttempts: 1}, dialer)
+	c.config.Resolver = lookupFunc(func(context.Context, string, string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.MustParseAddr("255.255.255.255"), netip.MustParseAddr("::ffff:255.255.255.255")}, nil
+	})
+	assertCode(t, c.Connect(t.Context()), CodeNetwork)
+	if dials != 0 {
+		t.Fatal("limited broadcast reached the dialer")
+	}
+	for _, host := range []string{"127.0.0.1", "10.0.0.1", "169.254.4.3", "::ffff:192.0.2.1", "fe80::1%fixture"} {
+		if _, err := (Endpoint{Host: host}).Validated(); err != nil {
+			t.Fatalf("unicast %s = %v", host, err)
+		}
+	}
+	if _, err := (Endpoint{Host: "192.0.2.1", LocalAddress: netip.IPv4Unspecified()}).Validated(); err != nil {
+		t.Fatalf("local wildcard = %v", err)
+	}
+}
+
 func TestEndpointLocalBindAndCanceledLookup(t *testing.T) {
 	listener, err := net.ListenPacket("udp4", "127.0.0.1:0")
 	if err != nil {

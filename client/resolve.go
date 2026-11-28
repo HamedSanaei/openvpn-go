@@ -94,6 +94,7 @@ func resolvedHosts(addresses []netip.Addr, family string) []string {
 func validRemoteIP(addr netip.Addr, family string) bool {
 	addr = addr.Unmap()
 	return addr.IsValid() && !addr.IsUnspecified() && !addr.IsMulticast() &&
+		addr != netip.AddrFrom4([4]byte{255, 255, 255, 255}) &&
 		(family != "ip4" || addr.Is4()) && (family != "ip6" || addr.Is6())
 }
 
