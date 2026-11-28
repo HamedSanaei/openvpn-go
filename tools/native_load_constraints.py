@@ -21,11 +21,14 @@ def cpu_groups(pid):
             continue
         path = proc / "root" / mount.lstrip("/")
         leaf = path.joinpath(*group.parts[1:])
-        cpus = leaf / "cpuset.cpus.effective"
-        if not cpus.is_file():
-            continue
+        cpus = None
         quotas = []
         for ancestor in (leaf, *leaf.parents):
+            # CPU and cpuset controllers can be enabled at different levels.
+            # A group with no cpuset controller inherits its ancestor's set.
+            effective = ancestor / "cpuset.cpus.effective"
+            if cpus is None and effective.is_file():
+                cpus = effective.read_text().strip()
             setting = ancestor / "cpu.max"
             if setting.is_file():
                 quota, period = setting.read_text().split()
@@ -33,7 +36,8 @@ def cpu_groups(pid):
                     quotas.append([int(quota), int(period)])
             if ancestor == path:
                 break
-        return sorted(set(map(tuple, quotas))), cpus.read_text().strip()
+        if cpus:
+            return sorted(set(map(tuple, quotas))), cpus
     raise ValueError("participant cgroup CPU hierarchy or effective cpuset is unavailable")
 
 
