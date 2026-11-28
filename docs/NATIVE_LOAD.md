@@ -45,6 +45,23 @@ workflow requires a dedicated `openvpn-native` runner. Regular CI checks
 allocation counts in `TestReusableDataAllocationBudget`.
 [Native workflow](../.github/workflows/native-load.yml) · [Comparison tool](../tools/check_native_load.py)
 
+Use the workflow with an empty baseline to repeat the selected commit
+and estimate runner variance before pinning a baseline. Select both
+transports and all packet workloads for the calibration matrix. Keep
+the session count and ownership mode fixed for each comparison. Run a
+separate calibration for each tunnel count or adapter mode used as a
+release gate. The workflow keeps raw samples for every completed case,
+including cases rejected by the comparison.
+
+The same comparison can run on an isolated Linux workstation with two
+clean checkouts, a pinned peer and an operator-calibrated loss budget.
+
+~~~sh
+OPENVPN_LOAD_NETWORK=both OPENVPN_LOAD_PACKETS=all \
+    bash tests/interop/native-compare.sh "$BASELINE_TREE" "$CANDIDATE_TREE" \
+    "$PEER" "$NEW_REPORT_DIR" "$MAX_LOSS_PPM"
+~~~
+
 ## Soak protocol
 
 First run a short bounded check with `OPENVPN_LOAD_REKEY=2`,
