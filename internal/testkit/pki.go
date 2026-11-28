@@ -40,14 +40,30 @@ func NewPKI(t testing.TB) PKI {
 // NewPKIWithServer allows tests to change the server template before signing.
 func NewPKIWithServer(t testing.TB, edit func(*x509.Certificate)) PKI {
 	t.Helper()
+	return newPKI(t, time.Hour, edit)
+}
+
+// NewPKIForDuration mints a synthetic chain whose certificates all remain
+// valid for the requested workload. It is intended for long-running lab tests.
+func NewPKIForDuration(t testing.TB, duration time.Duration) PKI {
+	t.Helper()
+	if duration <= 0 {
+		t.Fatal("synthetic PKI validity must be positive")
+	}
+	return newPKI(t, duration, nil)
+}
+
+func newPKI(t testing.TB, duration time.Duration, edit func(*x509.Certificate)) PKI {
+	t.Helper()
+	now := time.Now()
 	rootKey := key(t)
-	root := certificate(1, "Test OpenVPN CA")
+	root := certificate(1, "Test OpenVPN CA", now, duration)
 	root.IsCA = true
 	root.BasicConstraintsValid = true
 	root.KeyUsage = x509.KeyUsageCertSign | x509.KeyUsageCRLSign
 
 	ca := sign(t, root, root, rootKey, rootKey)
-	server := certificate(2, TestServerName)
+	server := certificate(2, TestServerName, now, duration)
 	server.KeyUsage = x509.KeyUsageDigitalSignature
 	server.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
 	server.DNSNames = []string{TestServerName}
@@ -56,7 +72,7 @@ func NewPKIWithServer(t testing.TB, edit func(*x509.Certificate)) PKI {
 		edit(server)
 	}
 
-	client := certificate(3, "OpenVPN test client")
+	client := certificate(3, "OpenVPN test client", now, duration)
 	client.KeyUsage = x509.KeyUsageDigitalSignature
 	client.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
 
@@ -93,12 +109,12 @@ func (p PKI) CRL(t testing.TB, now time.Time, revoked bool) []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "X509 CRL", Bytes: raw})
 }
 
-func certificate(serial int64, name string) *x509.Certificate {
+func certificate(serial int64, name string, now time.Time, duration time.Duration) *x509.Certificate {
 	return &x509.Certificate{
 		SerialNumber: big.NewInt(serial),
 		Subject:      pkix.Name{CommonName: name},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(time.Hour),
+		NotBefore:    now.Add(-time.Hour),
+		NotAfter:     now.Add(duration),
 	}
 }
 
