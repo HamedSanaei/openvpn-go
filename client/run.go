@@ -142,7 +142,7 @@ func (c *Client) endSession(ctx context.Context, active *connection, result forw
 	c.mu.Lock()
 	ownsSession := c.active == active
 	if ownsSession {
-		c.active = nil
+		c.active, c.closing = nil, active
 	}
 	c.mu.Unlock()
 
