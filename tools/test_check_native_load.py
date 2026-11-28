@@ -43,6 +43,13 @@ class NativeLoadGateTest(unittest.TestCase):
             *options,
         ], capture_output=True, text=True, check=False)
 
+    def set_sent_counts(self, directory, *counts):
+        path = directory / "metrics.jsonl"
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        for row, sent in zip(rows, counts, strict=True):
+            row["sent"] = sent
+        path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+
     def test_comparable_samples_pass(self):
         result = self.run_gate()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -114,6 +121,32 @@ class NativeLoadGateTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("rss_bytes", result.stderr)
         self.assertIn("fds", result.stderr)
+
+    def test_separate_window_loss_ceiling_catches_spike(self):
+        for directory in (self.baseline, self.candidate):
+            self.write_samples(directory, workload="1400", payload_bytes=999 * 1372)
+        self.set_sent_counts(self.candidate, 1000, 1998, 1000)
+        median = self.run_gate()
+        self.assertEqual(median.returncode, 0, median.stderr)
+        hard = self.run_gate("--max-window-loss-ppm", "2000")
+        self.assertNotEqual(hard.returncode, 0)
+        self.assertIn("candidate window 2 loss 500000 ppm exceeds 2000 ppm", hard.stderr)
+        report = json.loads(hard.stdout)["candidate"]["loss_ppm"]
+        self.assertEqual((report["median"], report["max"], report["worst_window"]), (1000, 500000, 2))
+
+    def test_window_loss_boundary_and_unequal_packet_counts(self):
+        self.set_sent_counts(self.baseline, 999, 1000, 1000)
+        self.set_sent_counts(self.candidate, 999, 999, 1000)
+        exact = self.run_gate("--max-window-loss-ppm", "1000")
+        self.assertEqual(exact.returncode, 0, exact.stderr)
+        below = self.run_gate("--max-window-loss-ppm", "999")
+        self.assertNotEqual(below.returncode, 0)
+        self.assertIn("baseline window 2 loss 1000 ppm", below.stderr)
+        self.assertIn("candidate window 3 loss 1000 ppm", below.stderr)
+        for directory in (self.baseline, self.candidate):
+            self.set_sent_counts(directory, 999, 999, 999)
+        zero = self.run_gate("--max-window-loss-ppm", "0")
+        self.assertEqual(zero.returncode, 0, zero.stderr)
 
 
 if __name__ == "__main__":
