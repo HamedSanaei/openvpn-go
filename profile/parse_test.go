@@ -309,6 +309,48 @@ func TestPerConnectionProtectionAndTLS(t *testing.T) {
 	}
 }
 
+func TestConnectionKeyDirectionPrecedence(t *testing.T) {
+	files := fstest.MapFS{"shared.key": {Data: staticFixture()}}
+	opts := Options{Resolver: files.Open}
+	prefix := "client\ndev tun\n" + inlinePKI(testkit.NewPKI(t))
+	for _, tc := range []struct {
+		name, global, local                string
+		localDirection, inheritedDirection client.KeyDirection
+		conflict                           bool
+	}{
+		{"standalone override", "tls-auth shared.key 0\n", "key-direction 1\n", client.KeyDirection1, client.KeyDirection0, false},
+		{"material override", "key-direction 0\ntls-auth shared.key\n", "tls-auth shared.key 1\n", client.KeyDirection1, client.KeyDirection0, false},
+		{"reverse inline", "key-direction 1\n" + section("tls-auth", staticFixture()), "tls-auth shared.key 0\n", client.KeyDirection0, client.KeyDirection1, false},
+		{"equal local", "tls-auth shared.key 0\n", "key-direction 1\ntls-auth shared.key 1\n", client.KeyDirection1, client.KeyDirection0, false},
+		{"inline local", "tls-auth shared.key 1\n", section("tls-auth", staticFixture()) + "key-direction 0\n", client.KeyDirection0, client.KeyDirection1, false},
+		{"local file first", "tls-auth shared.key 0\n", "tls-auth shared.key 0\nkey-direction 1\n", 0, 0, true},
+		{"local standalone first", "tls-auth shared.key 0\n", "key-direction 1\ntls-auth shared.key 0\n", 0, 0, true},
+		{"global conflict", "key-direction 1\ntls-auth shared.key 0\n", "tls-auth shared.key 1\n", 0, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := prefix + tc.global +
+				"<connection>\nremote first.example.test\n" + tc.local + "</connection>\n" +
+				"<connection>\nremote second.example.test\n</connection>\n"
+			cfg, _, err := Parse(strings.NewReader(source), opts)
+			if tc.conflict {
+				var diagnostic *Diagnostic
+				if !errors.As(err, &diagnostic) || diagnostic.Code != CodeConflict || diagnostic.Directive != "tls-auth" {
+					t.Fatalf("expected a tls-auth conflict, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(cfg.EndpointControls) != 2 || cfg.EndpointControls[0].Direction != tc.localDirection ||
+				cfg.EndpointControls[1].Direction != tc.inheritedDirection ||
+				!bytes.Equal(cfg.EndpointControls[0].Key, staticFixture()) {
+				t.Fatal("unexpected effective control protection")
+			}
+		})
+	}
+}
+
 func TestMaterialSources(t *testing.T) {
 	pki := testkit.NewPKI(t)
 	rootDir := t.TempDir()

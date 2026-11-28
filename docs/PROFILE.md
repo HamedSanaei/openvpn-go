@@ -71,7 +71,7 @@ their own lines.
 | `tls-auth` | Relative Static Key V1 path with optional direction `0` or `1`, or `<tls-auth>` block. |
 | `tls-crypt` | Relative Static Key V1 path or `<tls-crypt>` block. |
 | `tls-crypt-v2` | Relative wrapped client PEM key path or `<tls-crypt-v2>` block. |
-| `key-direction` | `0` or `1` for `tls-auth`. Omission allows bidirectional mode. Both forms must agree when supplied together. A conflicting repeat in the same scope is rejected. A connection block can override the inherited value. |
+| `key-direction` | `0` or `1` for `tls-auth`. Omission allows bidirectional mode. Explicit directions on `tls-auth` and `key-direction` must agree within the same scope. Either form in a connection block takes precedence over an explicit inherited direction. |
 | `auth` | `SHA1`, `SHA256`, `SHA384` or `SHA512`, case-insensitive. Selects the OpenVPN auth digest, including the HMAC for `tls-auth`. The default is `SHA1`. |
 | `data-ciphers` | Ordered, colon-separated subset of `AES-256-GCM`, `AES-128-GCM` and `CHACHA20-POLY1305`, with each cipher listed at most once. Omission offers all three. |
 | `cipher` | A single supported AEAD produces an `ignored_directive` warning. Configure the negotiated offer with `data-ciphers`. |

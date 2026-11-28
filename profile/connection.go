@@ -161,6 +161,10 @@ func (p *parser) applyConnection(loc location, args []string) error {
 		if c.localDirection && c.direction != direction {
 			return loc.diagnostic(CodeConflict)
 		}
+		if c.localProtection && c.protection.direction != client.KeyBidirectional &&
+			c.protection.direction != direction {
+			return c.protection.loc.diagnostic(CodeConflict)
+		}
 		c.direction, c.directionLoc, c.localDirection = direction, loc, true
 	case "remote":
 		return p.addRemote(loc, args, c)
@@ -291,6 +295,9 @@ func (p *parser) setProtection(m *material) error {
 	if c.localProtection {
 		return m.loc.diagnostic(CodeConflict)
 	}
+	if c.localDirection && m.direction != client.KeyBidirectional && c.direction != m.direction {
+		return m.loc.diagnostic(CodeConflict)
+	}
 	if p.block != nil && !c.localDirection && c.protection != nil &&
 		c.protection.loc.name == "tls-auth" && m.loc.name != "tls-auth" {
 		c.direction, c.directionLoc = client.KeyBidirectional, location{}
@@ -313,10 +320,7 @@ func (p *parser) loadProtection(c connection) (client.ControlProtection, error) 
 		result.Mode = client.ControlTLSAuth
 		result.Digest = p.cfg.AuthDigest
 		result.Direction = c.direction
-		if m.direction != client.KeyBidirectional {
-			if c.direction != client.KeyBidirectional && c.direction != m.direction {
-				return result, m.loc.diagnostic(CodeConflict)
-			}
+		if m.direction != client.KeyBidirectional && (!c.localDirection || c.localProtection) {
 			result.Direction = m.direction
 		}
 	case "tls-crypt":
