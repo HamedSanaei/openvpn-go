@@ -27,6 +27,14 @@ on:
         description: Maximum median loss per million for the calibrated workload
         type: number
         required: true
+      window_loss_ppm:
+        description: Maximum per-window loss per million (empty uses the median budget)
+        type: string
+        required: false
+      median_only_loss:
+        description: Use only the median loss budget
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -68,6 +76,8 @@ jobs:
       - name: Measure baseline and candidate
         env:
           LOAD_MAX_LOSS: ${{ inputs.loss_ppm }}
+          LOAD_WINDOW_LOSS: ${{ inputs.window_loss_ppm }}
+          MEDIAN_ONLY_LOSS: ${{ inputs.median_only_loss }}
         run: |
           set -euo pipefail
           candidate="$GITHUB_WORKSPACE/candidate"
@@ -75,6 +85,11 @@ jobs:
           mkdir -m 700 "$evidence"
           echo "LOAD_EVIDENCE=$evidence" >> "$GITHUB_ENV"
           peer=$(bash "$candidate/tests/interop/build-peer.sh" 2.6.23 "$evidence/peer")
+          if [[ "$MEDIAN_ONLY_LOSS" != true ]]; then
+            export OPENVPN_LOAD_WINDOW_LOSS_PPM="${LOAD_WINDOW_LOSS:-$LOAD_MAX_LOSS}"
+          else
+            unset OPENVPN_LOAD_WINDOW_LOSS_PPM
+          fi
           bash "$candidate/tests/interop/native-compare.sh" \
             "$GITHUB_WORKSPACE/baseline" "$candidate" "$peer" "$evidence/comparison" "$LOAD_MAX_LOSS"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

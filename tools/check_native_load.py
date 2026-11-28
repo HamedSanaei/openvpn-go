@@ -94,6 +94,8 @@ def report(directory, *, require_fds=False):
             samples.setdefault(name, []).append(value)
     stats = {name: {"median": median(values), "stddev": pstdev(values), "samples": len(values), "max": max(values)}
              for name, values in samples.items()}
+    losses = samples["loss_ppm"]
+    stats["loss_ppm"]["worst_window"] = losses.index(max(losses)) + 1
     return system, workload, stats
 
 
@@ -103,10 +105,12 @@ def main():
     parser.add_argument("candidate", type=Path)
     parser.add_argument("--regression", type=float, default=0.10)
     parser.add_argument("--max-loss-ppm", type=float, required=True)
+    parser.add_argument("--max-window-loss-ppm", type=float, help="cap the loss of each measured window")
     parser.add_argument("--max-rss-bytes", type=int, help="cap the RSS of each measured window")
     parser.add_argument("--max-fds", type=int, help="cap the descriptors of each measured window")
     args = parser.parse_args()
-    if not 0 < args.regression < 1 or not 0 <= args.max_loss_ppm <= 1e6:
+    if (not 0 < args.regression < 1 or not 0 <= args.max_loss_ppm <= 1e6 or
+            (args.max_window_loss_ppm is not None and not 0 <= args.max_window_loss_ppm <= 1e6)):
         parser.error("invalid regression or loss budget")
     limits = {"rss_bytes": args.max_rss_bytes, "fds": args.max_fds}
     if any(limit is not None and limit <= 0 for limit in limits.values()):
@@ -118,6 +122,19 @@ def main():
             raise ValueError("machine, peer, settings or workload differ")
         print(json.dumps({"baseline": base, "candidate": candidate}, indent=2))
         fail = []
+        if max(base["loss_ppm"]["median"], candidate["loss_ppm"]["median"]) > args.max_loss_ppm:
+            fail.append("median loss budget")
+        if args.max_window_loss_ppm is not None:
+            for label, run in (("baseline", base), ("candidate", candidate)):
+                loss = run["loss_ppm"]
+                if loss["max"] > args.max_window_loss_ppm:
+                    fail.append(f"{label} window {loss['worst_window']} loss {loss['max']:g} ppm "
+                                f"exceeds {args.max_window_loss_ppm:g} ppm")
+        for metric, limit in limits.items():
+            if limit is not None and max(base[metric]["max"], candidate[metric]["max"]) > limit:
+                fail.append(metric)
+        if fail:
+            raise ValueError("native load limit exceeded: " + ", ".join(fail))
         for name in ("payload_mbit_s", "cpu_s_per_gbit", "p99_ns"):
             ref, current = base[name], candidate[name]
             if max(ref["stddev"] / ref["median"], current["stddev"] / current["median"]) > args.regression:
@@ -125,11 +142,6 @@ def main():
             direction = -1 if name == "payload_mbit_s" else 1
             if direction * (current["median"] / ref["median"] - 1) > args.regression:
                 fail.append(name)
-        if max(base["loss_ppm"]["median"], candidate["loss_ppm"]["median"]) > args.max_loss_ppm:
-            fail.append("loss budget")
-        for metric, limit in limits.items():
-            if limit is not None and max(base[metric]["max"], candidate[metric]["max"]) > limit:
-                fail.append(metric)
         if fail:
             raise ValueError("native load limit exceeded: " + ", ".join(fail))
     except (KeyError, OSError, OverflowError, TypeError, ValueError) as error:

@@ -72,6 +72,7 @@ type Config struct {
 	Resolver  Resolver
 	// ResolveRetry is the DNS retry budget within ConnectTimeout. Zero makes
 	// one lookup. ResolveUntilDialDeadline uses the entire dial budget.
+	// A resolver timeout or an expired DNS retry budget reports CodeTimeout.
 	ResolveRetry time.Duration
 	// RemoteRandom shuffles all endpoint candidates once during New.
 	RemoteRandom bool
