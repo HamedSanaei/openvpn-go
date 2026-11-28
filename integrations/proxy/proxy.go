@@ -24,6 +24,7 @@ import (
 var ErrProxy = errors.New("OpenVPN proxy negotiation failed")
 
 var errProxyAuthentication = errors.Join(ErrProxy, transport.ErrProxyAuthentication)
+var errProxyTarget = errors.Join(ErrProxy, transport.ErrProxyTarget)
 
 // Config identifies a proxy. TLS enables verified TLS to the proxy itself.
 // Credentials require TLS and are scoped to the proxy.
@@ -95,11 +96,11 @@ func newDialer(c Config, negotiate func(net.Conn, string, string, uint16, Config
 		}
 		host, port, err := splitTarget(address)
 		if err != nil {
-			return nil, err
+			return nil, errProxyTarget
 		}
 		ip, _ := netip.ParseAddr(host)
 		if network == "tcp4" && !ip.Unmap().Is4() || network == "tcp6" && !ip.Unmap().Is6() {
-			return nil, ErrProxy
+			return nil, errProxyTarget
 		}
 		ctx, cancel := context.WithTimeout(ctx, c.Timeout)
 		defer cancel()

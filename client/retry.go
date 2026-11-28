@@ -31,6 +31,11 @@ type RetryPolicy struct {
 // attempt-count limit.
 const UnlimitedAttempts = -1
 
+type rejectedEndpointError struct{ failure *Error }
+
+func (e rejectedEndpointError) Error() string { return e.failure.Error() }
+func (e rejectedEndpointError) Unwrap() error { return e.failure }
+
 func (p *RetryPolicy) normalize(endpoints int) bool {
 	if p.MaxAttempts == 0 {
 		p.MaxAttempts = endpoints
@@ -52,11 +57,12 @@ func (c *Client) establish(ctx context.Context, start int, recovery bool, lost E
 	backoff := failover.NewBackoff(policy.InitialBackoff, policy.MaxBackoff)
 	position := start
 	remaining := policy.MaxAttempts
+	var rejected [MaxEndpoints]bool
 	var cursors [MaxEndpoints]candidateCursor
 	for {
 		index := c.order[position]
 		var delay time.Duration
-		if recovery || lost != "" {
+		if (recovery || lost != "") && lost != CodeConfig {
 			delay = backoff.Next(rand.N[time.Duration])
 			c.mu.Lock()
 			if err := c.operationError(ctx, "connect"); err != nil {
@@ -136,11 +142,25 @@ func (c *Client) establish(ctx context.Context, start int, recovery bool, lost E
 			remaining--
 		}
 		capacity := recovery && lost == CodeCapacity && report.Phase == PhaseAdmission
-		if remaining == 0 || (!capacity && !canRetry(lost)) {
+		_, rejectedTarget := errors.AsType[rejectedEndpointError](err)
+		if remaining == 0 || (!rejectedTarget && !capacity && !canRetry(lost)) {
 			return nil, err
 		}
+		if rejectedTarget {
+			rejected[position] = true
+		}
 		if _, same := errors.AsType[restartSameError](err); !same && !capacity {
-			position = (position + 1) % len(c.order)
+			found := false
+			for step := 1; step <= len(c.order); step++ {
+				next := (position + step) % len(c.order)
+				if !rejected[next] {
+					position, found = next, true
+					break
+				}
+			}
+			if !found {
+				return nil, err
+			}
 		}
 	}
 }

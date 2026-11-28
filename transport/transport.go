@@ -30,6 +30,9 @@ var (
 	ErrPeerCertificate = errors.New("transport peer certificate verification failed")
 	// ErrProxyAuthentication indicates an explicit rejection at a proxy.
 	ErrProxyAuthentication = errors.New("proxy authentication rejected")
+	// ErrProxyTarget indicates that local configuration cannot represent the
+	// requested destination through this proxy without changing its policy.
+	ErrProxyTarget = errors.New("invalid proxy target configuration")
 )
 
 // PacketConn exchanges complete OpenVPN protocol packets.

@@ -123,8 +123,10 @@ func TestProxyTCPAdapters(t *testing.T) {
 			if _, err := d.DialPacket(t.Context(), "udp", "peer.example.test:443"); err != transport.ErrUnsupportedNetwork {
 				t.Fatalf("UDP over a stream proxy: %v", err)
 			}
-			if _, err := d.DialPacket(t.Context(), "tcp4", "peer.example.test:443"); err != ErrProxy {
-				t.Fatalf("proxy-resolved DNS ignored an explicit address family: %v", err)
+			for _, network := range []string{"tcp4", "tcp6"} {
+				if _, err := d.DialPacket(t.Context(), network, "peer.example.test:443"); !errors.Is(err, ErrProxy) || !errors.Is(err, transport.ErrProxyTarget) {
+					t.Fatalf("proxy-resolved DNS ignored an explicit address family: %v", err)
+				}
 			}
 		})
 	}

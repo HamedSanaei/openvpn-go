@@ -234,6 +234,9 @@ func (c *Client) dial(ctx context.Context, index int, cursor *candidateCursor) (
 		if conn != nil {
 			cleanupFailed = failedCleanup(conn.Close()) || cleanupFailed
 		}
+		if errors.Is(err, transport.ErrProxyTarget) {
+			return nil, stage, rejectedEndpointError{&Error{Op: "dial", Code: CodeConfig}}, cleanupFailed
+		}
 		code := contextCode(err, CodeNetwork)
 		if errors.Is(err, transport.ErrInvalidPacketLimit) || errors.Is(err, transport.ErrUnsupportedNetwork) ||
 			errors.Is(err, transport.ErrInvalidConnection) {
