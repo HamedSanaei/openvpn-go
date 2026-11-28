@@ -7,6 +7,10 @@ import (
 	"github.com/hamedsanaei/openvpn-go/internal/data"
 )
 
+// The OpenVPN wire specification permits a peer to keep transmitting with
+// its old key through its default 60-second activation window.
+const usageReceiveOverlap = 65 * time.Second
+
 type keyConsumptionRate struct {
 	at                            time.Time
 	usage                         data.KeyUsage
@@ -29,7 +33,7 @@ func (r *keyConsumptionRate) observe(now time.Time, usage data.KeyUsage, deadlin
 	horizon := (deadline + 500*time.Millisecond).Seconds()
 	limit := float64(usage.Limit / 4)
 	r.sendHeadroom = uint32(min(limit, math.Ceil(r.sendRate*horizon)))
-	r.receiveHeadroom = uint32(min(limit, math.Ceil(r.receiveRate*horizon)))
+	r.receiveHeadroom = uint32(min(limit, math.Ceil(r.receiveRate*(horizon+usageReceiveOverlap.Seconds()))))
 }
 
 func (s *Session) sampleKeyRate(now time.Time) bool {

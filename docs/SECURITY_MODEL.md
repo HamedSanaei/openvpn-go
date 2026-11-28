@@ -103,17 +103,23 @@ allocation cap are both enforced independently.
 | AEAD use | Schedule a rekey with headroom before the earlier of the cipher's usage limit and the packet counter limit. For AES-GCM, use an initial per-direction hard ceiling of 2^24 sent packets per key, or a lower documented cipher-specific limit. |
 | Data queues and endpoints | Bounded queues, per-attempt timeouts and capped exponential backoff with jitter. Direct API callers can opt into unlimited retry. Imported profiles default to unlimited retry. Cancellation and terminal failures end either sequence. |
 
-The usage-triggered rekey samples the two key directions every
-250 ms. It retains a 1,024-packet minimum and estimates the additional
-reserve from recent peak consumption, the configured admission and
-handshake deadline, and 500 ms of scheduling margin. The adaptive
-reserve is capped at one quarter of the key limit. For AES-GCM with
-a four-second rekey budget, a sustained 100,000 packets per second
-in one direction reserves about 450,000 packets. Bursts above the
-sampled envelope or delays exceeding the cap may reach the hard limit.
-Transmission stops at that limit with `CodeKeyExhausted`. Rekey reports
-identify usage-based triggers and include the time spent awaiting
-admission and the total exchange duration.
+The usage-triggered rekey samples the two directions every 250 ms.
+The send reserve covers the handshake and admission deadline plus
+500 ms of scheduling margin. The receive reserve adds a 65-second
+allowance for peers that delay activation of their transmit key.
+An authenticated packet on the new key restores the usual 30-second
+maximum remaining overlap. The old key stays receive-only and retains
+its original hard packet limit. [OpenVPN wire draft §7.2.4](https://openvpn.github.io/openvpn-rfc/openvpn-wire-protocol.html#section-7.2.4)
+
+Both reserves are capped at one quarter of the key limit and retain a
+1,024-packet minimum. With AES-GCM and a four-second exchange budget, the
+receive reserve can cover roughly 60,000 packets per second throughout
+the full activation allowance. Faster bursts and slower handoffs can
+reach the hard limit. Transmission stops with `CodeKeyExhausted` at its
+limit. If the retiring receive key reaches its limit and the peer remains
+silent until the liveness deadline, the same code identifies the cause.
+Rekey reports include the time spent awaiting admission and the exchange
+duration.
 
 An invalid MAC or AEAD tag never moves an acceptance window, updates
 liveness, releases plaintext or generates an ACK. Use constant-time

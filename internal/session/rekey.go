@@ -305,8 +305,15 @@ func (s *Session) run(active *tlscontrol.Link) {
 				return
 			}
 			s.mu.Lock()
-			err := s.channel.Promote(result.report.KeyID, result.keys, time.Now().Add(rekeyOverlap))
+			usage := s.channel.KeyUsage()
+			awaitingPeerKey := result.report.KeyUsage || usage.Limit-usage.Received <= s.rate.receiveHeadroom
+			overlap := rekeyOverlap
+			if awaitingPeerKey {
+				overlap = usageReceiveOverlap
+			}
+			err := s.channel.Promote(result.report.KeyID, result.keys, time.Now().Add(overlap))
 			if err == nil {
+				s.awaitingPeerKey, s.retiringReceiveExhausted = awaitingPeerKey, false
 				if s.fragments != nil {
 					s.fragments.retire(s.channel)
 				}
@@ -388,10 +395,14 @@ func (s *Session) maintain(now time.Time) (bool, error) {
 	idle := now.Sub(s.lastRecv)
 	silent := now.Sub(s.lastSent)
 	info := s.info
+	exhausted := s.retiringReceiveExhausted
 	s.mu.Unlock()
 	if info.PingTimeout > 0 && idle >= info.PingTimeout {
 		if info.PingExit {
 			return false, tlscontrol.ErrPeerStopped
+		}
+		if exhausted {
+			return false, data.ErrKeyLimit
 		}
 		return false, context.DeadlineExceeded
 	}

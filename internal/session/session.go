@@ -59,15 +59,17 @@ type Session struct {
 	packetMTU    int
 	fragments    *fragmenter
 
-	mu       sync.Mutex
-	channel  *data.Channel
-	link     *tlscontrol.Link
-	info     tlscontrol.Negotiation
-	keyID    uint8
-	lastSent time.Time
-	lastRecv time.Time
-	rekeys   *rekeyHistory
-	rate     keyConsumptionRate
+	mu                       sync.Mutex
+	channel                  *data.Channel
+	link                     *tlscontrol.Link
+	info                     tlscontrol.Negotiation
+	keyID                    uint8
+	lastSent                 time.Time
+	lastRecv                 time.Time
+	rekeys                   *rekeyHistory
+	rate                     keyConsumptionRate
+	awaitingPeerKey          bool
+	retiringReceiveExhausted bool
 
 	terminal error
 	closeErr error
@@ -353,6 +355,14 @@ func (s *Session) receive(wrapped []byte) error {
 	packet, epoch, err := s.channel.OpenOwned(wrapped, now)
 	keepalive, validIP := false, false
 	if err == nil {
+		if s.awaitingPeerKey {
+			if epoch == s.channel.KeyUsage().Epoch {
+				s.channel.ShortenRetiringOverlap(now.Add(rekeyOverlap))
+				s.awaitingPeerKey, s.retiringReceiveExhausted = false, false
+			} else if s.channel.RetiringReceiveExhausted() {
+				s.retiringReceiveExhausted = true
+			}
+		}
 		keepalive = data.IsKeepalive(packet)
 		// Some legacy peers also send bare encrypted keepalives.
 		if !keepalive && s.fragments != nil {
