@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"net"
 	"net/netip"
 	"slices"
 	"time"
@@ -45,14 +46,17 @@ func (a *Adapter) ExchangeDNS(ctx context.Context, server netip.AddrPort, reques
 func (a *Adapter) dnsExchange(ctx context.Context, network string, server netip.AddrPort, request []byte, question dnsQuestion) ([]byte, error) {
 	conn, err := a.dial(ctx, network, server)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, ErrSocketLimit) || errors.Is(err, net.ErrClosed) {
+			return nil, err
+		}
+		return nil, a.dnsFailure(ctx, err)
 	}
 	defer conn.Close()
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
 	deadline, _ := ctx.Deadline()
 	if err := conn.SetDeadline(deadline); err != nil {
-		return nil, err
+		return nil, a.dnsFailure(ctx, err)
 	}
 	wire := request
 	if network == "tcp" {
@@ -61,13 +65,13 @@ func (a *Adapter) dnsExchange(ctx context.Context, network string, server netip.
 		wire = append(wire, request...)
 	}
 	if n, err := conn.Write(wire); err != nil || n != len(wire) {
-		return nil, a.dnsFailure(ctx)
+		return nil, a.dnsFailure(ctx, err)
 	}
 	var response []byte
 	if network == "tcp" {
 		var frame [2]byte
 		if _, err := io.ReadFull(conn, frame[:]); err != nil {
-			return nil, a.dnsFailure(ctx)
+			return nil, a.dnsFailure(ctx, err)
 		}
 		size := int(binary.BigEndian.Uint16(frame[:]))
 		if size < 12 || size > maxDNSPacket {
@@ -75,13 +79,13 @@ func (a *Adapter) dnsExchange(ctx context.Context, network string, server netip.
 		}
 		response = make([]byte, size)
 		if _, err := io.ReadFull(conn, response); err != nil {
-			return nil, a.dnsFailure(ctx)
+			return nil, a.dnsFailure(ctx, err)
 		}
 	} else {
 		buf := make([]byte, maxDNSPacket+1)
 		n, err := conn.Read(buf)
 		if err != nil {
-			return nil, a.dnsFailure(ctx)
+			return nil, a.dnsFailure(ctx, err)
 		}
 		if n < 12 || n > maxDNSPacket {
 			return nil, ErrDNS
@@ -98,12 +102,18 @@ func (a *Adapter) dnsExchange(ctx context.Context, network string, server netip.
 	return response, ctx.Err()
 }
 
-func (a *Adapter) dnsFailure(ctx context.Context) error {
+func (a *Adapter) dnsFailure(ctx context.Context, cause error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if err := a.life.Err(); err != nil {
 		return err
+	}
+	deadline, hasDeadline := ctx.Deadline()
+	timeout, ok := errors.AsType[net.Error](cause)
+	if errors.Is(cause, context.DeadlineExceeded) || ok && timeout.Timeout() ||
+		hasDeadline && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
 	}
 	return ErrDNS
 }
