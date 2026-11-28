@@ -81,6 +81,7 @@ type Client struct {
 	run           *operation
 	active        *connection
 	closing       *connection // retained until final counters are committed
+	beforeRun     *runHandoff
 	cleanupFailed bool
 
 	stats       Stats
@@ -160,6 +161,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	attempt := &operation{cancel: cancel, done: make(chan struct{})}
 	c.attempt = attempt
+	c.beforeRun = nil
 	c.mu.Unlock()
 	defer c.finish(attempt, &c.attempt)
 
@@ -308,6 +310,7 @@ func (c *Client) Close() error {
 		c.mu.Lock()
 		c.liveConnection()
 		c.state = StateClosing
+		c.beforeRun = nil
 		c.record(EventClosing, -1, "", 0)
 		attempt, run, active := c.attempt, c.run, c.active
 		if active != nil {

@@ -53,6 +53,8 @@ var ErrTunnelCleanup = errors.New("tunnel configuration cleanup failed")
 
 // RunConfigured calls configure before any forwarding on each authenticated
 // connection. A rejection stops Run. RunConfigured borrows the packet device.
+// If a session ended after Connect and before forwarding started, recovery
+// uses that session's recorded failure and the configured retry policy.
 func (c *Client) RunConfigured(ctx context.Context, device tunnel.PacketConn, configure TunnelConfigurer) error {
 	if device == nil {
 		return configError("tunnel")
@@ -67,7 +69,8 @@ func (c *Client) RunConfigured(ctx context.Context, device tunnel.PacketConn, co
 		c.mu.Unlock()
 		return &Error{Op: "run", Code: CodeBusy}
 	}
-	if active == nil {
+	handoff := c.beforeRun
+	if active == nil && handoff == nil {
 		c.mu.Unlock()
 		return &Error{Op: "run", Code: CodeNotConnected}
 	}
@@ -75,9 +78,17 @@ func (c *Client) RunConfigured(ctx context.Context, device tunnel.PacketConn, co
 	runCtx, cancel := context.WithCancel(ctx)
 	run := &operation{cancel: cancel, done: make(chan struct{})}
 	c.run = run
+	c.beforeRun = nil
 	c.mu.Unlock()
 	defer c.finish(run, &c.run)
 
+	if active == nil {
+		var err error
+		active, err = c.recoverSession(runCtx, handoff.position, handoff.result)
+		if err != nil {
+			return err
+		}
+	}
 	inbound := make([]byte, c.config.MaxPacketSize)
 	outbound := make([]byte, c.config.MaxPacketSize)
 	for {
@@ -92,19 +103,28 @@ func (c *Client) RunConfigured(ctx context.Context, device tunnel.PacketConn, co
 		if stopped != nil {
 			return stopped
 		}
-		if !result.fromSession || !canRecover(result.err.Code) || c.config.Retry.DisableReconnect {
-			return result.err
-		}
-		next := (active.position + 1) % len(c.order)
-		if result.sameEndpoint || result.err.Code == CodeCapacity {
-			next = active.position
-		}
 		var err error
-		active, err = c.establish(runCtx, next, true, result.err.Code)
+		active, err = c.recoverSession(runCtx, active.position, result)
 		if err != nil {
 			return err
 		}
 	}
+}
+
+type runHandoff struct {
+	position int
+	result   forwardingError
+}
+
+func (c *Client) recoverSession(ctx context.Context, position int, result forwardingError) (*connection, error) {
+	if !result.fromSession || !canRecover(result.err.Code) || c.config.Retry.DisableReconnect {
+		return nil, result.err
+	}
+	next := (position + 1) % len(c.order)
+	if result.sameEndpoint || result.err.Code == CodeCapacity {
+		next = position
+	}
+	return c.establish(ctx, next, true, result.err.Code)
 }
 
 func (c *Client) forwardGeneration(ctx context.Context, device tunnel.PacketConn, active *connection, configure TunnelConfigurer, inbound, outbound []byte) forwardingError {

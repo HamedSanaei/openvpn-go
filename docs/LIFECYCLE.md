@@ -64,6 +64,12 @@ Cancel `Connect` or `Run` to stop the corresponding operation. `Close`
 permanently stops the client, interrupts waits and joins active operations.
 The embedding application closes the borrowed device.
 
+If the session ends between a successful `Connect` and the first
+`RunConfigured` or `Run`, forwarding uses the ordinary recovery policy.
+The caller can read state or statistics in between. Those reads can finish
+accounting for the ended generation while retaining its redacted cause.
+An explicit new `Connect` starts a fresh attempt sequence.
+
 ## Custom packet transports and proxy streams
 
 Set `Config.Dialer` to a `transport.Dialer` when the adapter already handles

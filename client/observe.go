@@ -358,14 +358,15 @@ func (c *Client) liveConnection() *connection {
 		if c.run == nil {
 			c.active = nil
 			c.state = StateIdle
-			code := packetErrorCode(link.Err(), CodeNetwork)
+			result := forwardError("session", link.Err(), true)
 			if cleanup, ok := link.(interface{ CleanupError() error }); ok && failedCleanup(cleanup.CleanupError()) {
 				active.cleanupFailed, c.cleanupFailed = true, true
-				if canRetry(code) {
-					code = CodeCleanup
+				if canRecover(result.err.Code) {
+					result.err = &Error{Op: "close session", Code: CodeCleanup}
 				}
 			}
-			c.disconnected(active, code)
+			c.beforeRun = &runHandoff{position: active.position, result: result}
+			c.disconnected(active, result.err.Code)
 		}
 		return nil
 	default:
