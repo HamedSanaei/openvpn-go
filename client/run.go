@@ -172,12 +172,13 @@ func (c *Client) endSession(ctx context.Context, active *connection, result forw
 		cleanupFailed = failedCleanup(active.link.Close())
 		// A session can cancel I/O to release a blocked writer before the
 		// writer sees the typed shutdown cause. Close joins session cleanup.
-		if link, ok := active.link.(sessionStatus); ok && result.fromSession {
+		if link, ok := active.link.(sessionStatus); ok {
 			if cause := link.Err(); cause != nil {
 				code := packetErrorCode(cause, CodeNetwork)
-				if code != CodeCanceled && (!canRecover(code) || canRecover(result.err.Code) || result.err.Code == CodeCanceled) {
-					result.err = &Error{Op: "session", Code: code}
-					result.sameEndpoint = errors.Is(cause, tlscontrol.ErrPeerRestartSame)
+				peer := forwardError("session", cause, true)
+				if code != CodeCanceled && (result.fromSession && forwardPriority(peer) >= forwardPriority(result) ||
+					peerTerminal(code)) {
+					result = peer
 				}
 			}
 		}
@@ -226,11 +227,29 @@ func (c *Client) forwardSession(ctx context.Context, device tunnel.PacketConn, a
 	cancel()
 	workers.Wait()
 	other := <-results
-	if result.fromSession && other.fromSession && other.err.Code != CodeCanceled &&
-		(canRecover(result.err.Code) || result.err.Code == CodeCanceled) && !canRecover(other.err.Code) {
+	if forwardPriority(other) > forwardPriority(result) {
 		return other
 	}
 	return result
+}
+
+func peerTerminal(code ErrorCode) bool {
+	return code == CodeAuthentication || code == CodePeerStopped
+}
+
+func forwardPriority(failure forwardingError) int {
+	switch {
+	case failure.err.Code == CodeCanceled:
+		return 0
+	case failure.fromSession && peerTerminal(failure.err.Code):
+		return 4
+	case !failure.fromSession:
+		return 3
+	case !canRecover(failure.err.Code):
+		return 2
+	default:
+		return 1
+	}
 }
 
 func forward(ctx context.Context, dst, src tunnel.PacketConn, packet []byte, readsSession bool, total, generation *observability.Traffic, localDrops *atomic.Uint64) forwardingError {
@@ -242,7 +261,7 @@ func forward(ctx context.Context, dst, src tunnel.PacketConn, packet []byte, rea
 				localDrops.Add(1)
 				continue
 			}
-			return forwardError("read packet", err, readsSession)
+			return forwardIOError(ctx, "read packet", err, readsSession)
 		}
 		if n <= 0 || n > len(packet) {
 			return forwardError("read packet", data.ErrPacket, readsSession)
@@ -255,12 +274,21 @@ func forward(ctx context.Context, dst, src tunnel.PacketConn, packet []byte, rea
 				localDrops.Add(1)
 				continue
 			}
-			return forwardError("write packet", err, !readsSession)
+			return forwardIOError(ctx, "write packet", err, !readsSession)
 		}
 		total.Add(n)
 		generation.Add(n)
 	}
 	return forwardError("forward", ctx.Err(), readsSession)
+}
+
+func forwardIOError(ctx context.Context, op string, err error, fromSession bool) forwardingError {
+	if !fromSession && ctx.Err() != nil &&
+		(errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, io.EOF) ||
+			contextCode(err, CodeTunnel) != CodeTunnel) {
+		err = ctx.Err()
+	}
+	return forwardError(op, err, fromSession)
 }
 
 func failedCleanup(err error) bool {
