@@ -87,9 +87,15 @@ func BenchmarkTCPFrameWrites(b *testing.B) {
 				binary.BigEndian.PutUint16(frame, uint16(size))
 				var vectors [2][]byte
 				var buffers net.Buffers
+				var latency [4096]time.Duration
+				var samples int
 				b.SetBytes(int64(size))
 				b.ReportAllocs()
-				for b.Loop() {
+				for index := 0; b.Loop(); index++ {
+					var started time.Time
+					if index%17 == 0 {
+						started = time.Now()
+					}
 					if mode == "copy" {
 						copy(frame[2:], payload)
 						if n, err := conn.Write(frame); err != nil || n != len(frame) {
@@ -105,7 +111,12 @@ func BenchmarkTCPFrameWrites(b *testing.B) {
 					if _, err := io.ReadFull(conn, response); err != nil || binary.BigEndian.Uint16(response) != uint16(size) {
 						b.Fatalf("frame echo: %v", err)
 					}
+					if !started.IsZero() {
+						latency[samples%len(latency)] = time.Since(started)
+						samples++
+					}
 				}
+				reportEchoLatency(b, latency[:min(samples, len(latency))])
 			})
 		}
 	}
