@@ -29,6 +29,7 @@ type loadSettings struct {
 	network, workload                      string
 	sessions, windows, batch, restartEvery int
 	duration, warmup, rekey, pause         time.Duration
+	managed                                bool
 }
 
 type loadSample struct {
@@ -43,6 +44,7 @@ type loadSample struct {
 	PauseUS             int           `json:"pause_us"`
 	RestartEvery        int           `json:"restart_every"`
 	RekeySeconds        int           `json:"rekey_seconds"`
+	Managed             bool          `json:"managed,omitempty"`
 	Seconds             float64       `json:"seconds"`
 	Sent                uint64        `json:"sent"`
 	Received            uint64        `json:"received"`
@@ -66,6 +68,8 @@ type loadSample struct {
 	Rekeys              uint64        `json:"recent_rekeys"`
 	SilentTunnels       int           `json:"silent_tunnels"`
 	FailedTunnels       int           `json:"failed_tunnels"`
+	MinTunnelEchoes     uint64        `json:"min_tunnel_echoes"`
+	MaxTunnelEchoes     uint64        `json:"max_tunnel_echoes"`
 	RecoveryP50         time.Duration `json:"recovery_p50_ns,omitempty"`
 	RecoveryP95         time.Duration `json:"recovery_p95_ns,omitempty"`
 	RecoveryP99         time.Duration `json:"recovery_p99_ns,omitempty"`
@@ -106,9 +110,25 @@ func (h *loadHistogram) percentile(total, percent uint64) time.Duration {
 }
 
 type loadTunnel struct {
-	client *client.Client
-	app    transport.PacketConn
+	client         *client.Client
+	app            transport.PacketConn
+	managedAddress func() netip.Addr
+	managedStatus  func() (client.Stats, bool)
 }
+
+func (t loadTunnel) address() netip.Addr {
+	if t.managedAddress != nil {
+		return t.managedAddress()
+	}
+	info, _ := t.client.ControlInfo()
+	return info.TunnelIP
+}
+
+// Older baselines can run the overlaid direct-client harness without importing
+// manager APIs added after those revisions.
+var startManagedLoad func(*testing.T, []loadTunnel) func(int, client.Config)
+
+var waitManagedLoad func(*testing.T, []loadTunnel)
 
 type loadTraffic struct {
 	sent, received, payload uint64
@@ -193,11 +213,23 @@ func TestNativeLoad(t *testing.T) {
 	defer func() { echo.Close(); <-echoDone }()
 
 	tunnels := make([]loadTunnel, settings.sessions)
+	start := func(index int, cfg client.Config) {
+		tunnels[index].client, tunnels[index].app = connectData(t, cfg)
+	}
+	if settings.managed {
+		if startManagedLoad == nil {
+			t.Fatal("this revision does not support the managed load workload")
+		}
+		start = startManagedLoad(t, tunnels)
+	}
 	for i := range tunnels {
 		cfg := f.config(pki, settings.network, "tls", port, false)
 		cfg.RekeyInterval = settings.rekey
 		cfg.Retry = client.RetryPolicy{MaxAttempts: client.UnlimitedAttempts, InitialBackoff: 100 * time.Millisecond, MaxBackoff: time.Second}
-		tunnels[i].client, tunnels[i].app = connectData(t, cfg)
+		start(i, cfg)
+	}
+	if settings.managed {
+		waitManagedLoad(t, tunnels)
 	}
 	t.Logf("workload ready: network=%s tunnels=%d windows=%d", settings.network, settings.sessions, settings.windows)
 	if settings.warmup != 0 {
@@ -241,6 +273,7 @@ func loadConfig(t *testing.T) loadSettings {
 		rekey:    time.Duration(integer("REKEY", 0, 0, 3600)) * time.Second,
 		pause:    time.Duration(integer("PAUSE_US", 0, 0, 1000000)) * time.Microsecond,
 		network:  os.Getenv("OPENVPN_LOAD_NETWORK"), workload: os.Getenv("OPENVPN_LOAD_PACKETS"),
+		managed: integer("MANAGED", 0, 0, 1) == 1,
 	}
 	if settings.network == "" {
 		settings.network = "udp"
@@ -271,6 +304,7 @@ func runLoadWindow(t *testing.T, settings loadSettings, tunnels []loadTunnel, ec
 	}
 	workers.Wait()
 	sample := loadSample{Window: window, Network: settings.network, Workload: settings.workload, Sessions: len(tunnels),
+		Managed: settings.managed, MinTunnelEchoes: ^uint64(0),
 		Batch: settings.batch, ConfiguredSeconds: int(duration / time.Second), RestartEvery: settings.restartEvery,
 		WarmupSeconds: int(settings.warmup / time.Second), ExpectedWindows: settings.windows,
 		PauseUS:      int(settings.pause / time.Microsecond),
@@ -283,11 +317,25 @@ func runLoadWindow(t *testing.T, settings loadSettings, tunnels []loadTunnel, ec
 		sample.Sent += result.sent
 		sample.Received += result.received
 		sample.PayloadBytes += result.payload
+		sample.MinTunnelEchoes = min(sample.MinTunnelEchoes, result.received)
+		sample.MaxTunnelEchoes = max(sample.MaxTunnelEchoes, result.received)
 		for j, count := range result.latency {
 			histogram[j] += count
 		}
-		c := tunnels[i].client
-		stats := c.Stats()
+		connection := tunnels[i]
+		var stats client.Stats
+		if connection.managedStatus != nil {
+			var done bool
+			stats, done = connection.managedStatus()
+			result.failed = result.failed || done
+		} else {
+			stats = connection.client.Stats()
+			for _, rekey := range connection.client.RekeyReports() {
+				if rekey.Code == "" {
+					sample.Rekeys++
+				}
+			}
+		}
 		sample.QueueDrops += stats.CiphertextQueue.Dropped + stats.InboundQueue.Dropped
 		sample.QueueHighWater = max(sample.QueueHighWater, stats.CiphertextQueue.HighWater, stats.InboundQueue.HighWater)
 		sample.Connections += stats.Connections
@@ -299,11 +347,6 @@ func runLoadWindow(t *testing.T, settings loadSettings, tunnels []loadTunnel, ec
 		} else if !restarting.IsZero() {
 			recovery.observe(result.firstResponse.Sub(restarting))
 			recovered++
-		}
-		for _, rekey := range c.RekeyReports() {
-			if rekey.Code == "" {
-				sample.Rekeys++
-			}
 		}
 	}
 	if sample.Received != 0 {
@@ -392,8 +435,8 @@ func loadLoop(ctx context.Context, settings loadSettings, tunnel loadTunnel, ech
 		defer pacer.Stop()
 	}
 	for ctx.Err() == nil {
-		info, ok := tunnel.client.ControlInfo()
-		if !ok || !info.TunnelIP.Is4() {
+		address := tunnel.address()
+		if !address.Is4() {
 			select {
 			case <-ctx.Done():
 				return
@@ -401,7 +444,7 @@ func loadLoop(ctx context.Context, settings loadSettings, tunnel loadTunnel, ech
 			}
 			continue
 		}
-		source := info.TunnelIP.As4()
+		source := address.As4()
 		copy(request[12:16], source[:])
 		batchCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
 		var queued int
