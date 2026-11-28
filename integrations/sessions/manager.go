@@ -5,10 +5,10 @@ import (
 	"context"
 	"errors"
 	"math"
-	"net"
 	"sync"
 
 	"github.com/hamedsanaei/openvpn-go/client"
+	"github.com/hamedsanaei/openvpn-go/internal/cleanup"
 	"github.com/hamedsanaei/openvpn-go/internal/control"
 	"github.com/hamedsanaei/openvpn-go/internal/session"
 	"github.com/hamedsanaei/openvpn-go/transport"
@@ -185,15 +185,15 @@ func (m *Manager) StartWithResources(ctx context.Context, id string, config clie
 	return lease, nil
 }
 
-func run(ctx context.Context, c *client.Client, open DeviceFactory) (result client.ErrorCode, cleanup CleanupStatus) {
+func run(ctx context.Context, c *client.Client, open DeviceFactory) (result client.ErrorCode, status CleanupStatus) {
 	if err := ctx.Err(); err != nil {
-		return code(err), cleanup
+		return code(err), status
 	}
 	device, configure, err := open(ctx)
 	if device != nil {
 		defer func() {
-			if err := device.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-				cleanup.DeviceFailed = true
+			if cleanup.Failed(device.Close()) {
+				status.DeviceFailed = true
 				if result == "" {
 					result = client.CodeTunnel
 				}
@@ -201,15 +201,15 @@ func run(ctx context.Context, c *client.Client, open DeviceFactory) (result clie
 		}()
 	}
 	if ctx.Err() != nil {
-		return code(ctx.Err()), cleanup
+		return code(ctx.Err()), status
 	}
 	if err != nil || device == nil {
-		return client.CodeTunnel, cleanup
+		return client.CodeTunnel, status
 	}
 	if err := c.Connect(ctx); err != nil {
-		return code(err), cleanup
+		return code(err), status
 	}
-	return code(c.RunConfigured(ctx, device, configure)), cleanup
+	return code(c.RunConfigured(ctx, device, configure)), status
 }
 
 func (m *Manager) finish(lease *Lease, c *client.Client, result client.ErrorCode, cleanup CleanupStatus) {

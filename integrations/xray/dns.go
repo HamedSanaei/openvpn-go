@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/hamedsanaei/openvpn-go/internal/cleanup"
 	"github.com/hamedsanaei/openvpn-go/tunnel"
 )
 
@@ -100,7 +101,7 @@ func (a *Adapter) DialDNS(ctx context.Context, generation uint64, network string
 }
 
 func (s *dnsScope) recordClose(err error) bool {
-	if err == nil || errors.Is(err, net.ErrClosed) {
+	if !cleanup.Failed(err) {
 		return false
 	}
 	s.failed.Store(true)
