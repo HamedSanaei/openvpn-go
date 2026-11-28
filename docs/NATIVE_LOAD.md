@@ -45,6 +45,15 @@ workflow requires a dedicated `openvpn-native` runner. Regular CI checks
 allocation counts in `TestReusableDataAllocationBudget`.
 [Native workflow](../.github/workflows/native-load.yml) · [Comparison tool](../tools/check_native_load.py)
 
+New reports include the delivered packet counts for 64-, 256- and
+1,400-byte inner IP packets. The gate validates the exact UDP payload
+bytes after excluding the 28-byte IPv4 and UDP headers. Earlier mixed
+reports without per-size counts use the minimum and maximum sizes as
+bounds. Fixed sizes have exact byte accounting even in older reports.
+Pass `--max-rss-bytes` or `--max-fds` to set an absolute ceiling for
+each sampled window on both revisions. Set those limits from runner
+calibration and leave them unspecified for descriptive reporting.
+
 ## Soak protocol
 
 First run a short bounded check with `OPENVPN_LOAD_REKEY=2`,
