@@ -55,8 +55,12 @@ still hold before reusing its external allocation.
 To bound simultaneous initial attempts, reconnects and TLS rekeys, share
 a `client.HandshakeLimiter` through `client.Config`. Each shared limiter
 has an independent in-flight limit and FIFO wait queue. Full queues
-return `CodeCapacity`. Cancellation releases the slot or removes the
-entry. Waiting initial attempts use the configured dial timeout, and
+return `CodeCapacity` from an explicit initial `Connect`. During
+automatic recovery, the client counts each admission rejection against
+the retry budget, applies the configured jittered backoff, and retries
+the same endpoint. Reconnects stay disabled when `DisableReconnect`
+is set. Cancellation releases the slot or removes the entry.
+Waiting initial attempts use the configured dial timeout, and
 rekeys use the existing handshake timeout. Set the queue to cover the
 rekeys and recovery burst the deployment can admit. Healthy packet
 forwarding uses no admission slot between handshakes.
