@@ -319,6 +319,41 @@ func TestRemotePrecedence(t *testing.T) {
 	}
 }
 
+func TestCredentialSourcesRequireAuthDirective(t *testing.T) {
+	base := testProfile + inlinePKI(testkit.NewPKI(t))
+	value := client.Credentials{Username: "fixture", Password: "synthetic"}
+	callback := func(context.Context) (client.Credentials, error) {
+		t.Error("parser called the credentials provider")
+		return value, nil
+	}
+	for _, tc := range []struct {
+		name            string
+		opts            Options
+		static, dynamic bool
+	}{
+		{"static", Options{Credentials: &value}, true, false},
+		{"callback", Options{Authentication: client.Authentication{Credentials: callback}}, false, true},
+		{"both", Options{Credentials: &value, Authentication: client.Authentication{Credentials: callback}}, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, _, err := Parse(strings.NewReader(base), tc.opts)
+			if err != nil || cfg.Credentials != nil || cfg.Authentication.Credentials != nil {
+				t.Fatalf("certificate-only import retained credentials: %v", err)
+			}
+			cfg, _, err = Parse(strings.NewReader(base+"auth-user-pass\n"), tc.opts)
+			if tc.static && tc.dynamic {
+				var diag *Diagnostic
+				if !errors.As(err, &diag) || diag.Code != CodeConflict {
+					t.Fatalf("both sources: %v", err)
+				}
+			} else if err != nil || (cfg.Credentials != nil) != tc.static ||
+				(cfg.Authentication.Credentials != nil) != tc.dynamic {
+				t.Fatalf("bare auth-user-pass did not preserve its credential source: %v", err)
+			}
+		})
+	}
+}
+
 func TestClientDirectiveSyntax(t *testing.T) {
 	source := "\ufeff; standalone TLS client\n--tls-client\npull\n\tdev \"tun\" ; inline comment\n" +
 		"remote '192.0.2.10' 443 tcp4-client # TCP candidate\n" + inlinePKI(testkit.NewPKI(t))

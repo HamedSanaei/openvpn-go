@@ -4,12 +4,14 @@ package interop_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -139,6 +141,38 @@ func profileProtection(f fixture, mode string) (string, []byte) {
 		return "tls-crypt-v2", f.key("wrapped-client.pem")
 	default:
 		return "", nil
+	}
+}
+
+func TestProfileCredentialScopeOpenVPN(t *testing.T) {
+	peer := interopPeer(t)
+	pki := testkit.NewPKI(t)
+	f := makeFixture(t, peer, pki)
+	for _, withAuth := range []bool{false, true} {
+		port := f.start(t, "tcp", "tls", withAuth)
+		source := fmt.Sprintf("client\ndev tun\nremote 127.0.0.1 %d tcp4\nremote-cert-tls server\n", port) + profilePKI(pki)
+		if withAuth {
+			source += "auth-user-pass\nauth-nocache\n"
+		}
+		var invocations atomic.Int32
+		cfg, _, err := profile.Parse(strings.NewReader(source), profile.Options{Authentication: client.Authentication{
+			Credentials: func(context.Context) (client.Credentials, error) {
+				invocations.Add(1)
+				return client.Credentials{Username: username, Password: password}, nil
+			},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.HandshakeTimeout = 8 * time.Second
+		connect(t, cfg)
+		var want int32
+		if withAuth {
+			want = 1 // The fixture validates both supplied credential fields.
+		}
+		if got := invocations.Load(); got != want {
+			t.Fatalf("with auth-user-pass %v: callback invoked %d times, want %d", withAuth, got, want)
+		}
 	}
 }
 

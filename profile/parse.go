@@ -45,7 +45,8 @@ type Options struct {
 	// PritunlServerName authorizes trusted Pritunl exports with an exact
 	// administrator-confirmed VPN server certificate common name.
 	PritunlServerName string
-	// Authentication authorizes caller-managed credentials and interaction.
+	// Authentication authorizes interaction and supplies credentials for bare
+	// auth-user-pass. Without that directive, the credential callback is unused.
 	Authentication client.Authentication
 	// Identity supplies a matching key for a profile with cert and no key.
 	Identity KeyIdentity

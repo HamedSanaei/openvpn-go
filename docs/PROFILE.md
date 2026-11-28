@@ -98,6 +98,10 @@ their own lines.
 | `tun-mtu` | Inner IP packet ceiling, 68–65535 bytes. See the packet size policy. |
 | `verb` | Levels 0 through 11. Reports `ignored_directive`. |
 
+Certificate-only imports without `auth-user-pass` leave both caller credential
+sources unused. Applications that previously relied on the callback in such
+profiles can add a bare `auth-user-pass` directive to authorize it.
+
 Every other directive is a fatal error. This includes server mode, static-key
 mode, compression, legacy framing outside an authorized provider import, cipher fallback, executable
 hooks, includes, external verification mechanisms and options that alter
