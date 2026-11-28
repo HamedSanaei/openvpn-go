@@ -27,6 +27,59 @@ import (
 
 const testProfile = "client\ndev tun\nremote vpn.example.test\n"
 
+func TestProviderOptionConflicts(t *testing.T) {
+	modes := []struct {
+		name         string
+		selectMode   func(*Options)
+		passwordOnly bool
+	}{
+		{"proton-name", func(o *Options) { o.ProtonVPNServerName = "sensitive-marker" }, true},
+		{"proton-ip", func(o *Options) { o.ProtonVPNVerifyIP = true }, true},
+		{"express", func(o *Options) { o.ExpressVPNManual = true }, false},
+		{"access", func(o *Options) { o.AccessServerName = "sensitive-marker" }, true},
+		{"pritunl", func(o *Options) { o.PritunlServerName = "sensitive-marker" }, false},
+	}
+	check := func(t *testing.T, opts Options) {
+		t.Helper()
+		// A nil reader normally produces a read diagnostic. Conflicts take
+		// precedence and must never echo the selected provider names.
+		_, _, parseErr := Parse(nil, opts)
+		_, inspectErr := InspectWithOptions(nil, opts)
+		for _, err := range []error{parseErr, inspectErr} {
+			var diagnostic *Diagnostic
+			if !errors.As(err, &diagnostic) || diagnostic.Code != CodeConflict ||
+				strings.Contains(err.Error(), "sensitive-marker") {
+				t.Fatalf("expected a redacted provider conflict, got %v", err)
+			}
+		}
+	}
+	for i, mode := range modes {
+		t.Run(mode.name, func(t *testing.T) {
+			var opts Options
+			mode.selectMode(&opts)
+			if err := opts.ValidateImportPolicy(); err != nil {
+				t.Fatal(err)
+			}
+			opts.AllowPasswordOnly = true
+			if mode.passwordOnly {
+				if err := opts.ValidateImportPolicy(); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				check(t, opts)
+			}
+			for _, other := range modes[i+1:] {
+				t.Run(other.name, func(t *testing.T) {
+					var opts Options
+					mode.selectMode(&opts)
+					other.selectMode(&opts)
+					check(t, opts)
+				})
+			}
+		})
+	}
+}
+
 func section(name string, body []byte) string {
 	return "<" + name + ">\n" + strings.TrimRight(string(body), "\n") + "\n</" + name + ">\n"
 }

@@ -42,6 +42,9 @@ func Inspect(r io.Reader) (Report, error) {
 // InspectWithOptions classifies a profile under the configured import policy.
 // It uses the profile syntax options and does not load files or credentials.
 func InspectWithOptions(r io.Reader, opts Options) (Report, error) {
+	if err := opts.ValidateImportPolicy(); err != nil {
+		return Report{}, err
+	}
 	if r == nil {
 		return Report{}, (location{}).diagnostic(CodeRead)
 	}

@@ -69,3 +69,20 @@ func TestInspectOutputFailures(t *testing.T) {
 		t.Fatalf("invalid usage changed exit status: %d", code)
 	}
 }
+
+func TestInspectCapabilitiesRejectsConflictingProviderFlags(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "sensitive-marker")
+	for _, incompatible := range [][]string{
+		{"-expressvpn"}, {"-protonvpn-server-name", "sensitive-marker"}, {"-protonvpn-verify-ip"},
+	} {
+		var stdout, stderr bytes.Buffer
+		args := []string{"-capabilities", "-access-server-name", "sensitive-marker", "-auth-file", missing}
+		args = append(args, incompatible...)
+		args = append(args, missing)
+		code := run(args, nil, &stdout, &stderr)
+		if code != 2 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "conflicting_directive") ||
+			strings.Contains(stderr.String(), "sensitive-marker") {
+			t.Fatalf("conflicting options returned %d, stdout %q and stderr %q", code, &stdout, &stderr)
+		}
+	}
+}

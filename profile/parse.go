@@ -51,10 +51,31 @@ type Options struct {
 	Identity KeyIdentity
 }
 
+// ValidateImportPolicy checks provider selections without reading profile
+// material, credentials or referenced files.
+func (opts Options) ValidateImportPolicy() error {
+	modes := 0
+	for _, selected := range []bool{
+		opts.ProtonVPNServerName != "", opts.ProtonVPNVerifyIP, opts.ExpressVPNManual,
+		opts.AccessServerName != "", opts.PritunlServerName != "",
+	} {
+		if selected {
+			modes++
+		}
+	}
+	if modes > 1 || opts.AllowPasswordOnly && (opts.ExpressVPNManual || opts.PritunlServerName != "") {
+		return (location{name: "verify-x509-name"}).diagnostic(CodeConflict)
+	}
+	return nil
+}
+
 // Parse reads a bounded profile and returns a validated configuration in
 // declared remote order. A fatal error returns a zero Config and any warnings
 // collected beforehand. The caller retains ownership of the reader.
 func Parse(r io.Reader, opts Options) (client.Config, []Diagnostic, error) {
+	if err := opts.ValidateImportPolicy(); err != nil {
+		return client.Config{}, nil, err
+	}
 	if opts.Root != nil && opts.Resolver != nil {
 		return client.Config{}, nil, (location{}).diagnostic(CodeConflict)
 	}

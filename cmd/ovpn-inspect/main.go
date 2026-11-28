@@ -36,6 +36,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 
+	opts := profile.Options{AllowPasswordOnly: *passwordOnly, ProtonVPNServerName: *protonName, ProtonVPNVerifyIP: *protonVerifyIP, ExpressVPNManual: *express, AccessServerName: *accessName, PritunlServerName: *pritunlName}
+	if err := opts.ValidateImportPolicy(); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+
 	r := stdin
 	if name := flags.Arg(0); name != "-" {
 		file, err := os.Open(name)
@@ -45,19 +51,6 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		defer file.Close()
 		r = file
-	}
-	opts := profile.Options{AllowPasswordOnly: *passwordOnly, ProtonVPNServerName: *protonName, ProtonVPNVerifyIP: *protonVerifyIP, ExpressVPNManual: *express, AccessServerName: *accessName, PritunlServerName: *pritunlName}
-	if *pritunlName != "" && (*accessName != "" || *express || *protonVerifyIP || *protonName != "" || *passwordOnly) {
-		fmt.Fprintln(stderr, "Pritunl import requires its own certificate and identity policy")
-		return 2
-	}
-	if *protonVerifyIP && *protonName != "" {
-		fmt.Fprintln(stderr, "choose one Proton VPN server identity option")
-		return 2
-	}
-	if *express && (*protonVerifyIP || *protonName != "" || *passwordOnly) {
-		fmt.Fprintln(stderr, "ExpressVPN import requires its own certificate and identity policy")
-		return 2
 	}
 	if *capabilities {
 		report, err := profile.InspectWithOptions(r, opts)
