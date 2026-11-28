@@ -342,7 +342,7 @@ func (c *Client) Close() error {
 			c.closeErr = &Error{Op: "close", Code: code}
 		}
 		if active != nil {
-			active.cleanupFailed = cleanupFailed
+			active.cleanupFailed = active.cleanupFailed || cleanupFailed
 			c.finishGeneration(active, code)
 		}
 		c.record(EventClosed, -1, code, 0)

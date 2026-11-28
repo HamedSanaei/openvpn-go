@@ -22,6 +22,11 @@ var (
 	ErrCleanup = errors.New("host network cleanup failed")
 )
 
+type setupCleanupError struct{ error }
+
+func (e setupCleanupError) Unwrap() error           { return e.error }
+func (setupCleanupError) TunnelCleanupFailed() bool { return true }
+
 // Policy is trusted host configuration, independent of the remote profile.
 // It assigns one dedicated link and routing table to one controller.
 type Policy struct {
@@ -135,10 +140,14 @@ func (c *Controller) Configure(ctx context.Context, gen client.TunnelGeneration)
 	stop()
 	if err != nil || timedOut != nil {
 		c.rollback()
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
+		cause := ctx.Err()
+		if cause == nil {
+			cause = ErrApply
 		}
-		return nil, errors.Join(ErrApply, c.cleanup)
+		if c.cleanup != nil {
+			cause = errors.Join(cause, setupCleanupError{c.cleanup})
+		}
+		return nil, cause
 	}
 	return func() {
 		c.mu.Lock()
