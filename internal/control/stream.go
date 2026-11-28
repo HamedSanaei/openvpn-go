@@ -6,7 +6,9 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
 	"sync"
+	"time"
 
 	"github.com/hamedsanaei/openvpn-go/internal/wire"
 	"github.com/hamedsanaei/openvpn-go/transport"
@@ -22,17 +24,20 @@ var (
 // stream. The caller owns the packet transport and must close the stream
 // before releasing the transport.
 type Stream struct {
-	conn    net.Conn
-	cancel  context.CancelFunc
-	ready   chan struct{}
-	stopped chan struct{}
-	done    chan struct{}
-	drain   chan drainRequest
-	writer  chan struct{}
-	written uint64 // accessed with writer held
-	err     error
-	local   wire.SessionID
-	peer    wire.SessionID
+	conn            net.Conn
+	cancel          context.CancelFunc
+	ready           chan struct{}
+	stopped         chan struct{}
+	done            chan struct{}
+	drain           chan drainRequest
+	writer          chan struct{}
+	written         uint64 // accessed with writer held
+	deadlineMu      sync.Mutex
+	writeDeadline   time.Time
+	deadlineChanged chan struct{}
+	err             error
+	local           wire.SessionID
+	peer            wire.SessionID
 }
 
 func startStream(d *driver, limit, chunkSize int, onReady func()) *Stream {
@@ -41,6 +46,7 @@ func startStream(d *driver, limit, chunkSize int, onReady func()) *Stream {
 	s := &Stream{
 		conn: conn, cancel: cancel, ready: make(chan struct{}), stopped: make(chan struct{}),
 		done: make(chan struct{}), drain: make(chan drainRequest), writer: make(chan struct{}, 1), local: d.local,
+		deadlineChanged: make(chan struct{}),
 	}
 	go s.run(ctx, bridge, d, limit, chunkSize, onReady)
 	return s
@@ -59,15 +65,78 @@ type orderedConn struct {
 
 func (c orderedConn) Write(payload []byte) (int, error) {
 	s := c.stream
-	select {
-	case s.writer <- struct{}{}:
-	case <-s.stopped:
-		return 0, net.ErrClosed
+	if err := s.acquireWriter(); err != nil {
+		return 0, err
 	}
 	defer func() { <-s.writer }()
 	n, err := c.Conn.Write(payload)
 	s.written += uint64(n)
 	return n, err
+}
+
+func (s *Stream) acquireWriter() error {
+	select {
+	case s.writer <- struct{}{}:
+		return nil // The pipe checks the current deadline before writing.
+	case <-s.stopped:
+		return net.ErrClosed
+	default:
+	}
+	for {
+		s.deadlineMu.Lock()
+		deadline, changed := s.writeDeadline, s.deadlineChanged
+		s.deadlineMu.Unlock()
+		var timer *time.Timer
+		var expired <-chan time.Time
+		if !deadline.IsZero() {
+			delay := time.Until(deadline)
+			if delay <= 0 {
+				return os.ErrDeadlineExceeded
+			}
+			timer = time.NewTimer(delay)
+			expired = timer.C
+		}
+		select {
+		case s.writer <- struct{}{}:
+			if timer != nil {
+				timer.Stop()
+			}
+			return nil
+		case <-s.stopped:
+			if timer != nil {
+				timer.Stop()
+			}
+			return net.ErrClosed
+		case <-changed:
+		case <-expired:
+			// Recheck the current deadline. It may have moved while
+			// this waiter was waking up.
+		}
+		if timer != nil {
+			timer.Stop()
+		}
+	}
+}
+
+func (c orderedConn) SetDeadline(deadline time.Time) error {
+	return c.setDeadline(deadline, c.Conn.SetDeadline)
+}
+
+func (c orderedConn) SetWriteDeadline(deadline time.Time) error {
+	return c.setDeadline(deadline, c.Conn.SetWriteDeadline)
+}
+
+func (c orderedConn) setDeadline(deadline time.Time, apply func(time.Time) error) error {
+	s := c.stream
+	s.deadlineMu.Lock()
+	defer s.deadlineMu.Unlock()
+	if err := apply(deadline); err != nil {
+		return err
+	}
+	s.writeDeadline = deadline
+	close(s.deadlineChanged)
+	s.deadlineChanged = make(chan struct{})
+	return nil
 }
 
 func (s *Stream) Conn() net.Conn { return orderedConn{s.conn, s} }
