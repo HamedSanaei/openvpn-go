@@ -108,8 +108,9 @@ from 1.576 to 1.261 ms. At 16 tunnels sampled mutex delay attributed to
 `Session.write` fell from roughly 0.12 s to 0.05 s, accounting for 2.90%
 and 1.47% of the respective mutex profiles. The sample does not justify
 splitting generation ownership, so key installation and replay state
-continue to share the existing synchronization. Wider simultaneous
-TCP/UDP comparison and dedicated runner calibration remain pending.
+continue to share the existing synchronization. Dedicated runner
+calibration remains pending.
+[Multicore TCP and UDP contention measurements](evidence/session-contention-2026-11-28.md)
 
 The virtual workstation exposed no DCO generic-netlink family and had no
 native Ethernet target for the 1/10 GbE comparison. [DCO evaluation](adr/0008-linux-data-offload.md)
