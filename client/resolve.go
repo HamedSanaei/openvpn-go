@@ -47,7 +47,7 @@ func (c *Client) resolve(ctx context.Context, endpoint Endpoint) ([]string, erro
 			return nil, ctx.Err()
 		}
 		if lookupCtx.Err() != nil {
-			return nil, errResolution
+			return nil, lookupCtx.Err()
 		}
 		if err == nil {
 			if candidates := resolvedHosts(addresses, family); len(candidates) != 0 {
@@ -55,6 +55,9 @@ func (c *Client) resolve(ctx context.Context, endpoint Endpoint) ([]string, erro
 			}
 		}
 		if retry == 0 {
+			if contextCode(err, "") == CodeTimeout {
+				return nil, context.DeadlineExceeded
+			}
 			return nil, errResolution
 		}
 		timer := time.NewTimer(time.Second)
@@ -64,7 +67,7 @@ func (c *Client) resolve(ctx context.Context, endpoint Endpoint) ([]string, erro
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			return nil, errResolution
+			return nil, lookupCtx.Err()
 		case <-timer.C:
 		}
 	}
