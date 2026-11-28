@@ -47,7 +47,7 @@ func (c *Client) resolve(ctx context.Context, endpoint Endpoint) ([]string, erro
 			return nil, ctx.Err()
 		}
 		if lookupCtx.Err() != nil {
-			return nil, errResolution
+			return nil, lookupCtx.Err()
 		}
 		if err == nil {
 			if candidates := resolvedHosts(addresses, family); len(candidates) != 0 {
@@ -55,6 +55,9 @@ func (c *Client) resolve(ctx context.Context, endpoint Endpoint) ([]string, erro
 			}
 		}
 		if retry == 0 {
+			if contextCode(err, "") == CodeTimeout {
+				return nil, context.DeadlineExceeded
+			}
 			return nil, errResolution
 		}
 		timer := time.NewTimer(time.Second)
@@ -64,7 +67,7 @@ func (c *Client) resolve(ctx context.Context, endpoint Endpoint) ([]string, erro
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			return nil, errResolution
+			return nil, lookupCtx.Err()
 		case <-timer.C:
 		}
 	}
@@ -123,6 +126,12 @@ type candidateCursor struct {
 	position int
 }
 
+// attemptCleanupFailure preserves the dial cause for internal classification.
+// The raw error never leaves the connection attempt.
+type attemptCleanupFailure struct{ error }
+
+func (e attemptCleanupFailure) Unwrap() error { return e.error }
+
 func (c *Client) connectSocket(ctx context.Context, endpoint Endpoint, cursor *candidateCursor) (transport.PacketConn, string, error) {
 	dialer := c.config.Dialer
 	if endpoint.hasLocalBind() {
@@ -166,8 +175,8 @@ func (c *Client) connectSocket(ctx context.Context, endpoint Endpoint, cursor *c
 			*cursor = candidateCursor{host: host, position: position}
 			return conn, tlsNetwork, nil
 		}
-		if conn != nil {
-			conn.Close()
+		if conn != nil && failedCleanup(conn.Close()) {
+			return nil, "", attemptCleanupFailure{err}
 		}
 		if err == nil || errors.Is(err, transport.ErrInvalidPacketLimit) ||
 			errors.Is(err, transport.ErrUnsupportedNetwork) || errors.Is(err, transport.ErrInvalidConnection) ||

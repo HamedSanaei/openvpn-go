@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"net"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -72,6 +73,86 @@ func TestExplicitResourceBudgetBeyondLegacyLimit(t *testing.T) {
 }
 
 func (d trackedDevice) Close() error { d.count.Add(1); return d.PacketConn.Close() }
+
+type cleanupDevice struct {
+	trackedDevice
+	err error
+}
+
+func (d cleanupDevice) Close() error {
+	d.trackedDevice.Close()
+	return d.err
+}
+
+func TestLeaseReportsDeviceCleanupIndependently(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		factoryFail bool
+		closeErr    error
+		code        client.ErrorCode
+		failed      bool
+	}{
+		{"cancel", false, errors.New("private cleanup failure"), client.CodeCanceled, true},
+		{"partial_factory", true, errors.New("private cleanup failure"), client.CodeTunnel, true},
+		{"already_closed", false, net.ErrClosed, client.CodeCanceled, false},
+		{"success", false, nil, client.CodeCanceled, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager, err := New(Limits{Sessions: 1, PacketBytes: transport.DefaultPacketSize})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer manager.Close()
+			pki := testkit.NewPKI(t)
+			entered := make(chan struct{}, 1)
+			cfg := client.Config{
+				Endpoints: []client.Endpoint{{Host: "127.0.0.1"}},
+				TLS:       &client.TLSConfig{CA: pki.CA, Certificate: pki.Client.Certificate, PrivateKey: pki.Client.PrivateKey},
+				Dialer: testkit.DialerFunc(func(ctx context.Context, _, _ string) (transport.PacketConn, error) {
+					entered <- struct{}{}
+					<-ctx.Done()
+					return nil, ctx.Err()
+				}),
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+			defer cancel()
+			var closes atomic.Int32
+			lease, err := manager.Start(ctx, "reusable", cfg, func(context.Context) (tunnel.PacketConn, client.TunnelConfigurer, error) {
+				raw, _ := testkit.PacketPipe(1, 64)
+				device := cleanupDevice{trackedDevice{raw, &closes}, tc.closeErr}
+				if tc.factoryFail {
+					return device, nil, errors.New("private factory failure")
+				}
+				return device, nil, nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !tc.factoryFail {
+				select {
+				case <-entered:
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
+				lease.Stop()
+			}
+			status, err := lease.Wait(ctx)
+			if err != nil || status.Code != tc.code || status.Cleanup != (CleanupStatus{DeviceFailed: tc.failed}) ||
+				closes.Load() != 1 || manager.Usage() != (Usage{}) {
+				t.Fatalf("unexpected completed lease: %+v, %v", status, err)
+			}
+			again, err := manager.Start(ctx, "reusable", cfg, func(context.Context) (tunnel.PacketConn, client.TunnelConfigurer, error) {
+				return nil, nil, errors.New("test stop")
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := again.Wait(ctx); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
 
 func TestQuotasIsolationAndCleanup(t *testing.T) {
 	m, err := New(Limits{Sessions: 3, PacketBytes: 2 * transport.DefaultPacketSize})
