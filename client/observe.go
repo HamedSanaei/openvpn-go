@@ -58,6 +58,7 @@ type Stats struct {
 	PacketDrops         uint64     // packet-local MTU or invalid local input drops
 	CiphertextQueue     QueueStats // received DATA_V2 frames before authentication
 	InboundQueue        QueueStats // complete authenticated IP packets
+	EarlyRekeyDrops     uint64     // expired, overflowing or rejected transition frames
 	LastError           ErrorCode
 }
 
@@ -82,6 +83,7 @@ func (c *Client) Stats() Stats {
 		raw, inbound := connectionQueues(tracked)
 		mergeQueue(&stats.CiphertextQueue, raw)
 		mergeQueue(&stats.InboundQueue, inbound)
+		stats.EarlyRekeyDrops += earlyRekeyDrops(tracked)
 	}
 	stats.PacketsSent, stats.BytesSent = c.sent.Load()
 	stats.PacketsReceived, stats.BytesReceived = c.recv.Load()
@@ -269,6 +271,7 @@ func (c *Client) finishGeneration(active *connection, code ErrorCode) {
 	raw, inbound := connectionQueues(active)
 	mergeQueue(&c.stats.CiphertextQueue, raw)
 	mergeQueue(&c.stats.InboundQueue, inbound)
+	c.stats.EarlyRekeyDrops += earlyRekeyDrops(active)
 	if c.closing == active {
 		c.closing = nil
 	}
@@ -318,6 +321,13 @@ func connectionQueues(active *connection) (observability.QueueStats, observabili
 func mergeQueue(dst *QueueStats, snapshot observability.QueueStats) {
 	dst.Dropped += snapshot.Dropped
 	dst.HighWater = max(dst.HighWater, snapshot.HighWater)
+}
+
+func earlyRekeyDrops(active *connection) uint64 {
+	if reporter, ok := active.link.(interface{ EarlyRekeyDrops() uint64 }); ok {
+		return reporter.EarlyRekeyDrops()
+	}
+	return 0
 }
 
 func (c *Client) stateSnapshot() ClientState {

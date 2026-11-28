@@ -93,6 +93,7 @@ allocation cap are both enforced independently.
 | TLS and pushed options | 10-second dial and 60-second control negotiation defaults with explicit finite ceilings on configurable values, 4 KiB per key-method string, 16 KiB aggregate push options and at most 16 push parts |
 | Replay | Per-direction and per-generation data state. UDP data window of 64 packet IDs and 15 seconds for reordered IDs. TCP accepts increasing data IDs. Protected outer control uses separate bounded counter/timestamp tracking scoped to the session. |
 | Session generations | One active, at most one retiring and at most one pending. A replacement overlap never exceeds either generation's applicable hard key lifetime. |
+| Early rekey ciphertext | At most 16 frames and 64 KiB per pending lane. The one-second residence deadline is checked before authentication. Valid frames still pass the new generation's replay and AEAD checks. |
 | AEAD use | Schedule a rekey with headroom before the earlier of the cipher's usage limit and the packet counter limit. For AES-GCM, use an initial per-direction hard ceiling of 2^24 sent packets per key, or a lower documented cipher-specific limit. |
 | Data queues and endpoints | Bounded queues, per-attempt timeouts and capped exponential backoff with jitter. Unlimited retry is an explicit caller policy and remains cancellable. |
 
