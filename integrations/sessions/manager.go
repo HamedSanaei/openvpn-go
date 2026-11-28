@@ -10,6 +10,7 @@ import (
 
 	"github.com/hamedsanaei/openvpn-go/client"
 	"github.com/hamedsanaei/openvpn-go/internal/control"
+	"github.com/hamedsanaei/openvpn-go/internal/session"
 	"github.com/hamedsanaei/openvpn-go/transport"
 	"github.com/hamedsanaei/openvpn-go/tunnel"
 )
@@ -236,8 +237,8 @@ func leaseUsage(cfg client.Config, size int, adapter AdapterReservation) (Usage,
 	if queue <= 0 || queue > control.MaxDataQueueSize {
 		queue = control.DefaultDataQueueSize
 	}
-	// Two packet queues, bounded working frames and native UDP scratch.
-	core := int64(2*queue+6)*int64(size) + transport.MaxPacketSize + 1
+	// Two packet queues, bounded working frames, UDP scratch and rekey ciphertext.
+	core := int64(2*queue+6)*int64(size) + transport.MaxPacketSize + 1 + session.MaxEarlyRekeyBytes
 	for _, endpoint := range cfg.Endpoints {
 		if endpoint.ExpressVPNFragmentSize != 0 {
 			core += 32 * (int64(size) + 1)

@@ -7,6 +7,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hamedsanaei/openvpn-go/internal/control"
@@ -49,6 +50,7 @@ type Session struct {
 
 	inbound      chan []byte
 	inboundQueue observability.Queue
+	earlyDrops   atomic.Uint64
 	writeGate    chan struct{}
 	writeBuffer  []byte // Accessed only by the write gate owner.
 	rotate       chan struct{}
@@ -177,6 +179,8 @@ func (s *Session) Done() <-chan struct{} { return s.done }
 func (s *Session) QueueStats() (observability.QueueStats, observability.QueueStats) {
 	return s.mux.DataQueueStats(), s.inboundQueue.Stats()
 }
+
+func (s *Session) EarlyRekeyDrops() uint64 { return s.earlyDrops.Load() }
 
 // CleanupError is stable after Done closes.
 func (s *Session) CleanupError() error {
@@ -332,7 +336,7 @@ func (s *Session) requestRekey() {
 	}
 }
 
-func (s *Session) receive(wrapped []byte) {
+func (s *Session) receive(wrapped []byte) error {
 	now := time.Now()
 	s.mu.Lock()
 	packet, epoch, err := s.channel.OpenOwned(wrapped, now)
@@ -352,14 +356,14 @@ func (s *Session) receive(wrapped []byte) {
 	due := err == nil && s.channel.RekeyDue()
 	s.mu.Unlock()
 	if err != nil {
-		return
+		return err
 	}
 	if due {
 		s.requestRekey()
 	}
 	if keepalive || !validIP {
 		clear(packet)
-		return
+		return nil
 	}
 	select {
 	case s.inbound <- packet:
@@ -368,4 +372,5 @@ func (s *Session) receive(wrapped []byte) {
 		s.inboundQueue.Drop(cap(s.inbound))
 		clear(packet)
 	}
+	return nil
 }

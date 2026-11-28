@@ -84,6 +84,8 @@ type rekeyAdmission struct {
 
 func (s *Session) run(active *tlscontrol.Link) {
 	var pending *control.Stream
+	var pendingKeyID uint8
+	var early earlyData
 	var waiting *RekeyResult
 	var queuedReset control.Reset
 	var workers sync.WaitGroup
@@ -105,6 +107,7 @@ func (s *Session) run(active *tlscontrol.Link) {
 	defer close(s.done)
 	defer func() {
 		s.cancel()
+		s.earlyDrops.Add(early.discard())
 		if pending != nil {
 			pending.Close()
 		}
@@ -176,7 +179,7 @@ func (s *Session) run(active *tlscontrol.Link) {
 			s.recordRekey(report)
 			return rekeyError(err)
 		}
-		pending = stream
+		pending, pendingKeyID = stream, report.KeyID
 		workers.Go(func() {
 			defer admission.done()
 			progress := new(observability.Progress)
@@ -249,7 +252,7 @@ func (s *Session) run(active *tlscontrol.Link) {
 		case <-s.ctx.Done():
 			return
 		case packet := <-s.mux.Data():
-			s.receive(packet)
+			s.receiveDuringRekey(packet, pendingKeyID, &early)
 		case reset := <-s.mux.Resets():
 			if err := start(reset); err != nil {
 				s.terminal = err
@@ -304,6 +307,8 @@ func (s *Session) run(active *tlscontrol.Link) {
 				return
 			}
 
+			s.finishEarlyData(&early, time.Now())
+			pendingKeyID = 0
 			s.mux.Expect(result.stream, data.NextKeyID(result.report.KeyID))
 			active, pending = result.link, nil
 			watch(active)
@@ -320,6 +325,7 @@ func (s *Session) run(active *tlscontrol.Link) {
 				return
 			}
 		case now := <-tick.C:
+			s.earlyDrops.Add(early.expire(now))
 			keepaliveDue, err := s.maintain(now)
 			if err != nil {
 				s.terminal = err

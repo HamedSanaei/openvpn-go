@@ -32,6 +32,8 @@ It also records UDP kernel errors and recovery intervals. The companion
 The client queue snapshots retain each generation's drops and high-water
 marks through teardown. Drops accumulate across generations and the
 high-water mark is the maximum occupancy seen over the client's lifetime.
+`Stats.EarlyRekeyDrops` separately counts expired, rejected or overflowing
+ciphertext held while a replacement receive key was pending.
 RTT percentiles are upper bounds from fixed histogram buckets. CPU
 includes the Go client, echo and load generator in the driver process.
 The Community peer runs in a separate process. Use separate profiles and
