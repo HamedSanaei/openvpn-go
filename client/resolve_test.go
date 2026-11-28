@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -19,6 +20,93 @@ type lookupFunc func(context.Context, string, string) ([]netip.Addr, error)
 
 func (f lookupFunc) LookupNetIP(ctx context.Context, network, name string) ([]netip.Addr, error) {
 	return f(ctx, network, name)
+}
+
+func TestResolveFailureClassification(t *testing.T) {
+	wait := lookupFunc(func(ctx context.Context, _, _ string) ([]netip.Addr, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	for _, tc := range []struct {
+		name   string
+		budget time.Duration
+		lookup lookupFunc
+		parent bool
+		code   ErrorCode
+	}{
+		{"resolver_timeout", 0, func(context.Context, string, string) ([]netip.Addr, error) {
+			return nil, &net.DNSError{IsTimeout: true, Name: "private.test", Err: "private timeout"}
+		}, false, CodeTimeout},
+		{"resolver_budget", 10 * time.Millisecond, wait, false, CodeTimeout},
+		{"dial_deadline", 0, wait, false, CodeTimeout},
+		{"parent_cancel", 100 * time.Millisecond, wait, true, CodeCanceled},
+		{"name_not_found", 0, func(context.Context, string, string) ([]netip.Addr, error) {
+			return nil, &net.DNSError{IsNotFound: true, Name: "private.test", Err: "private name"}
+		}, false, CodeNetwork},
+		{"filtered_addresses", 0, func(context.Context, string, string) ([]netip.Addr, error) {
+			return []netip.Addr{netip.IPv6Loopback(), netip.IPv4Unspecified()}, nil
+		}, false, CodeNetwork},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				c := retryClient(t, fallbackEndpoints[:1], RetryPolicy{MaxAttempts: 1},
+					testkit.DialerFunc(func(context.Context, string, string) (transport.PacketConn, error) {
+						t.Error("unexpected dial after failed DNS resolution")
+						return nil, net.ErrClosed
+					}))
+				c.config.Resolver, c.config.ResolveRetry = tc.lookup, tc.budget
+				c.config.ConnectTimeout = 200 * time.Millisecond
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				if tc.parent {
+					go func() {
+						time.Sleep(time.Millisecond)
+						cancel()
+					}()
+				}
+				err := c.Connect(ctx)
+				assertCode(t, err, tc.code)
+				if strings.Contains(err.Error(), "private") || errors.Is(err, context.DeadlineExceeded) != (tc.code == CodeTimeout) ||
+					errors.Is(err, context.Canceled) != (tc.code == CodeCanceled) {
+					t.Fatalf("unexpected public resolution error: %v", err)
+				}
+				reports := c.AttemptReports(0)
+				if len(reports) != 1 || reports[0].Stage != StageResolve || reports[0].Code != tc.code {
+					t.Fatalf("unexpected resolve report: %+v", reports)
+				}
+				if tc.code != CodeCanceled && c.Stats().LastError != tc.code {
+					t.Fatalf("unexpected last error: %+v", c.Stats())
+				}
+			})
+		})
+	}
+}
+
+func TestResolveRetriesTransientTimeoutWithinBudget(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var lookups, dials int
+		c := retryClient(t, fallbackEndpoints[:1], RetryPolicy{MaxAttempts: 1},
+			testkit.DialerFunc(func(_ context.Context, _, address string) (transport.PacketConn, error) {
+				dials++
+				if address != "192.0.2.1:981" {
+					t.Fatalf("unexpected resolved address: %s", address)
+				}
+				local, peer := testkit.PacketPipe(1, 64)
+				t.Cleanup(func() { peer.Close() })
+				return local, nil
+			}))
+		c.config.ResolveRetry = 2 * time.Second
+		c.config.Resolver = lookupFunc(func(context.Context, string, string) ([]netip.Addr, error) {
+			lookups++
+			if lookups == 1 {
+				return nil, &net.DNSError{IsTimeout: true}
+			}
+			return []netip.Addr{netip.MustParseAddr("192.0.2.1")}, nil
+		})
+		if err := c.Connect(t.Context()); err != nil || lookups != 2 || dials != 1 {
+			t.Fatalf("DNS retry did not recover: %v, lookups=%d dials=%d", err, lookups, dials)
+		}
+	})
 }
 
 func TestEndpointResolverAndIdentity(t *testing.T) {
