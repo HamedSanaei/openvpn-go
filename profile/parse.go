@@ -176,8 +176,7 @@ func (p *parser) read(remaining []byte, report *Report) error {
 					return err
 				}
 				inline, body = nil, nil
-			} else if bytes.HasPrefix(trimmed, []byte("</")) ||
-				(inline.loc.name != "auth-user-pass" && bytes.HasPrefix(trimmed, []byte("<"))) {
+			} else if inline.loc.name != "auth-user-pass" && bytes.HasPrefix(trimmed, []byte("<")) {
 				loc.name = inline.loc.name
 				if err := report.record(loc, loc.diagnostic(CodeSyntax), false); err != nil {
 					return err

@@ -66,7 +66,7 @@ their own lines.
 | `ca` | Relative PEM certificate bundle path or `<ca>` block. Required. |
 | `cert` | Relative PEM client certificate chain path or `<cert>` block. Required with `key`, except when password-only authentication is explicitly authorized. |
 | `key` | Relative PEM client private key path or `<key>` block. The unencrypted key must match the certificate. Omit it when the caller supplies `profile.Options.Identity`. |
-| `auth-user-pass` | Relative path, `<auth-user-pass>` block, or bare directive with `profile.Options.Credentials` or `profile.Options.Authentication.Credentials`. Material contains exactly the username and password on separate lines. Their surrounding spaces are preserved. |
+| `auth-user-pass` | Relative path, `<auth-user-pass>` block, or bare directive with `profile.Options.Credentials` or `profile.Options.Authentication.Credentials`. Material contains exactly the username and password on separate lines. Their surrounding spaces are preserved. In the inline form a line matching `</auth-user-pass>` after trimming spaces or tabs closes the block. Other tag-like values are literal credentials. |
 | `auth-nocache` | With `auth-user-pass`, requires bare `auth-user-pass` and a caller credential callback. The client retains no callback password between handshakes. |
 | `tls-auth` | Relative Static Key V1 path with optional direction `0` or `1`, or `<tls-auth>` block. |
 | `tls-crypt` | Relative Static Key V1 path or `<tls-crypt>` block. |

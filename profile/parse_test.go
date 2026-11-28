@@ -439,6 +439,55 @@ func TestConnectionKeyDirectionPrecedence(t *testing.T) {
 	}
 }
 
+func TestInlineAuthUserPassLiteralTags(t *testing.T) {
+	base := testProfile + inlinePKI(testkit.NewPKI(t))
+	for _, tc := range []client.Credentials{
+		{Username: "  </other>", Password: "</unrelated>  "},
+		{Username: "<login>", Password: " </auth-user-pass> extra"},
+	} {
+		raw := []byte(tc.Username + "\n" + tc.Password + "\n")
+		inline := base + "<auth-user-pass>\n" + string(raw) + "  </auth-user-pass>\t\n"
+		for _, input := range []struct {
+			source string
+			opts   Options
+		}{
+			{inline, Options{}},
+			{base + "auth-user-pass\n", Options{Credentials: &tc}},
+			{base + "auth-user-pass credentials\n", Options{Resolver: fstest.MapFS{"credentials": {Data: raw}}.Open}},
+		} {
+			cfg, _, err := Parse(strings.NewReader(input.source), input.opts)
+			if err != nil || cfg.Credentials == nil || *cfg.Credentials != tc {
+				t.Fatalf("literal credentials were not preserved: %v", err)
+			}
+		}
+		report, err := Inspect(strings.NewReader(inline))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range report.Entries {
+			if entry.Directive == "other" || entry.Directive == "unrelated" || entry.Directive == "login" ||
+				entry.Code == CodeSyntax {
+				t.Fatal("inspection interpreted a credential as syntax")
+			}
+		}
+	}
+	for _, body := range []struct {
+		text string
+		want Code
+	}{
+		{"user\nprivate-marker\n", CodeSyntax},
+		{"user\n</auth-user-pass>\n", CodeMaterial},
+		{"user\nprivate-marker\nextra\n</auth-user-pass>\n", CodeMaterial},
+	} {
+		_, _, err := Parse(strings.NewReader(base+"<auth-user-pass>\n"+body.text), Options{})
+		var diagnostic *Diagnostic
+		if !errors.As(err, &diagnostic) || diagnostic.Code != body.want ||
+			strings.Contains(err.Error(), "private-marker") {
+			t.Fatalf("malformed credential block returned %v", err)
+		}
+	}
+}
+
 func TestMaterialSources(t *testing.T) {
 	pki := testkit.NewPKI(t)
 	rootDir := t.TempDir()
