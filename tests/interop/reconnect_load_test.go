@@ -4,11 +4,15 @@ package interop_test
 
 import (
 	"context"
+	"errors"
 	"net"
+	"net/netip"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +20,12 @@ import (
 	"github.com/hamedsanaei/openvpn-go/internal/testkit"
 	"github.com/hamedsanaei/openvpn-go/transport"
 )
+
+type loadResolver func(context.Context, string, string) ([]netip.Addr, error)
+
+func (resolve loadResolver) LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error) {
+	return resolve(ctx, network, host)
+}
 
 func TestConcurrentReconnectAdmission(t *testing.T) {
 	if os.Getenv("OPENVPN_RECONNECT_LOAD") != "1" {
@@ -34,6 +44,25 @@ func TestConcurrentReconnectAdmission(t *testing.T) {
 	}
 	const concurrency = 8
 	forceRekey := os.Getenv("OPENVPN_RECONNECT_REKEY") == "1"
+	var failedStage client.AttemptStage
+	mode := os.Getenv("OPENVPN_RECONNECT_FAILURE")
+	switch mode {
+	case "", "authentication", "peer-rekey":
+	case "resolve":
+		failedStage = client.StageResolve
+	case "dial":
+		failedStage = client.StageDial
+	default:
+		t.Fatal("invalid OPENVPN_RECONNECT_FAILURE")
+	}
+	if forceRekey && mode == "peer-rekey" {
+		t.Fatal("choose either peer or client rekey")
+	}
+	passwordAuth := mode == "authentication"
+	renegotiate := "0"
+	if mode == "peer-rekey" {
+		renegotiate = "5"
+	}
 	limiter, err := client.NewHandshakeLimiter(concurrency, sessions)
 	if err != nil {
 		t.Fatal(err)
@@ -42,8 +71,8 @@ func TestConcurrentReconnectAdmission(t *testing.T) {
 	f := makePKIFixture(t, interopPeer(t), pki)
 	port := localPort(t, "tcp")
 	startPeer := func() func() {
-		args := serverArgs(port, "tcp", "tls", false, "--dev", dataDevice, "--duplicate-cn", "--keepalive", "1", "4", "--verb", "1",
-			"--max-clients", strconv.Itoa(sessions), "--tcp-nodelay", "--reneg-sec", "0")
+		args := serverArgs(port, "tcp", "tls", passwordAuth, "--dev", dataDevice, "--duplicate-cn", "--keepalive", "1", "4", "--verb", "1",
+			"--max-clients", strconv.Itoa(sessions), "--tcp-nodelay", "--reneg-sec", renegotiate)
 		for i, flag := range args {
 			if flag == "--server" {
 				args[i+2] = "255.255.252.0"
@@ -72,10 +101,35 @@ func TestConcurrentReconnectAdmission(t *testing.T) {
 		}
 	})
 	ready := make(chan error, sessions)
+	runResults := make(chan error, sessions)
+	var outage atomic.Bool
+	waitTimeout := func(ctx context.Context) error {
+		timeout, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+		defer cancel()
+		<-timeout.Done()
+		return timeout.Err()
+	}
 	for i := range clients {
-		cfg := f.config(pki, "tcp", "tls", port, false)
+		cfg := f.config(pki, "tcp", "tls", port, passwordAuth)
 		cfg.HandshakeLimiter = limiter
 		cfg.ConnectTimeout = 30 * time.Second
+		switch failedStage {
+		case client.StageResolve:
+			cfg.Endpoints[0].Host = testkit.TestServerName
+			cfg.Resolver = loadResolver(func(ctx context.Context, _, _ string) ([]netip.Addr, error) {
+				if outage.Load() {
+					return nil, waitTimeout(ctx)
+				}
+				return []netip.Addr{netip.AddrFrom4([4]byte{127, 0, 0, 1})}, nil
+			})
+		case client.StageDial:
+			cfg.Dialer = testkit.DialerFunc(func(ctx context.Context, network, address string) (transport.PacketConn, error) {
+				if outage.Load() {
+					return nil, waitTimeout(ctx)
+				}
+				return (transport.SocketDialer{}).DialPacket(ctx, network, address)
+			})
+		}
 		if forceRekey {
 			cfg.RekeyInterval = 5 * time.Second
 			cfg.HandshakeTimeout = 30 * time.Second
@@ -92,7 +146,7 @@ func TestConcurrentReconnectAdmission(t *testing.T) {
 			err := c.Connect(ctx)
 			ready <- err
 			if err == nil {
-				c.Run(ctx, device)
+				runResults <- c.Run(ctx, device)
 			}
 		})
 	}
@@ -101,11 +155,57 @@ func TestConcurrentReconnectAdmission(t *testing.T) {
 			t.Fatalf("admitted connection failed: %v", err)
 		}
 	}
+	outage.Store(true)
 	stop()
 	awaitReconnectCondition(t, ctx, clients, func(stats client.Stats) bool { return stats.Disconnects >= 1 })
+	if failedStage != "" {
+		awaitReconnectCondition(t, ctx, clients, func(stats client.Stats) bool { return stats.AttemptFailures > 0 })
+		for _, connection := range clients {
+			for _, report := range connection.client.AttemptReports(1) {
+				if report.Code != "" && report.Stage != failedStage {
+					t.Fatalf("outage ended in %s, want %s", report.Stage, failedStage)
+				}
+			}
+		}
+	}
+	if passwordAuth {
+		if err := os.WriteFile(filepath.Join(f.dir, "verify-user"), []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
 	cpu := processLoadCPU(t)
 	started := time.Now()
 	startPeer()
+	outage.Store(false)
+	if passwordAuth {
+		for range sessions {
+			select {
+			case err := <-runResults:
+				var failure *client.Error
+				if !errors.As(err, &failure) || failure.Code != client.CodeAuthentication {
+					t.Fatalf("verified peer rejection was not terminal: %v", err)
+				}
+			case <-ctx.Done():
+				t.Fatal("authentication failures did not stop all reconnects")
+			}
+		}
+		for _, connection := range clients {
+			reports := connection.client.AttemptReports(1)
+			var denials int
+			for _, report := range reports {
+				if report.Stage == client.StageAuthentication {
+					denials++
+				}
+			}
+			if len(reports) == 0 || denials != 1 || reports[len(reports)-1].Code != client.CodeAuthentication ||
+				connection.client.Stats().Connections != 1 {
+				t.Fatalf("unexpected terminal authentication sequence: %+v", reports)
+			}
+		}
+		t.Logf("terminal_rejections=%d elapsed=%s driver_cpu_seconds=%.3f admission=%+v",
+			sessions, time.Since(started), processLoadCPU(t)-cpu, limiter.Stats())
+		return
+	}
 	awaitReconnectCondition(t, ctx, clients, func(stats client.Stats) bool { return stats.Connections >= 2 && stats.State == client.StateConnected })
 	recovery := make([]time.Duration, 0, sessions)
 	var attempts, failures uint64
@@ -121,13 +221,13 @@ func TestConcurrentReconnectAdmission(t *testing.T) {
 	t.Logf("recovered=%d total_p50=%s p95=%s p99=%s attempts=%d failures=%d average_recovery_per_s=%.1f driver_cpu_seconds=%.3f rss_bytes=%d heap_bytes=%d fds=%d admission=%+v",
 		sessions, recovery[sessions/2], recovery[(95*sessions+99)/100-1], recovery[(99*sessions+99)/100-1], attempts, failures,
 		float64(sessions)/time.Since(started).Seconds(), processLoadCPU(t)-cpu, sample.RSS, sample.Heap, sample.FDs, limiter.Stats())
-	if forceRekey {
+	if forceRekey || mode == "peer-rekey" {
 		for _, connection := range clients {
 			ticker := time.NewTicker(50 * time.Millisecond)
 		waitRekey:
 			for {
 				for _, rekey := range connection.client.RekeyReports() {
-					if rekey.Generation == 2 && rekey.Code == "" {
+					if rekey.Generation == 2 && rekey.Code == "" && rekey.PeerInitiated == (mode == "peer-rekey") {
 						break waitRekey
 					}
 				}
