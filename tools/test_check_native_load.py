@@ -16,9 +16,16 @@ class NativeLoadGateTest(unittest.TestCase):
         for directory in (self.baseline, self.candidate):
             directory.mkdir()
             (directory / "environment.json").write_text(json.dumps({
-                "dirty": False, "system": {"profiled": False, "runner": "synthetic"},
+                "schema": 2, "dirty": False, "system": {"profiled": False, "runner": "synthetic"},
             }))
+            self.write_constraints(directory)
             self.write_samples(directory)
+
+    def write_constraints(self, directory, **changes):
+        participant = {"nice": 0, "scheduler": 0, "affinity": [0, 1],
+                       "quota_period_us": [[200000, 100000]], "cpuset_effective": "0-1"}
+        constraints = {"driver": participant, "peer": dict(participant, **changes)}
+        (directory / "metrics.jsonl.constraints.json").write_text(json.dumps(constraints))
 
     def write_samples(self, directory, count=3, *, latency=200_000, cpu=1, managed=None, **updates):
         sample = {
@@ -54,6 +61,24 @@ class NativeLoadGateTest(unittest.TestCase):
         result = self.run_gate()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["candidate"]["p99_ns"]["samples"], 3)
+
+    def test_scheduler_nice_and_cgroup_constraints_are_compared(self):
+        for change in ({"nice": 5}, {"scheduler": 3}, {"affinity": [0]},
+                       {"quota_period_us": []}, {"cpuset_effective": "0"}):
+            with self.subTest(change=change):
+                self.write_constraints(self.candidate, **change)
+                result = self.run_gate()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("settings or workload differ", result.stderr)
+
+    def test_legacy_and_missing_scheduling_metadata_fail(self):
+        path = self.candidate / "environment.json"
+        metadata = json.loads(path.read_text())
+        path.write_text(json.dumps(dict(metadata, schema=1)))
+        self.assertIn("requires scheduling metadata schema 2", self.run_gate().stderr)
+        path.write_text(json.dumps(metadata))
+        (self.candidate / "metrics.jsonl.constraints.json").write_text("{}")
+        self.assertIn("missing native-load participant", self.run_gate().stderr)
 
     def test_missing_sample_fails(self):
         self.write_samples(self.candidate, count=2)

@@ -14,6 +14,14 @@ test -x "$peer"
 mkdir -- "$out"
 export CGO_ENABLED=0 GOTOOLCHAIN=local LC_ALL=C
 harness=$(realpath -- "${OPENVPN_LOAD_HARNESS:-tests/interop/native_load_test.go}")
+constraints=$(realpath -- "$(dirname -- "${BASH_SOURCE[0]}")/../../tools/native_load_constraints.py")
+cat > "$out/peer-wrapper" <<'SH'
+#!/bin/sh
+set -eu
+printf '%s\n' "$$" > "$OPENVPN_LOAD_JSON.peer-pid"
+exec "$OPENVPN_INTEROP_BIN" "$@"
+SH
+chmod 700 "$out/peer-wrapper"
 python3 - "$(pwd -P)/tests/interop/native_load_test.go" "$harness" "$out/overlay.json" <<'PY'
 import json
 import sys
@@ -41,7 +49,7 @@ harness = pathlib.Path(sys.argv[2])
 cpu = run("lscpu")
 topology = {line.split(":", 1)[0]: line.split(":", 1)[1].strip() for line in cpu.splitlines()
             if line.split(":", 1)[0] in {"Model name", "Socket(s)", "Core(s) per socket", "Thread(s) per core"}}
-settings = {"commit": run("git", "rev-parse", "HEAD"), "dirty": bool(run("git", "status", "--porcelain")),
+settings = {"schema": 2, "commit": run("git", "rev-parse", "HEAD"), "dirty": bool(run("git", "status", "--porcelain")),
             "system": {"kernel": platform.release(), "arch": platform.machine(), "cpu": topology,
                        "affinity": sorted(os.sched_getaffinity(0)), "go": run("go", "version"),
                        "peer_sha256": hashlib.sha256(peer.read_bytes()).hexdigest(),
@@ -60,7 +68,8 @@ if [ "${OPENVPN_LOAD_PROFILE:-0}" = 1 ]; then
     args+=(-test.cpuprofile="$out/cpu.pprof" -test.memprofile="$out/heap.pprof"
            -test.mutexprofile="$out/mutex.pprof" -test.blockprofile="$out/block.pprof")
 fi
-env_args=("OPENVPN_INTEROP_BIN=$peer" OPENVPN_NATIVE_LOAD=1 "OPENVPN_LOAD_JSON=$out/metrics.jsonl")
+env_args=("OPENVPN_INTEROP_BIN=$peer" OPENVPN_NATIVE_LOAD=1 "OPENVPN_LOAD_JSON=$out/metrics.jsonl"
+          "OPENVPN_LOAD_CONSTRAINTS=$constraints" "OPENVPN_LOAD_PEER_WRAPPER=$out/peer-wrapper")
 for key in OPENVPN_LOAD_NETWORK OPENVPN_LOAD_PACKETS OPENVPN_LOAD_SESSIONS OPENVPN_LOAD_WINDOWS \
            OPENVPN_LOAD_SECONDS OPENVPN_LOAD_WARMUP OPENVPN_LOAD_BATCH OPENVPN_LOAD_RESTART_EVERY OPENVPN_LOAD_REKEY OPENVPN_LOAD_PAUSE_US \
            OPENVPN_LOAD_MANAGED OPENVPN_INTEROP_VERSION GOMAXPROCS; do

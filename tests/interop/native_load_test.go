@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"os/exec"
 	"runtime"
 	"sort"
 	"strconv"
@@ -176,6 +177,29 @@ func TestNativeLoad(t *testing.T) {
 	binaryPath := interopPeer(t)
 	pki := nativeLoadPKI(t, settings)
 	f := makePKIFixture(t, binaryPath, pki)
+	probe := os.Getenv("OPENVPN_LOAD_CONSTRAINTS")
+	if probe != "" {
+		f.binary = os.Getenv("OPENVPN_LOAD_PEER_WRAPPER")
+	}
+	var constraints []byte
+	checkConstraints := func() {
+		if probe == "" {
+			return
+		}
+		peerPID, err := os.ReadFile(outputPath + ".peer-pid")
+		if err != nil {
+			t.Fatal("cannot identify native-load peer")
+		}
+		report, err := exec.CommandContext(t.Context(), "python3", probe,
+			strconv.Itoa(os.Getpid()), strings.TrimSpace(string(peerPID))).Output()
+		if err != nil || !json.Valid(report) {
+			t.Fatal("cannot verify native-load participant scheduling constraints")
+		}
+		if constraints != nil && !bytes.Equal(report, constraints) {
+			t.Fatal("native-load participant scheduling changed within the run")
+		}
+		constraints = report
+	}
 	port := localPort(t, settings.network)
 	startPeer := func() func() {
 		args := serverArgs(port, settings.network, "tls", false, "--dev", "tun-load", "--duplicate-cn",
@@ -194,6 +218,7 @@ func TestNativeLoad(t *testing.T) {
 		return stop
 	}
 	stop := startPeer()
+	checkConstraints()
 	echo, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(10, 49, 0, 1)})
 	if err != nil {
 		t.Fatal(err)
@@ -246,12 +271,16 @@ func TestNativeLoad(t *testing.T) {
 			stop = startPeer()
 		}
 		sample := runLoadWindow(t, settings, tunnels, echo.LocalAddr().(*net.UDPAddr).AddrPort(), settings.duration, i, restarting)
+		checkConstraints()
 		if err := encoder.Encode(sample); err != nil {
 			t.Fatal(err)
 		}
 		if sample.Received == 0 || sample.Received > sample.Sent || sample.P99 == 0 || sample.FailedTunnels != 0 {
 			t.Fatal("invalid or empty load sample")
 		}
+	}
+	if constraints != nil && os.WriteFile(outputPath+".constraints.json", constraints, 0600) != nil {
+		t.Fatal("could not save native-load scheduling constraints")
 	}
 }
 
