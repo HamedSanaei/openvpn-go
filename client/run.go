@@ -77,11 +77,11 @@ func (c *Client) RunConfigured(ctx context.Context, device tunnel.PacketConn, co
 		if stopped != nil {
 			return stopped
 		}
-		if !result.fromSession || !canRetry(result.err.Code) || c.config.Retry.DisableReconnect {
+		if !result.fromSession || !canRecover(result.err.Code) || c.config.Retry.DisableReconnect {
 			return result.err
 		}
 		next := (active.position + 1) % len(c.order)
-		if result.sameEndpoint {
+		if result.sameEndpoint || result.err.Code == CodeCapacity {
 			next = active.position
 		}
 		var err error
@@ -154,13 +154,13 @@ func (c *Client) endSession(ctx context.Context, active *connection, result forw
 		if link, ok := active.link.(sessionStatus); ok && result.fromSession {
 			if cause := link.Err(); cause != nil {
 				code := packetErrorCode(cause, CodeNetwork)
-				if code != CodeCanceled && (!canRetry(code) || canRetry(result.err.Code) || result.err.Code == CodeCanceled) {
+				if code != CodeCanceled && (!canRecover(code) || canRecover(result.err.Code) || result.err.Code == CodeCanceled) {
 					result.err = &Error{Op: "session", Code: code}
 					result.sameEndpoint = errors.Is(cause, tlscontrol.ErrPeerRestartSame)
 				}
 			}
 		}
-		if cleanupFailed && result.err != nil && canRetry(result.err.Code) {
+		if cleanupFailed && result.err != nil && canRecover(result.err.Code) {
 			result.err = &Error{Op: "close session", Code: CodeCleanup}
 		}
 	}
@@ -202,7 +202,7 @@ func (c *Client) forwardSession(ctx context.Context, device tunnel.PacketConn, a
 	workers.Wait()
 	other := <-results
 	if result.fromSession && other.fromSession && other.err.Code != CodeCanceled &&
-		(canRetry(result.err.Code) || result.err.Code == CodeCanceled) && !canRetry(other.err.Code) {
+		(canRecover(result.err.Code) || result.err.Code == CodeCanceled) && !canRecover(other.err.Code) {
 		return other
 	}
 	return result
