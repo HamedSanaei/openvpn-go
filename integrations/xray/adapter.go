@@ -14,7 +14,14 @@ import (
 var (
 	ErrTunnelAddress = errors.New("OpenVPN negotiated different addresses from the host tunnel")
 	ErrTunnelConfig  = errors.New("invalid host tunnel configuration")
+	// ErrClientCleanup marks a failure closing the owned OpenVPN client.
+	ErrClientCleanup = errors.New("OpenVPN client cleanup failed")
 )
+
+type clientCleanupError struct{ error }
+
+func (e clientCleanupError) Is(target error) bool { return target == ErrClientCleanup }
+func (e clientCleanupError) Unwrap() error        { return e.error }
 
 // Addresses identifies fixed addresses provisioned by the host.
 type Addresses struct {
@@ -96,14 +103,18 @@ func newAdapter(cfg client.Config, device tunnel.PacketConn, fixed *Addresses, o
 // exhaustion. It closes the client when forwarding ends. The device is borrowed.
 // If DNS socket retirement fails, Run reports ErrDNSCleanup and the adapter
 // stops before acknowledging or configuring a replacement generation.
+// errors.Is reports ErrClientCleanup independently of the primary outcome.
+// errors.As returns the primary typed client error when one is present.
 func (a *Adapter) Run(ctx context.Context) (result error) {
 	if !a.started.CompareAndSwap(false, true) {
 		return &client.Error{Op: "run", Code: client.CodeBusy}
 	}
-	defer a.client.Close()
 	defer func() {
 		if a.dnsCleanupFailed {
 			result = errors.Join(result, ErrDNSCleanup)
+		}
+		if err := a.client.Close(); err != nil {
+			result = errors.Join(result, clientCleanupError{err})
 		}
 	}()
 	if err := a.client.Connect(ctx); err != nil {
