@@ -7,6 +7,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hamedsanaei/openvpn-go/internal/control"
@@ -49,6 +50,7 @@ type Session struct {
 
 	inbound      chan []byte
 	inboundQueue observability.Queue
+	earlyDrops   atomic.Uint64
 	writeGate    chan struct{}
 	writeBuffer  []byte // Accessed only by the write gate owner.
 	rotate       chan struct{}
@@ -179,6 +181,8 @@ func (s *Session) QueueStats() (observability.QueueStats, observability.QueueSta
 	return s.mux.DataQueueStats(), s.inboundQueue.Stats()
 }
 
+func (s *Session) EarlyRekeyDrops() uint64 { return s.earlyDrops.Load() }
+
 // CleanupError is stable after Done closes.
 func (s *Session) CleanupError() error {
 	select {
@@ -249,7 +253,7 @@ func (s *Session) WritePacket(ctx context.Context, packet []byte) error {
 	if !data.IsIP(packet) {
 		return tunnel.ErrInvalidPacket
 	}
-	return s.write(ctx, packet)
+	return s.write(ctx, packet, false)
 }
 
 func (s *Session) terminalError() error {
@@ -259,7 +263,7 @@ func (s *Session) terminalError() error {
 	return net.ErrClosed
 }
 
-func (s *Session) write(ctx context.Context, plain []byte) error {
+func (s *Session) write(ctx context.Context, plain []byte, onlyIdle bool) error {
 	ctx, cancel := context.WithTimeout(ctx, writeDeadline)
 	defer cancel()
 	stop := context.AfterFunc(s.ctx, cancel)
@@ -283,6 +287,10 @@ func (s *Session) write(ctx context.Context, plain []byte) error {
 	if s.channel == nil || s.ctx.Err() != nil {
 		s.mu.Unlock()
 		return net.ErrClosed
+	}
+	if onlyIdle && (s.info.PingInterval <= 0 || time.Since(s.lastSent) < s.info.PingInterval) {
+		s.mu.Unlock()
+		return nil
 	}
 	if s.info.Tunnel.BlockIPv6 && len(plain) != 0 && plain[0]>>4 == 6 {
 		s.mu.Unlock()
@@ -329,7 +337,7 @@ func (s *Session) requestRekey() {
 	}
 }
 
-func (s *Session) receive(wrapped []byte) {
+func (s *Session) receive(wrapped []byte) error {
 	now := time.Now()
 	s.mu.Lock()
 	packet, epoch, err := s.channel.OpenOwned(wrapped, now)
@@ -349,14 +357,14 @@ func (s *Session) receive(wrapped []byte) {
 	due := err == nil && s.rekeyDueLocked()
 	s.mu.Unlock()
 	if err != nil {
-		return
+		return err
 	}
 	if due {
 		s.requestRekey()
 	}
 	if keepalive || !validIP {
 		clear(packet)
-		return
+		return nil
 	}
 	select {
 	case s.inbound <- packet:
@@ -365,4 +373,5 @@ func (s *Session) receive(wrapped []byte) {
 		s.inboundQueue.Drop(cap(s.inbound))
 		clear(packet)
 	}
+	return nil
 }

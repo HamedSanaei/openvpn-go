@@ -60,11 +60,11 @@ func TestAuthenticatedKeepaliveAndInvalidData(t *testing.T) {
 	if !authenticated.Equal(s.lastRecv) || len(s.inbound) != 0 {
 		t.Fatal("non-IP data extended liveness or was forwarded")
 	}
-	if err := s.maintain(authenticated.Add(time.Second)); !errors.Is(err, context.DeadlineExceeded) {
+	if _, err := s.maintain(authenticated.Add(time.Second)); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("liveness timeout = %v", err)
 	}
 	s.info.PingExit = true
-	if err := s.maintain(authenticated.Add(time.Second)); !errors.Is(err, tlscontrol.ErrPeerStopped) {
+	if _, err := s.maintain(authenticated.Add(time.Second)); !errors.Is(err, tlscontrol.ErrPeerStopped) {
 		t.Fatalf("peer-requested exit = %v", err)
 	}
 	for _, size := range []int{1281, 1280} {

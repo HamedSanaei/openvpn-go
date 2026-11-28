@@ -99,8 +99,8 @@ func sameOrigin(a, b *url.URL) bool {
 
 func httpsPort(uri *url.URL) string {
 	port := uri.Port()
-	if port == "" || strings.TrimLeft(port, "0") == "443" {
+	if port == "" {
 		return "443"
 	}
-	return port
+	return strings.TrimLeft(port, "0")
 }

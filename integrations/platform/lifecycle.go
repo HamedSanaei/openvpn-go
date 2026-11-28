@@ -15,6 +15,8 @@ import (
 // code must honor their contexts so teardown can finish. Keep config
 // immutable while Run may use it to start new leases. The returned status is
 // from the last completed lease, including a lease joined before readmission.
+// A handoff restarts a canceled lease or one that ended in a recoverable
+// transport error. Terminal outcomes and uncertain cleanup stop readmission.
 func Run(ctx context.Context, manager *sessions.Manager, id string, config client.Config,
 	open sessions.DeviceFactory, changes <-chan struct{}) (sessions.Status, error) {
 	if manager == nil {
@@ -49,8 +51,23 @@ func Run(ctx context.Context, manager *sessions.Manager, id string, config clien
 				}
 				lease.Stop()
 				previous, _ = lease.Wait(context.Background())
+				if err := ctx.Err(); err != nil || !canReadmit(previous) {
+					return previous, err
+				}
 				restart = true
 			}
 		}
+	}
+}
+
+func canReadmit(status sessions.Status) bool {
+	if status.Cleanup.DeviceFailed || status.Cleanup.ClientFailed {
+		return false
+	}
+	switch status.Code {
+	case client.CodeCanceled, client.CodeNetwork, client.CodeTimeout, client.CodePeerRestart:
+		return true
+	default:
+		return false
 	}
 }

@@ -85,12 +85,16 @@ type rekeyAdmission struct {
 
 func (s *Session) run(active *tlscontrol.Link) {
 	var pending *control.Stream
+	var pendingKeyID uint8
+	var early earlyData
 	var waiting *RekeyResult
 	var queuedReset control.Reset
 	var workers sync.WaitGroup
 	rekeyResults := make(chan replacement, 1)
 	controlEnds := make(chan controlEnd, 2)
 	admissions := make(chan rekeyAdmission)
+	keepaliveResults := make(chan error, 1)
+	keepalivePending := false
 	watch := func(link *tlscontrol.Link) {
 		workers.Go(func() {
 			err := link.ReadUntilClosed()
@@ -104,6 +108,7 @@ func (s *Session) run(active *tlscontrol.Link) {
 	defer close(s.done)
 	defer func() {
 		s.cancel()
+		s.earlyDrops.Add(early.discard())
 		if pending != nil {
 			pending.Close()
 		}
@@ -177,7 +182,7 @@ func (s *Session) run(active *tlscontrol.Link) {
 			s.recordRekey(report)
 			return rekeyError(err)
 		}
-		pending = stream
+		pending, pendingKeyID = stream, report.KeyID
 		workers.Go(func() {
 			defer admission.done()
 			progress := new(observability.Progress)
@@ -250,7 +255,7 @@ func (s *Session) run(active *tlscontrol.Link) {
 		case <-s.ctx.Done():
 			return
 		case packet := <-s.mux.Data():
-			s.receive(packet)
+			s.receiveDuringRekey(packet, pendingKeyID, &early)
 		case reset := <-s.mux.Resets():
 			if err := start(reset, false); err != nil {
 				s.terminal = err
@@ -305,6 +310,8 @@ func (s *Session) run(active *tlscontrol.Link) {
 				return
 			}
 
+			s.finishEarlyData(&early, time.Now())
+			pendingKeyID = 0
 			s.mux.Expect(result.stream, data.NextKeyID(result.report.KeyID))
 			active, pending = result.link, nil
 			watch(active)
@@ -314,13 +321,27 @@ func (s *Session) run(active *tlscontrol.Link) {
 				s.terminal = end.err
 				return
 			}
+		case err := <-keepaliveResults:
+			keepalivePending = false
+			if err != nil && !(errors.Is(err, net.ErrClosed) && s.ctx.Err() != nil) {
+				s.terminal = err
+				return
+			}
 		case now := <-tick.C:
+			s.earlyDrops.Add(early.expire(now))
 			if s.sampleKeyRate(now) {
 				s.requestRekey()
 			}
-			if err := s.maintain(now); err != nil {
+			keepaliveDue, err := s.maintain(now)
+			if err != nil {
 				s.terminal = err
 				return
+			}
+			if keepaliveDue && !keepalivePending {
+				keepalivePending = true
+				workers.Go(func() {
+					keepaliveResults <- s.write(s.ctx, []byte(data.Keepalive), true)
+				})
 			}
 			if s.opts.RekeyInterval > 0 && pending == nil && waiting == nil && !now.Before(nextRekey) {
 				if err := start(control.Reset{}, false); err != nil {
@@ -344,7 +365,7 @@ func peerEndedSession(err error) bool {
 		errors.Is(err, tlscontrol.ErrNegotiation)
 }
 
-func (s *Session) maintain(now time.Time) error {
+func (s *Session) maintain(now time.Time) (bool, error) {
 	s.mu.Lock()
 	s.channel.Retire(now)
 	if s.fragments != nil {
@@ -357,18 +378,11 @@ func (s *Session) maintain(now time.Time) error {
 	s.mu.Unlock()
 	if info.PingTimeout > 0 && idle >= info.PingTimeout {
 		if info.PingExit {
-			return tlscontrol.ErrPeerStopped
+			return false, tlscontrol.ErrPeerStopped
 		}
-		return context.DeadlineExceeded
+		return false, context.DeadlineExceeded
 	}
-	if info.PingInterval > 0 && silent >= info.PingInterval {
-		err := s.write(s.ctx, []byte(data.Keepalive))
-		if errors.Is(err, net.ErrClosed) && s.ctx.Err() != nil {
-			return nil
-		}
-		return err
-	}
-	return nil
+	return info.PingInterval > 0 && silent >= info.PingInterval, nil
 }
 
 func rekeyError(err error) error {
