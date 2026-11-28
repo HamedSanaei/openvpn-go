@@ -185,6 +185,7 @@ type RekeyReport struct {
 	Generation    uint64        `json:"generation"`
 	KeyID         uint8         `json:"key_id"`
 	PeerInitiated bool          `json:"peer_initiated"`
+	KeyUsage      bool          `json:"key_usage_triggered,omitempty"`
 	Started       time.Time     `json:"started"`
 	Duration      time.Duration `json:"duration_ns"`
 	Phase         AttemptPhase  `json:"phase"`
@@ -281,7 +282,7 @@ func appendRekeyReports(reports []RekeyReport, active *connection) []RekeyReport
 	if reporter, ok := active.link.(interface{ RekeyResults() []session.RekeyResult }); ok {
 		for _, result := range reporter.RekeyResults() {
 			report := RekeyReport{Generation: active.generation, KeyID: result.KeyID, PeerInitiated: result.PeerInitiated,
-				Started: result.Started, Duration: result.Duration, Phase: result.Phase}
+				KeyUsage: result.KeyUsage, Started: result.Started, Duration: result.Duration, Phase: result.Phase}
 			if result.Err != nil {
 				report.Code = packetErrorCode(result.Err, CodeProtocol)
 			}

@@ -22,6 +22,7 @@ const rekeyHistorySize = 8
 type RekeyResult struct {
 	KeyID         uint8
 	PeerInitiated bool
+	KeyUsage      bool
 	Started       time.Time
 	Duration      time.Duration
 	Phase         observability.Phase
@@ -141,12 +142,14 @@ func (s *Session) run(active *tlscontrol.Link) {
 	}()
 
 	watch(active)
+	s.sampleKeyRate(time.Now())
 	nextRekey := time.Now().Add(s.opts.RekeyInterval)
 	tick := time.NewTicker(250 * time.Millisecond)
 	defer tick.Stop()
 
 	open := func(first control.Reset, report RekeyResult, admission rekeyAdmission) error {
 		report.PeerInitiated = first.KeyID != 0
+		report.KeyUsage = report.KeyUsage && !report.PeerInitiated
 		if admission.err == nil {
 			admission.err = admission.ctx.Err()
 		}
@@ -200,7 +203,7 @@ func (s *Session) run(active *tlscontrol.Link) {
 		return nil
 	}
 
-	start := func(first control.Reset) error {
+	start := func(first control.Reset, keyUsage bool) error {
 		if pending != nil {
 			s.mux.RelayReset(first)
 			return nil
@@ -219,7 +222,7 @@ func (s *Session) run(active *tlscontrol.Link) {
 			}
 			return nil
 		}
-		report := RekeyResult{KeyID: id, Started: time.Now(), Phase: observability.PhaseResetACK}
+		report := RekeyResult{KeyID: id, KeyUsage: keyUsage, Started: time.Now(), Phase: observability.PhaseResetACK}
 		ctx, cancel := context.WithTimeout(s.ctx, s.opts.HandshakeLimit)
 		if s.opts.AcquireHandshake == nil {
 			return open(first, report, rekeyAdmission{ctx: ctx, done: cancel})
@@ -249,7 +252,7 @@ func (s *Session) run(active *tlscontrol.Link) {
 		case packet := <-s.mux.Data():
 			s.receive(packet)
 		case reset := <-s.mux.Resets():
-			if err := start(reset); err != nil {
+			if err := start(reset, false); err != nil {
 				s.terminal = err
 				return
 			}
@@ -257,7 +260,7 @@ func (s *Session) run(active *tlscontrol.Link) {
 			if !s.currentKeyNeedsRekey() {
 				continue
 			}
-			if err := start(control.Reset{}); err != nil {
+			if err := start(control.Reset{}, true); err != nil {
 				s.terminal = err
 				return
 			}
@@ -312,12 +315,15 @@ func (s *Session) run(active *tlscontrol.Link) {
 				return
 			}
 		case now := <-tick.C:
+			if s.sampleKeyRate(now) {
+				s.requestRekey()
+			}
 			if err := s.maintain(now); err != nil {
 				s.terminal = err
 				return
 			}
 			if s.opts.RekeyInterval > 0 && pending == nil && waiting == nil && !now.Before(nextRekey) {
-				if err := start(control.Reset{}); err != nil {
+				if err := start(control.Reset{}, false); err != nil {
 					s.terminal = err
 					return
 				}
@@ -329,7 +335,7 @@ func (s *Session) run(active *tlscontrol.Link) {
 func (s *Session) currentKeyNeedsRekey() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.channel.RekeyDue()
+	return s.rekeyDueLocked()
 }
 
 func peerEndedSession(err error) bool {
