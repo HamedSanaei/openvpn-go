@@ -27,8 +27,17 @@ case "${OPENVPN_LOAD_BACKEND:-direct}" in
     *) echo 'Invalid tunnel ownership mode' >&2; exit 2 ;;
 esac
 if [[ ! "$loss" =~ ^[0-9]{1,7}$ ]] || (( 10#$loss > 1000000 )); then
-    echo 'Loss budget must be an integer between 0 and 1000000' >&2
+    echo 'Median loss budget must be an integer between 0 and 1000000' >&2
     exit 2
+fi
+gate=(--max-loss-ppm "$loss")
+if [[ -n "${OPENVPN_LOAD_WINDOW_LOSS_PPM:-}" ]]; then
+    if [[ ! "$OPENVPN_LOAD_WINDOW_LOSS_PPM" =~ ^[0-9]{1,7}$ ]] ||
+        (( 10#$OPENVPN_LOAD_WINDOW_LOSS_PPM > 1000000 )); then
+        echo 'Per-window loss budget must be an integer between 0 and 1000000' >&2
+        exit 2
+    fi
+    gate+=(--max-window-loss-ppm "$OPENVPN_LOAD_WINDOW_LOSS_PPM")
 fi
 mkdir -- "$out"
 export OPENVPN_LOAD_HARNESS="$candidate/tests/interop/native_load_test.go"
@@ -51,7 +60,7 @@ for network in "${networks[@]}"; do
             continue
         fi
         if ! python3 "$candidate/tools/check_native_load.py" "$report/baseline" "$report/candidate" \
-            --max-loss-ppm "$loss" > "$report/comparison.json" 2> "$report/comparison.err"; then
+            "${gate[@]}" > "$report/comparison.json" 2> "$report/comparison.err"; then
             cat "$report/comparison.err" >&2
             status=1
         fi
