@@ -66,6 +66,7 @@ type Session struct {
 	lastSent time.Time
 	lastRecv time.Time
 	rekeys   *rekeyHistory
+	rate     keyConsumptionRate
 
 	terminal error
 	closeErr error
@@ -307,7 +308,7 @@ func (s *Session) write(ctx context.Context, plain []byte, onlyIdle bool) error 
 		packet, err = s.channel.SealInto(s.writeBuffer, plain)
 		packets = [][]byte{packet}
 	}
-	due := s.channel.RekeyDue()
+	due := s.rekeyDueLocked()
 	s.mu.Unlock()
 	if due {
 		s.requestRekey()
@@ -353,7 +354,7 @@ func (s *Session) receive(wrapped []byte) error {
 			s.lastRecv = now
 		}
 	}
-	due := err == nil && s.channel.RekeyDue()
+	due := err == nil && s.rekeyDueLocked()
 	s.mu.Unlock()
 	if err != nil {
 		return err

@@ -97,6 +97,17 @@ allocation cap are both enforced independently.
 | AEAD use | Schedule a rekey with headroom before the earlier of the cipher's usage limit and the packet counter limit. For AES-GCM, use an initial per-direction hard ceiling of 2^24 sent packets per key, or a lower documented cipher-specific limit. |
 | Data queues and endpoints | Bounded queues, per-attempt timeouts and capped exponential backoff with jitter. Unlimited retry is an explicit caller policy and remains cancellable. |
 
+The usage-triggered rekey samples the two key directions every
+250 ms. It retains a 1,024-packet minimum and estimates the additional
+reserve from recent peak consumption, the configured admission and
+handshake deadline, and 500 ms of scheduling margin. The adaptive
+reserve is capped at one quarter of the key limit. For AES-GCM with
+a four-second rekey budget, a sustained 100,000 packets per second
+in one direction reserves about 450,000 packets. Bursts above the
+sampled envelope or delays exceeding the cap may reach the hard limit.
+Transmission stops at that limit. Rekey reports identify usage-based
+triggers and include the time spent awaiting admission.
+
 An invalid MAC or AEAD tag never moves an acceptance window, updates
 liveness, releases plaintext or generates an ACK. Use constant-time
 verification. A counter cannot roll over under the same data key. Clear

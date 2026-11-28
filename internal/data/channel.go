@@ -59,9 +59,25 @@ func NextKeyID(id uint8) uint8 { return id%7 + 1 }
 func (c *Channel) KeyID() uint8 { return c.current.id }
 
 func (c *Channel) RekeyDue() bool {
+	return c.RekeyDueWithHeadroom(rekeyHeadroom, rekeyHeadroom)
+}
+
+// KeyUsage counts consumed transmit nonces and the highest authenticated
+// receive packet ID in the current local epoch.
+type KeyUsage struct {
+	Epoch                 uint64
+	Sent, Received, Limit uint32
+}
+
+func (c *Channel) KeyUsage() KeyUsage {
 	g := c.current
-	return g.keys.PacketLimit-g.sent <= rekeyHeadroom ||
-		g.keys.PacketLimit-g.replay.high <= rekeyHeadroom
+	return KeyUsage{Epoch: g.epoch, Sent: g.sent, Received: g.replay.high, Limit: g.keys.PacketLimit}
+}
+
+func (c *Channel) RekeyDueWithHeadroom(send, receive uint32) bool {
+	g := c.current
+	return g.keys.PacketLimit-g.sent <= max(rekeyHeadroom, send) ||
+		g.keys.PacketLimit-g.replay.high <= max(rekeyHeadroom, receive)
 }
 
 func (c *Channel) Promote(id uint8, keys crypt.DataKeys, expires time.Time) error {
