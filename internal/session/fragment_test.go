@@ -118,7 +118,10 @@ func TestKeepaliveUsesActiveDataFraming(t *testing.T) {
 			s.fragments = &fragmenter{chunkSize: 1280}
 			want = append([]byte{0, 0, 0, 0, uncompressedLZO}, want...)
 		}
-		if err := s.maintain(time.Now()); err != nil {
+		if due, err := s.maintain(time.Now()); err != nil || !due {
+			t.Fatalf("expected an idle keepalive: %v", err)
+		}
+		if err := s.write(t.Context(), []byte(data.Keepalive), true); err != nil {
 			t.Fatal(err)
 		}
 		var packet [1400]byte
