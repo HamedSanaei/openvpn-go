@@ -32,6 +32,12 @@ func (l *Link) ReadUntilClosed() error {
 			return streamError(l.stream, err)
 		}
 		command, options, _ := bytes.Cut(message, []byte{','})
+		l.authorityMu.Lock()
+		if l.retired {
+			l.authorityMu.Unlock()
+			clear(message)
+			return nil
+		}
 		switch string(command) {
 		case "INFO", "INFO_PRE", "ECHO":
 		case "PUSH_REPLY":
@@ -39,11 +45,25 @@ func (l *Link) ReadUntilClosed() error {
 		default:
 			err = unexpectedCommand(message)
 		}
+		if err != nil {
+			l.terminal = err
+		}
+		l.authorityMu.Unlock()
 		clear(message)
 		if err != nil {
 			return err
 		}
 	}
+}
+
+// RetireControl ends this link's authority and returns any authenticated
+// terminal decision published before the replacement took over. Transport
+// closures are reported separately by ReadUntilClosed.
+func (l *Link) RetireControl() error {
+	l.authorityMu.Lock()
+	defer l.authorityMu.Unlock()
+	l.retired = true
+	return l.terminal
 }
 
 func (l *Link) Close() { l.stream.Close() }

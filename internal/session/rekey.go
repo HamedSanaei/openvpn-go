@@ -286,6 +286,12 @@ func (s *Session) run(active *tlscontrol.Link) {
 				return
 			}
 		case result := <-rekeyResults:
+			if decision := active.RetireControl(); decision != nil {
+				result.report.Err = decision
+				s.recordRekey(result.report)
+				s.terminal = decision
+				return
+			}
 			if result.report.Err != nil {
 				s.recordRekey(result.report)
 				s.terminal = rekeyError(result.report.Err)
