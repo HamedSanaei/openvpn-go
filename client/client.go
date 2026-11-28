@@ -188,7 +188,7 @@ func (c *Client) operationError(ctx context.Context, op string) error {
 	return nil
 }
 
-func (c *Client) dial(ctx context.Context, index int, cursor *candidateCursor) (tunnel.PacketConn, AttemptStage, error) {
+func (c *Client) dial(ctx context.Context, index int, cursor *candidateCursor) (tunnel.PacketConn, AttemptStage, error, bool) {
 	endpoint := c.config.Endpoints[index]
 	timeout := endpoint.ConnectTimeout
 	if timeout == 0 {
@@ -202,7 +202,7 @@ func (c *Client) dial(ctx context.Context, index int, cursor *candidateCursor) (
 		release, err := limiter.acquire(waitCtx)
 		cancel()
 		if err != nil {
-			return nil, StageDial, &Error{Op: "admit handshake", Code: errorCode(err)}
+			return nil, StageDial, &Error{Op: "admit handshake", Code: errorCode(err)}, false
 		}
 		defer release()
 		observability.Enter(ctx, observability.PhaseTransport)
@@ -217,6 +217,7 @@ func (c *Client) dial(ctx context.Context, index int, cursor *candidateCursor) (
 	}
 	dialCtx, cancelDial := context.WithDeadline(ctx, dialDeadline)
 	conn, network, err := c.connectSocket(dialCtx, endpoint, cursor)
+	_, cleanupFailed := errors.AsType[attemptCleanupFailure](err)
 	stage := StageDial
 	if errors.Is(err, errResolution) {
 		stage = StageResolve
@@ -230,7 +231,7 @@ func (c *Client) dial(ctx context.Context, index int, cursor *candidateCursor) (
 	cancelDial()
 	if err != nil {
 		if conn != nil {
-			conn.Close()
+			cleanupFailed = failedCleanup(conn.Close()) || cleanupFailed
 		}
 		code := contextCode(err, CodeNetwork)
 		if errors.Is(err, transport.ErrInvalidPacketLimit) || errors.Is(err, transport.ErrUnsupportedNetwork) ||
@@ -239,14 +240,13 @@ func (c *Client) dial(ctx context.Context, index int, cursor *candidateCursor) (
 		} else if errors.Is(err, transport.ErrPeerCertificate) {
 			code = CodeCertificate
 		}
-		return nil, stage, &Error{Op: "dial", Code: code}
+		return nil, stage, &Error{Op: "dial", Code: code}, cleanupFailed
 	}
 
 	c.mu.Lock()
 	if err := c.operationError(ctx, "handshake"); err != nil {
 		c.mu.Unlock()
-		conn.Close()
-		return nil, StageControl, err
+		return nil, StageControl, err, failedCleanup(conn.Close())
 	}
 	c.state = StateHandshaking
 	c.record(EventHandshaking, index, "", 0)
@@ -255,8 +255,7 @@ func (c *Client) dial(ctx context.Context, index int, cursor *candidateCursor) (
 	if !pollDeadline.IsZero() {
 		endpoint.ServerPollTimeout = time.Until(pollDeadline)
 		if endpoint.ServerPollTimeout <= 0 {
-			conn.Close()
-			return nil, StageControl, &Error{Op: "handshake", Code: CodeTimeout}
+			return nil, StageControl, &Error{Op: "handshake", Code: CodeTimeout}, failedCleanup(conn.Close())
 		}
 	}
 	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, c.config.HandshakeTimeout)
@@ -270,11 +269,10 @@ func (c *Client) dial(ctx context.Context, index int, cursor *candidateCursor) (
 	}
 	cancelHandshake()
 	if err != nil || session == nil {
-		if session != nil {
-			session.Close()
-		} else {
-			conn.Close()
+		if session == nil {
+			session = conn
 		}
+		cleanupFailed = failedCleanup(session.Close())
 		code := contextCode(err, CodeProtocol)
 		var handshakeError *Error
 		if errors.As(err, &handshakeError) {
@@ -289,11 +287,11 @@ func (c *Client) dial(ctx context.Context, index int, cursor *candidateCursor) (
 		}
 		failure := &Error{Op: "handshake", Code: code}
 		if _, same := errors.AsType[restartSameError](err); same {
-			return nil, stage, restartSameError{failure}
+			return nil, stage, restartSameError{failure}, cleanupFailed
 		}
-		return nil, stage, failure
+		return nil, stage, failure, cleanupFailed
 	}
-	return session, StageControl, nil
+	return session, StageControl, nil, false
 }
 
 // Close permanently closes the client. It cancels in-flight operations, closes
