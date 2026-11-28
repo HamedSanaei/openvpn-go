@@ -174,7 +174,7 @@ func TestNativeLoad(t *testing.T) {
 		}
 	})
 	binaryPath := interopPeer(t)
-	pki := testkit.NewPKI(t)
+	pki := nativeLoadPKI(t, settings)
 	f := makePKIFixture(t, binaryPath, pki)
 	port := localPort(t, settings.network)
 	startPeer := func() func() {
@@ -253,6 +253,24 @@ func TestNativeLoad(t *testing.T) {
 			t.Fatal("invalid or empty load sample")
 		}
 	}
+}
+
+// Kept optional when this harness is overlaid on an older comparison revision.
+var longLoadPKI func(*testing.T, time.Duration) testkit.PKI
+
+func nativeLoadPKI(t *testing.T, settings loadSettings) testkit.PKI {
+	t.Helper()
+	planned := time.Duration(settings.windows)*settings.duration + settings.warmup
+	if settings.restartEvery != 0 {
+		planned += time.Duration((settings.windows-1)/settings.restartEvery) * 10 * time.Second
+	}
+	if planned <= 30*time.Minute {
+		return testkit.NewPKI(t)
+	}
+	if longLoadPKI == nil {
+		t.Fatal("this revision does not support the synthetic certificate lifetime required for a long run")
+	}
+	return longLoadPKI(t, planned+2*time.Hour)
 }
 
 func loadConfig(t *testing.T) loadSettings {
