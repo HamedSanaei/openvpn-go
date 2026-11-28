@@ -18,7 +18,13 @@ def report(directory):
         raise ValueError("at least three windows and the complete sample set are required")
     fields = ("network", "workload", "sessions", "window_packets", "configured_seconds", "warmup_seconds",
               "expected_windows", "restart_every", "rekey_seconds", "pause_us")
-    workload = tuple(rows[0][key] for key in fields)
+    def settings(row):
+        managed = row.get("managed", False)
+        if type(managed) is not bool:
+            raise ValueError("invalid managed workload flag")
+        return tuple(row[key] for key in fields) + (managed,)
+
+    workload = settings(rows[0])
 
     def numeric(row, key):
         value = row[key]
@@ -28,7 +34,7 @@ def report(directory):
 
     samples = {}
     for window, row in enumerate(rows, 1):
-        if row["window"] != window or tuple(row[key] for key in fields) != workload:
+        if row["window"] != window or settings(row) != workload:
             raise ValueError("non-consecutive or inconsistent windows")
         seconds, sent, received, octets, cpu, latency, failed, silent = (
             numeric(row, key) for key in ("seconds", "sent", "received", "payload_bytes", "driver_cpu_seconds",

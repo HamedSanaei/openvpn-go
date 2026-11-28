@@ -20,7 +20,7 @@ class NativeLoadGateTest(unittest.TestCase):
             }))
             self.write_samples(directory)
 
-    def write_samples(self, directory, count=3, *, latency=200_000, cpu=1):
+    def write_samples(self, directory, count=3, *, latency=200_000, cpu=1, managed=None):
         sample = {
             "network": "udp", "workload": "mixed", "sessions": 64,
             "window_packets": 4, "configured_seconds": 3, "warmup_seconds": 1,
@@ -29,6 +29,8 @@ class NativeLoadGateTest(unittest.TestCase):
             "driver_cpu_seconds": cpu, "p99_ns": latency, "failed_tunnels": 0,
             "silent_tunnels": 0, "rss_bytes": 16 << 20,
         }
+        if managed is not None:
+            sample["managed"] = managed
         (directory / "metrics.jsonl").write_text("".join(
             json.dumps(dict(sample, window=i)) + "\n" for i in range(1, count + 1)
         ))
@@ -61,6 +63,12 @@ class NativeLoadGateTest(unittest.TestCase):
         result = self.run_gate()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("p99_ns", result.stderr)
+
+    def test_managed_and_direct_samples_are_not_comparable(self):
+        self.write_samples(self.candidate, managed=True)
+        result = self.run_gate()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("workload differ", result.stderr)
 
 
 if __name__ == "__main__":
