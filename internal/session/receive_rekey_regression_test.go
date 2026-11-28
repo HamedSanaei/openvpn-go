@@ -82,3 +82,40 @@ func TestBoundedRekeyHistory(t *testing.T) {
 		t.Fatal("history snapshot aliases storage")
 	}
 }
+
+func TestQueuedKeyLimitRequestRevalidatesAfterPromotion(t *testing.T) {
+	makeKeys := func(value byte, limit uint32) crypt.DataKeys {
+		t.Helper()
+		out, err := crypt.ExportDataKeys(func(_ string, _ []byte, n int) ([]byte, error) {
+			data := make([]byte, n)
+			for i := range data {
+				data[i] = value
+			}
+			return data, nil
+		}, crypt.AES256GCM)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out.PacketLimit = limit
+		return out
+	}
+	channel, err := data.NewChannel(0, true, makeKeys(1, 1025))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Session{channel: channel, rotate: make(chan struct{}, 1)}
+	if _, err := channel.Seal([]byte{1}); err != nil || !s.currentKeyNeedsRekey() {
+		t.Fatalf("old key did not reach its soft limit: %v", err)
+	}
+	s.requestRekey()
+	if err := channel.Promote(1, makeKeys(2, 1025), time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	<-s.rotate
+	if s.currentKeyNeedsRekey() {
+		t.Fatal("queued old-key request started a new handshake")
+	}
+	if _, err := channel.Seal([]byte{2}); err != nil || !s.currentKeyNeedsRekey() {
+		t.Fatalf("new key did not request a rekey at its own soft limit: %v", err)
+	}
+}

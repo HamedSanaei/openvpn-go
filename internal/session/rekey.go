@@ -254,6 +254,9 @@ func (s *Session) run(active *tlscontrol.Link) {
 				return
 			}
 		case <-s.rotate:
+			if !s.currentKeyNeedsRekey() {
+				continue
+			}
 			if err := start(control.Reset{}); err != nil {
 				s.terminal = err
 				return
@@ -321,6 +324,12 @@ func (s *Session) run(active *tlscontrol.Link) {
 			}
 		}
 	}
+}
+
+func (s *Session) currentKeyNeedsRekey() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.channel.RekeyDue()
 }
 
 func peerEndedSession(err error) bool {
