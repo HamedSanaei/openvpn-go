@@ -95,6 +95,7 @@ func TestLeaseReportsDeviceCleanupIndependently(t *testing.T) {
 		{"cancel", false, errors.New("private cleanup failure"), client.CodeCanceled, true},
 		{"partial_factory", true, errors.New("private cleanup failure"), client.CodeTunnel, true},
 		{"already_closed", false, net.ErrClosed, client.CodeCanceled, false},
+		{"joined_cleanup", false, errors.Join(net.ErrClosed, errors.New("private cleanup failure")), client.CodeCanceled, true},
 		{"success", false, nil, client.CodeCanceled, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
