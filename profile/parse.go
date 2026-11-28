@@ -142,6 +142,7 @@ func (p *parser) read(remaining []byte, report *Report) error {
 	var inline *material
 	var body []byte
 	var skipTag string
+	var skipped location
 	for number := 1; len(remaining) != 0; number++ {
 		previous := remaining
 		line, rest, _ := bytes.Cut(remaining, []byte{'\n'})
@@ -165,7 +166,7 @@ func (p *parser) read(remaining []byte, report *Report) error {
 		trimmed := bytes.Trim(line, " \t")
 		if skipTag != "" {
 			if string(trimmed) == skipTag {
-				skipTag = ""
+				skipTag, skipped = "", location{}
 			}
 			continue
 		}
@@ -210,6 +211,7 @@ func (p *parser) read(remaining []byte, report *Report) error {
 				}
 				// An unsupported inline section can still contain secrets.
 				skipTag = "</" + name + ">"
+				skipped = loc
 			}
 			if err := report.record(loc, rejected, false); err != nil {
 				return err
@@ -227,6 +229,11 @@ func (p *parser) read(remaining []byte, report *Report) error {
 	}
 	if inline != nil {
 		if err := report.record(inline.loc, inline.loc.diagnostic(CodeSyntax), false); err != nil {
+			return err
+		}
+	}
+	if skipTag != "" {
+		if err := report.record(skipped, skipped.diagnostic(CodeSyntax), false); err != nil {
 			return err
 		}
 	}

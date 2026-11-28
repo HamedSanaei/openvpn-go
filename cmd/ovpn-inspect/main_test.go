@@ -86,3 +86,13 @@ func TestInspectCapabilitiesRejectsConflictingProviderFlags(t *testing.T) {
 		}
 	}
 }
+
+func TestInspectCapabilitiesReportsIncompleteUnsupportedInline(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-capabilities", "-"}, strings.NewReader("client\n<secret>\nprivate-marker\n</wrong>\n"),
+		&stdout, &stderr)
+	if code != 1 || stderr.Len() != 0 || !strings.Contains(stdout.String(), "invalid_syntax") ||
+		!strings.Contains(stdout.String(), "unsupported_directive") || strings.Contains(stdout.String(), "private-marker") {
+		t.Fatalf("unexpected exit %d and report %q, diagnostics %q", code, &stdout, &stderr)
+	}
+}
