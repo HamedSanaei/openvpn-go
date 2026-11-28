@@ -3,8 +3,10 @@
 package transport
 
 import (
+	"errors"
 	"fmt"
 	"net"
+	"os"
 	"runtime"
 	"syscall"
 	"testing"
@@ -88,9 +90,19 @@ func BenchmarkLinuxUDPBatch(b *testing.B) {
 				}
 				txMessages, rxMessages := batchMessages(count, size), batchMessages(count, size)
 				var attempts uint64
+				var latency [4096]time.Duration
+				var samples int
+				var before, after unix.Rusage
+				if err := unix.Getrusage(unix.RUSAGE_SELF, &before); err != nil {
+					b.Fatal(err)
+				}
 				b.SetBytes(int64(size * count))
 				b.ReportAllocs()
-				for b.Loop() {
+				for index := 0; b.Loop(); index++ {
+					var started time.Time
+					if index%17 == 0 {
+						started = time.Now()
+					}
 					walk := func(raw syscall.RawConn, messages []linuxMessage, send bool) {
 						for len(messages) != 0 {
 							n, err := batchCall(raw, messages, send, &attempts)
@@ -109,9 +121,67 @@ func BenchmarkLinuxUDPBatch(b *testing.B) {
 					}
 					walk(tx, txMessages, true)
 					walk(rx, rxMessages, false)
+					if !started.IsZero() {
+						latency[samples%len(latency)] = time.Since(started)
+						samples++
+					}
 				}
+				if err := unix.Getrusage(unix.RUSAGE_SELF, &after); err != nil {
+					b.Fatal(err)
+				}
+				elapsed := after.Utime.Nano() + after.Stime.Nano() - before.Utime.Nano() - before.Stime.Nano()
+				b.ReportMetric(float64(elapsed)/(float64(b.N)*float64(size*count)*8), "cpu-s/Gbit")
 				b.ReportMetric(float64(attempts)/float64(b.N*count), "socket-calls/packet")
+				reportEchoLatency(b, latency[:min(samples, len(latency))])
 			})
 		}
+	}
+}
+
+func TestLinuxUDPBatchDatagramBoundaries(t *testing.T) {
+	listener, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	sender, err := net.DialUDP("udp4", nil, listener.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sender.Close()
+	raw, err := listener.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sizes := []int{16, 32, 48}
+	for i, size := range sizes {
+		payload := make([]byte, size)
+		payload[0] = byte(i + 1)
+		if _, err := sender.Write(payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := listener.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	batch := batchMessages(8, 32)
+	var attempts uint64
+	n, err := batchCall(raw, batch, false, &attempts)
+	if err != nil || n != len(sizes) {
+		t.Fatalf("partial batch read = %d, %v", n, err)
+	}
+	for i, size := range sizes {
+		message := batch[i]
+		truncated := message.header.Flags&unix.MSG_TRUNC != 0
+		if message.length != uint32(min(size, 32)) || truncated != (size > 32) ||
+			*message.header.Iov.Base != byte(i+1) {
+			t.Fatalf("datagram %d: length=%d truncated=%t marker=%d", i, message.length, truncated, *message.header.Iov.Base)
+		}
+	}
+	if err := listener.SetReadDeadline(time.Now().Add(10 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := batchCall(raw, batch, false, &attempts); !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("empty batch interrupted by deadline = %v", err)
 	}
 }
