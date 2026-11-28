@@ -136,6 +136,7 @@ func Open(ctx context.Context, raw transport.PacketConn, opts Options) (*Session
 		inbound: make(chan []byte, cap(mux.Data())), writeGate: make(chan struct{}, 1), rotate: make(chan struct{}, 1),
 		channel: ch, link: link, packetMTU: mtu, fragments: fragments, info: link.Info, lastSent: now, lastRecv: now,
 	}
+	s.rate.observe(now, ch.KeyUsage(), opts.HandshakeLimit)
 	mux.Expect(stream, data.NextKeyID(ch.KeyID()))
 	opened = true
 	go s.run(link)

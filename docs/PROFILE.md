@@ -185,6 +185,13 @@ within the same scope are errors. Empty or nested connection blocks and
 profiles combining block and top-level remotes are errors. Defaults are
 UDP and port 1194. Address-family constraints also apply to IP literals.
 
+This importer gives a block-local standalone `key-direction` precedence
+over the direction on an inherited `tls-auth` file. In the pinned
+Community 2.6.23 and 2.7.9 configuration traces, that form kept the
+file's direction. Both clients recognize the direction supplied with a
+block-local `tls-auth` file. Set complementary directions on the two
+authenticated peers when migrating profiles that mix these forms.
+
 `client.New` keeps all candidates, with their verification policies and
 control keys attached when `remote-random` reorders them. `Connect`
 starts at the first candidate and advances on recoverable failure.

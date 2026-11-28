@@ -144,6 +144,29 @@ func profileProtection(f fixture, mode string) (string, []byte) {
 	}
 }
 
+func TestProfileScopedAuthDirectionOpenVPN(t *testing.T) {
+	pki := testkit.NewPKI(t)
+	f := makeFixture(t, interopPeer(t), pki)
+	for _, network := range []string{"udp", "tcp"} {
+		port := f.start(t, network, "tls-auth", false)
+		base := "client\ndev tun\nremote-cert-tls server\nauth SHA256\n" + profilePKI(pki)
+		remote := fmt.Sprintf("remote 127.0.0.1 %d %s4\n", port, network)
+		root := writeProfileReferences(t, map[string][]byte{"shared.key": f.key("shared.key")})
+		for _, tc := range []struct{ global, local string }{
+			{"tls-auth shared.key 0\n", "key-direction 1\n"},
+			{"tls-auth shared.key\nkey-direction 0\n", "tls-auth shared.key 1\n"},
+		} {
+			source := base + tc.global + profileSection("connection", []byte(remote+tc.local))
+			cfg, _, err := profile.Parse(strings.NewReader(source), profile.Options{Root: root})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.HandshakeTimeout = 8 * time.Second
+			connect(t, cfg)
+		}
+	}
+}
+
 func TestProfileCredentialScopeOpenVPN(t *testing.T) {
 	peer := interopPeer(t)
 	pki := testkit.NewPKI(t)
