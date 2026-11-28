@@ -163,6 +163,7 @@ type AttemptReport struct {
 	RetryReason   ErrorCode     `json:"retry_reason,omitempty"`
 	RetryAfter    time.Duration `json:"retry_after_ns,omitempty"`
 	Generation    uint64        `json:"generation,omitempty"`
+	CleanupFailed bool          `json:"cleanup_failed,omitempty"`
 }
 
 // AttemptReports returns completed attempts newer than afterSequence.

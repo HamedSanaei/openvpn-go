@@ -67,6 +67,15 @@ separate calibration for each tunnel count or adapter mode used as a
 release gate. The workflow keeps raw samples for every completed case,
 including cases rejected by the comparison.
 
+The dedicated workflow applies the median and per-window loss ceilings
+independently. The per-window ceiling defaults to the workflow's median
+budget. Use `window_loss_ppm` to set a separate hard ceiling or
+`median_only_loss` to select the median policy explicitly. The CLI
+keeps median-only behavior unless `--max-window-loss-ppm` is set.
+All selected measurement windows count, including any configured
+peer restart windows. Run a separate restart workload with its own
+recovery and loss objective when it needs a different budget.
+
 The same comparison can run on an isolated Linux workstation with two
 clean checkouts, a pinned peer and an operator-calibrated loss budget.
 
