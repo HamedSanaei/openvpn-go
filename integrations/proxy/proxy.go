@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hamedsanaei/openvpn-go/internal/hostname"
 	"github.com/hamedsanaei/openvpn-go/transport"
 )
 
@@ -158,21 +159,14 @@ func proxyError(ctx context.Context) error {
 func splitTarget(address string) (string, uint16, error) {
 	host, port, err := net.SplitHostPort(address)
 	n, parseErr := strconv.ParseUint(port, 10, 16)
-	if err != nil || parseErr != nil || n == 0 || host == "" || len(host) > 253 {
+	if err != nil || parseErr != nil || n == 0 {
 		return "", 0, ErrProxy
 	}
 	if ip, err := netip.ParseAddr(host); err == nil && ip.Zone() == "" {
 		return host, uint16(n), nil
 	}
-	for label := range strings.SplitSeq(strings.TrimSuffix(host, "."), ".") {
-		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
-			return "", 0, ErrProxy
-		}
-		for _, r := range label {
-			if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r == '-') {
-				return "", 0, ErrProxy
-			}
-		}
+	if !hostname.Valid(host) {
+		return "", 0, ErrProxy
 	}
 	return host, uint16(n), nil
 }

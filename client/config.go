@@ -10,6 +10,7 @@ import (
 
 	"github.com/hamedsanaei/openvpn-go/internal/control"
 	"github.com/hamedsanaei/openvpn-go/internal/crypt"
+	"github.com/hamedsanaei/openvpn-go/internal/hostname"
 	"github.com/hamedsanaei/openvpn-go/transport"
 	"github.com/hamedsanaei/openvpn-go/tunnel"
 )
@@ -237,7 +238,7 @@ func (e *Endpoint) normalize() error {
 		if e.ServerName == "" {
 			e.ServerName = addr.WithZone("").Unmap().String()
 		}
-	} else if !validHostname(e.Host) {
+	} else if !hostname.Valid(e.Host) {
 		return configError("endpoint host")
 	}
 
@@ -248,26 +249,8 @@ func (e *Endpoint) normalize() error {
 		if addr.Zone() != "" {
 			return configError("server name")
 		}
-	} else if !validHostname(e.ServerName) {
+	} else if !hostname.Valid(e.ServerName) {
 		return configError("server name")
 	}
 	return nil
-}
-
-func validHostname(host string) bool {
-	host = strings.TrimSuffix(host, ".")
-	if len(host) == 0 || len(host) > 253 {
-		return false
-	}
-	for label := range strings.SplitSeq(host, ".") {
-		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
-			return false
-		}
-		for _, ch := range label {
-			if !(ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z' || ch >= '0' && ch <= '9' || ch == '-') {
-				return false
-			}
-		}
-	}
-	return true
 }
