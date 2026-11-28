@@ -57,6 +57,23 @@ Pass `--max-rss-bytes` or `--max-fds` to set an absolute ceiling for
 each sampled window on both revisions. Set those limits from runner
 calibration and leave them unspecified for descriptive reporting.
 
+Use the workflow with an empty baseline to repeat the selected commit
+and estimate runner variance before pinning a baseline. Select both
+transports and all packet workloads for the calibration matrix. Keep
+the session count and ownership mode fixed for each comparison. Run a
+separate calibration for each tunnel count or adapter mode used as a
+release gate. The workflow keeps raw samples for every completed case,
+including cases rejected by the comparison.
+
+The same comparison can run on an isolated Linux workstation with two
+clean checkouts, a pinned peer and an operator-calibrated loss budget.
+
+~~~sh
+OPENVPN_LOAD_NETWORK=both OPENVPN_LOAD_PACKETS=all \
+    bash tests/interop/native-compare.sh "$BASELINE_TREE" "$CANDIDATE_TREE" \
+    "$PEER" "$NEW_REPORT_DIR" "$MAX_LOSS_PPM"
+~~~
+
 ## Soak protocol
 
 First run a short bounded check with `OPENVPN_LOAD_REKEY=2`,
