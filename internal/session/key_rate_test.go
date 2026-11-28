@@ -1,11 +1,14 @@
 package session
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/hamedsanaei/openvpn-go/internal/crypt"
 	"github.com/hamedsanaei/openvpn-go/internal/data"
+	"github.com/hamedsanaei/openvpn-go/internal/tlscontrol"
 )
 
 func TestRateHeadroomTriggersEarlierWithoutChangingHardLimit(t *testing.T) {
@@ -42,6 +45,13 @@ func TestRateHeadroomTriggersEarlierWithoutChangingHardLimit(t *testing.T) {
 	if _, err := channel.SealInto(scratch, []byte{1}); err != data.ErrKeyLimit {
 		t.Fatalf("hard key limit changed: %v", err)
 	}
+	s.ctx, s.cancel = context.WithCancel(t.Context())
+	defer s.cancel()
+	s.writeGate, s.rotate = make(chan struct{}, 1), make(chan struct{}, 1)
+	if err := s.write(t.Context(), []byte{1}, false); !errors.Is(err, data.ErrKeyLimit) ||
+		!s.keyExhausted.Load() || !errors.Is(s.ctx.Err(), context.Canceled) {
+		t.Fatalf("hard limit did not terminate the session: %v", err)
+	}
 }
 
 func TestKeyConsumptionRateBudgetsDirectionsIndependently(t *testing.T) {
@@ -54,7 +64,7 @@ func TestKeyConsumptionRateBudgetsDirectionsIndependently(t *testing.T) {
 		t.Fatal("idle keys requested dynamic headroom")
 	}
 	r.observe(at.Add(250*time.Millisecond), data.KeyUsage{Epoch: 1, Sent: 25000, Received: 12500, Limit: aesLimit}, exchangeBudget)
-	if r.sendHeadroom != 450000 || r.receiveHeadroom != 225000 {
+	if r.sendHeadroom != 450000 || r.receiveHeadroom != 3475000 {
 		t.Fatalf("100k/50k PPS did not leave the shared admission and TLS budget: %+v", r)
 	}
 	r.observe(at.Add(500*time.Millisecond), data.KeyUsage{Epoch: 1, Sent: 50000, Received: 2000000, Limit: aesLimit}, exchangeBudget)
@@ -70,5 +80,67 @@ func TestKeyConsumptionRateBudgetsDirectionsIndependently(t *testing.T) {
 	}
 	if r.sendHeadroom >= 1024 || r.receiveHeadroom >= 1024 {
 		t.Fatalf("idle estimates kept unnecessary key headroom: %+v", r)
+	}
+}
+
+func TestUsageRekeyPreservesBoundedReceiveHandoff(t *testing.T) {
+	keys := func(fill byte, limit uint32) crypt.DataKeys {
+		t.Helper()
+		result, err := crypt.ExportDataKeys(func(_ string, _ []byte, n int) ([]byte, error) {
+			raw := make([]byte, n)
+			for i := range raw {
+				raw[i] = fill
+			}
+			return raw, nil
+		}, crypt.AES256GCM)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result.PacketLimit = limit
+		return result
+	}
+	old, next := keys(0, 2), keys(1, 8192)
+	sender, err := data.NewChannel(0, true, old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiver, err := data.NewChannel(0, true, old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := receiver.Promote(1, next, now.Add(usageReceiveOverlap)); err != nil {
+		t.Fatal(err)
+	}
+	s := &Session{channel: receiver, awaitingPeerKey: true,
+		info: tlscontrol.Negotiation{PingTimeout: time.Second}}
+	deliver := func() {
+		t.Helper()
+		encoded, err := sender.Seal([]byte(data.Keepalive))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.receive(encoded); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deliver()
+	if _, err := s.maintain(s.lastRecv.Add(time.Second)); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ordinary idle outcome = %v", err)
+	}
+	deliver()
+	if _, err := s.maintain(s.lastRecv.Add(time.Second)); !errors.Is(err, data.ErrKeyLimit) {
+		t.Fatalf("authenticated retiring key limit lost its classification: %v", err)
+	}
+	if err := sender.Promote(1, next, now.Add(usageReceiveOverlap)); err != nil {
+		t.Fatal(err)
+	}
+	deliver()
+	if s.awaitingPeerKey || s.retiringReceiveExhausted {
+		t.Fatal("authenticated replacement traffic did not finish the handoff")
+	}
+	receiver.Retire(s.lastRecv.Add(rekeyOverlap))
+	if receiver.HasEpoch(1) {
+		t.Fatal("extended receive overlap survived activation of the replacement")
 	}
 }

@@ -51,6 +51,7 @@ type Session struct {
 	inbound      chan []byte
 	inboundQueue observability.Queue
 	earlyDrops   atomic.Uint64
+	keyExhausted atomic.Bool
 	writeGate    chan struct{}
 	writeBuffer  []byte // Accessed only by the write gate owner.
 	rotate       chan struct{}
@@ -58,15 +59,17 @@ type Session struct {
 	packetMTU    int
 	fragments    *fragmenter
 
-	mu       sync.Mutex
-	channel  *data.Channel
-	link     *tlscontrol.Link
-	info     tlscontrol.Negotiation
-	keyID    uint8
-	lastSent time.Time
-	lastRecv time.Time
-	rekeys   *rekeyHistory
-	rate     keyConsumptionRate
+	mu                       sync.Mutex
+	channel                  *data.Channel
+	link                     *tlscontrol.Link
+	info                     tlscontrol.Negotiation
+	keyID                    uint8
+	lastSent                 time.Time
+	lastRecv                 time.Time
+	rekeys                   *rekeyHistory
+	rate                     keyConsumptionRate
+	awaitingPeerKey          bool
+	retiringReceiveExhausted bool
 
 	terminal error
 	closeErr error
@@ -136,10 +139,18 @@ func Open(ctx context.Context, raw transport.PacketConn, opts Options) (*Session
 		inbound: make(chan []byte, cap(mux.Data())), writeGate: make(chan struct{}, 1), rotate: make(chan struct{}, 1),
 		channel: ch, link: link, packetMTU: mtu, fragments: fragments, info: link.Info, lastSent: now, lastRecv: now,
 	}
+	s.rate.observe(now, ch.KeyUsage(), opts.HandshakeLimit)
 	mux.Expect(stream, data.NextKeyID(ch.KeyID()))
 	opened = true
 	go s.run(link)
 	return s, nil
+}
+
+// ValidatePacketBudget checks the known frame and tunnel limits before dialing.
+// The connected adapter can impose a smaller runtime limit.
+func ValidatePacketBudget(opts Options, udp bool) error {
+	_, _, _, err := packetBudget(nil, opts, udp)
+	return err
 }
 
 // packetBudget computes the outer frame limit and the local whole-packet MTU.
@@ -315,6 +326,7 @@ func (s *Session) write(ctx context.Context, plain []byte, onlyIdle bool) error 
 	}
 	if err != nil {
 		if errors.Is(err, data.ErrKeyLimit) {
+			s.keyExhausted.Store(true)
 			s.cancel()
 		}
 		return err
@@ -343,6 +355,14 @@ func (s *Session) receive(wrapped []byte) error {
 	packet, epoch, err := s.channel.OpenOwned(wrapped, now)
 	keepalive, validIP := false, false
 	if err == nil {
+		if s.awaitingPeerKey {
+			if epoch == s.channel.KeyUsage().Epoch {
+				s.channel.ShortenRetiringOverlap(now.Add(rekeyOverlap))
+				s.awaitingPeerKey, s.retiringReceiveExhausted = false, false
+			} else if s.channel.RetiringReceiveExhausted() {
+				s.retiringReceiveExhausted = true
+			}
+		}
 		keepalive = data.IsKeepalive(packet)
 		// Some legacy peers also send bare encrypted keepalives.
 		if !keepalive && s.fragments != nil {

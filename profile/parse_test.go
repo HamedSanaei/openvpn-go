@@ -27,6 +27,59 @@ import (
 
 const testProfile = "client\ndev tun\nremote vpn.example.test\n"
 
+func TestProviderOptionConflicts(t *testing.T) {
+	modes := []struct {
+		name         string
+		selectMode   func(*Options)
+		passwordOnly bool
+	}{
+		{"proton-name", func(o *Options) { o.ProtonVPNServerName = "sensitive-marker" }, true},
+		{"proton-ip", func(o *Options) { o.ProtonVPNVerifyIP = true }, true},
+		{"express", func(o *Options) { o.ExpressVPNManual = true }, false},
+		{"access", func(o *Options) { o.AccessServerName = "sensitive-marker" }, true},
+		{"pritunl", func(o *Options) { o.PritunlServerName = "sensitive-marker" }, false},
+	}
+	check := func(t *testing.T, opts Options) {
+		t.Helper()
+		// A nil reader normally produces a read diagnostic. Conflicts take
+		// precedence and must never echo the selected provider names.
+		_, _, parseErr := Parse(nil, opts)
+		_, inspectErr := InspectWithOptions(nil, opts)
+		for _, err := range []error{parseErr, inspectErr} {
+			var diagnostic *Diagnostic
+			if !errors.As(err, &diagnostic) || diagnostic.Code != CodeConflict ||
+				strings.Contains(err.Error(), "sensitive-marker") {
+				t.Fatalf("expected a redacted provider conflict, got %v", err)
+			}
+		}
+	}
+	for i, mode := range modes {
+		t.Run(mode.name, func(t *testing.T) {
+			var opts Options
+			mode.selectMode(&opts)
+			if err := opts.ValidateImportPolicy(); err != nil {
+				t.Fatal(err)
+			}
+			opts.AllowPasswordOnly = true
+			if mode.passwordOnly {
+				if err := opts.ValidateImportPolicy(); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				check(t, opts)
+			}
+			for _, other := range modes[i+1:] {
+				t.Run(other.name, func(t *testing.T) {
+					var opts Options
+					mode.selectMode(&opts)
+					other.selectMode(&opts)
+					check(t, opts)
+				})
+			}
+		})
+	}
+}
+
 func section(name string, body []byte) string {
 	return "<" + name + ">\n" + strings.TrimRight(string(body), "\n") + "\n</" + name + ">\n"
 }
@@ -266,6 +319,41 @@ func TestRemotePrecedence(t *testing.T) {
 	}
 }
 
+func TestCredentialSourcesRequireAuthDirective(t *testing.T) {
+	base := testProfile + inlinePKI(testkit.NewPKI(t))
+	value := client.Credentials{Username: "fixture", Password: "synthetic"}
+	callback := func(context.Context) (client.Credentials, error) {
+		t.Error("parser called the credentials provider")
+		return value, nil
+	}
+	for _, tc := range []struct {
+		name            string
+		opts            Options
+		static, dynamic bool
+	}{
+		{"static", Options{Credentials: &value}, true, false},
+		{"callback", Options{Authentication: client.Authentication{Credentials: callback}}, false, true},
+		{"both", Options{Credentials: &value, Authentication: client.Authentication{Credentials: callback}}, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, _, err := Parse(strings.NewReader(base), tc.opts)
+			if err != nil || cfg.Credentials != nil || cfg.Authentication.Credentials != nil {
+				t.Fatalf("certificate-only import retained credentials: %v", err)
+			}
+			cfg, _, err = Parse(strings.NewReader(base+"auth-user-pass\n"), tc.opts)
+			if tc.static && tc.dynamic {
+				var diag *Diagnostic
+				if !errors.As(err, &diag) || diag.Code != CodeConflict {
+					t.Fatalf("both sources: %v", err)
+				}
+			} else if err != nil || (cfg.Credentials != nil) != tc.static ||
+				(cfg.Authentication.Credentials != nil) != tc.dynamic {
+				t.Fatalf("bare auth-user-pass did not preserve its credential source: %v", err)
+			}
+		})
+	}
+}
+
 func TestClientDirectiveSyntax(t *testing.T) {
 	source := "\ufeff; standalone TLS client\n--tls-client\npull\n\tdev \"tun\" ; inline comment\n" +
 		"remote '192.0.2.10' 443 tcp4-client # TCP candidate\n" + inlinePKI(testkit.NewPKI(t))
@@ -306,6 +394,97 @@ func TestPerConnectionProtectionAndTLS(t *testing.T) {
 	}
 	if _, err := client.New(cfg); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestConnectionKeyDirectionPrecedence(t *testing.T) {
+	files := fstest.MapFS{"shared.key": {Data: staticFixture()}}
+	opts := Options{Resolver: files.Open}
+	prefix := "client\ndev tun\n" + inlinePKI(testkit.NewPKI(t))
+	for _, tc := range []struct {
+		name, global, local                string
+		localDirection, inheritedDirection client.KeyDirection
+		conflict                           bool
+	}{
+		{"standalone override", "tls-auth shared.key 0\n", "key-direction 1\n", client.KeyDirection1, client.KeyDirection0, false},
+		{"material override", "key-direction 0\ntls-auth shared.key\n", "tls-auth shared.key 1\n", client.KeyDirection1, client.KeyDirection0, false},
+		{"reverse inline", "key-direction 1\n" + section("tls-auth", staticFixture()), "tls-auth shared.key 0\n", client.KeyDirection0, client.KeyDirection1, false},
+		{"equal local", "tls-auth shared.key 0\n", "key-direction 1\ntls-auth shared.key 1\n", client.KeyDirection1, client.KeyDirection0, false},
+		{"inline local", "tls-auth shared.key 1\n", section("tls-auth", staticFixture()) + "key-direction 0\n", client.KeyDirection0, client.KeyDirection1, false},
+		{"local file first", "tls-auth shared.key 0\n", "tls-auth shared.key 0\nkey-direction 1\n", 0, 0, true},
+		{"local standalone first", "tls-auth shared.key 0\n", "key-direction 1\ntls-auth shared.key 0\n", 0, 0, true},
+		{"global conflict", "key-direction 1\ntls-auth shared.key 0\n", "tls-auth shared.key 1\n", 0, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := prefix + tc.global +
+				"<connection>\nremote first.example.test\n" + tc.local + "</connection>\n" +
+				"<connection>\nremote second.example.test\n</connection>\n"
+			cfg, _, err := Parse(strings.NewReader(source), opts)
+			if tc.conflict {
+				var diagnostic *Diagnostic
+				if !errors.As(err, &diagnostic) || diagnostic.Code != CodeConflict || diagnostic.Directive != "tls-auth" {
+					t.Fatalf("expected a tls-auth conflict, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(cfg.EndpointControls) != 2 || cfg.EndpointControls[0].Direction != tc.localDirection ||
+				cfg.EndpointControls[1].Direction != tc.inheritedDirection ||
+				!bytes.Equal(cfg.EndpointControls[0].Key, staticFixture()) {
+				t.Fatal("unexpected effective control protection")
+			}
+		})
+	}
+}
+
+func TestInlineAuthUserPassLiteralTags(t *testing.T) {
+	base := testProfile + inlinePKI(testkit.NewPKI(t))
+	for _, tc := range []client.Credentials{
+		{Username: "  </other>", Password: "</unrelated>  "},
+		{Username: "<login>", Password: " </auth-user-pass> extra"},
+	} {
+		raw := []byte(tc.Username + "\n" + tc.Password + "\n")
+		inline := base + "<auth-user-pass>\n" + string(raw) + "  </auth-user-pass>\t\n"
+		for _, input := range []struct {
+			source string
+			opts   Options
+		}{
+			{inline, Options{}},
+			{base + "auth-user-pass\n", Options{Credentials: &tc}},
+			{base + "auth-user-pass credentials\n", Options{Resolver: fstest.MapFS{"credentials": {Data: raw}}.Open}},
+		} {
+			cfg, _, err := Parse(strings.NewReader(input.source), input.opts)
+			if err != nil || cfg.Credentials == nil || *cfg.Credentials != tc {
+				t.Fatalf("literal credentials were not preserved: %v", err)
+			}
+		}
+		report, err := Inspect(strings.NewReader(inline))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range report.Entries {
+			if entry.Directive == "other" || entry.Directive == "unrelated" || entry.Directive == "login" ||
+				entry.Code == CodeSyntax {
+				t.Fatal("inspection interpreted a credential as syntax")
+			}
+		}
+	}
+	for _, body := range []struct {
+		text string
+		want Code
+	}{
+		{"user\nprivate-marker\n", CodeSyntax},
+		{"user\n</auth-user-pass>\n", CodeMaterial},
+		{"user\nprivate-marker\nextra\n</auth-user-pass>\n", CodeMaterial},
+	} {
+		_, _, err := Parse(strings.NewReader(base+"<auth-user-pass>\n"+body.text), Options{})
+		var diagnostic *Diagnostic
+		if !errors.As(err, &diagnostic) || diagnostic.Code != body.want ||
+			strings.Contains(err.Error(), "private-marker") {
+			t.Fatalf("malformed credential block returned %v", err)
+		}
 	}
 }
 

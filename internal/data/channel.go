@@ -96,6 +96,16 @@ func (c *Channel) Retire(now time.Time) {
 	}
 }
 
+func (c *Channel) ShortenRetiringOverlap(expires time.Time) {
+	if c.retiring != nil && c.retiring.expires.After(expires) {
+		c.retiring.expires = expires
+	}
+}
+
+func (c *Channel) RetiringReceiveExhausted() bool {
+	return c.retiring != nil && c.retiring.replay.high >= c.retiring.keys.PacketLimit
+}
+
 func (c *Channel) Seal(payload []byte) ([]byte, error) {
 	return c.SealInto(nil, payload)
 }

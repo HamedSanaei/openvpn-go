@@ -135,6 +135,9 @@ func TestRekeyWaitsForSharedAdmission(t *testing.T) {
 					if len(reports) == 0 || reports[0].Code != "" || reports[0].PeerInitiated != (mode == "peer-while-waiting") {
 						t.Fatalf("unexpected first rekey: %+v", reports)
 					}
+					if waited := reports[0].AdmissionWait; waited <= 0 || waited >= reports[0].Duration {
+						t.Fatalf("invalid rekey admission and exchange durations: %+v", reports[0])
+					}
 					cancel()
 					<-running
 				}

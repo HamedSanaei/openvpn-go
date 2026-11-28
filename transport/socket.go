@@ -130,22 +130,29 @@ func newSocket(conn net.Conn, limit int) *socket {
 }
 
 func (s *socket) Close() error {
+	err, _ := s.closeOwned()
+	return err
+}
+
+func (s *socket) closeOwned() (error, bool) {
+	owned := false
 	s.closeOnce.Do(func() {
+		owned = true
 		close(s.closed)
 		s.closeErr = s.conn.Close()
 	})
-	return s.closeErr
+	return s.closeErr, owned
 }
 
 type socketDirection struct {
 	gate        chan struct{}
-	interrupted chan struct{}
+	interrupted chan bool
 	setDeadline func(time.Time) error
 }
 
 func newSocketDirection(setDeadline func(time.Time) error) socketDirection {
 	return socketDirection{
-		gate: make(chan struct{}, 1), interrupted: make(chan struct{}, 1), setDeadline: setDeadline,
+		gate: make(chan struct{}, 1), interrupted: make(chan bool, 1), setDeadline: setDeadline,
 	}
 }
 
@@ -153,6 +160,7 @@ type socketOperation struct {
 	socket *socket
 	side   *socketDirection
 	stop   func() bool
+	forced bool
 }
 
 func (s *socket) start(ctx context.Context, side *socketDirection) (socketOperation, error) {
@@ -171,25 +179,39 @@ func (s *socket) start(ctx context.Context, side *socketDirection) (socketOperat
 	op := socketOperation{socket: s, side: side}
 	if ctx.Done() != nil {
 		op.stop = context.AfterFunc(ctx, func() {
+			forced := false
 			if err := side.setDeadline(time.Now()); err != nil {
-				s.Close()
+				_, forced = s.closeOwned()
 			}
-			side.interrupted <- struct{}{}
+			side.interrupted <- forced
 		})
 	}
 	return op, nil
 }
 
-func (op socketOperation) finish() {
+func (op *socketOperation) stopInterrupt() {
 	if op.stop != nil && !op.stop() {
 		// The direction remains owned until its own callback completes and
 		// its deadline is reset, so the ticket cannot reach the next call.
-		<-op.side.interrupted
+		op.forced = <-op.side.interrupted
 		if err := op.side.setDeadline(time.Time{}); err != nil {
 			op.socket.Close()
 		}
 	}
+	op.stop = nil
+}
+
+func (op *socketOperation) finish() {
+	op.stopInterrupt()
 	<-op.side.gate
+}
+
+func (op *socketOperation) ioError(ctx context.Context, err error) error {
+	op.stopInterrupt()
+	if op.forced && (errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrClosedPipe)) {
+		return ctx.Err()
+	}
+	return op.socket.ioError(ctx, err)
 }
 
 func (s *socket) stateError(ctx context.Context) error {

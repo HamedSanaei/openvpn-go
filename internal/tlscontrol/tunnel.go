@@ -89,6 +89,26 @@ func (p *pushState) tunnelOption(name, value string) error {
 	case "redirect-gateway":
 		// This is a host routing command. Explicit numeric routes are
 		// represented separately and routing remains caller-owned.
+		return validateRedirectGateway(args)
+	}
+	return nil
+}
+
+func validateRedirectGateway(args []string) error {
+	seen := make(map[string]bool, len(args))
+	for _, arg := range args {
+		switch arg {
+		case "local", "autolocal", "def1", "bypass-dhcp", "bypass-dns", "block-local", "ipv6", "!ipv4":
+		default:
+			return ErrNegotiation
+		}
+		if seen[arg] {
+			return ErrNegotiation
+		}
+		seen[arg] = true
+	}
+	if seen["local"] && seen["autolocal"] || seen["!ipv4"] && !seen["ipv6"] {
+		return ErrNegotiation
 	}
 	return nil
 }
@@ -159,10 +179,12 @@ func (p *pushState) route(ipv4 bool, args []string) error {
 		}
 		bits := 32
 		if len(args) > 1 {
-			mask, err := netip.ParseAddr(args[1])
-			bits = maskBits(mask)
-			if err != nil || bits < 0 {
-				return ErrNegotiation
+			if args[1] != "default" {
+				mask, err := netip.ParseAddr(args[1])
+				bits = maskBits(mask)
+				if err != nil || bits < 0 {
+					return ErrNegotiation
+				}
 			}
 			args = args[1:]
 		}
@@ -180,12 +202,12 @@ func (p *pushState) route(ipv4 bool, args []string) error {
 		return ErrNegotiation
 	}
 	route := tunnel.Route{Destination: dest}
-	if len(args) != 0 && args[0] != "vpn_gateway" {
+	if len(args) != 0 && args[0] != "vpn_gateway" && !(ipv4 && args[0] == "default") {
 		if err := setGateway(&route.Gateway, ipv4, args[:1]); err != nil {
 			return err
 		}
 	}
-	if len(args) == 2 {
+	if len(args) == 2 && !(ipv4 && args[1] == "default") {
 		metric, err := strconv.ParseUint(args[1], 10, 32)
 		if err != nil {
 			return ErrNegotiation

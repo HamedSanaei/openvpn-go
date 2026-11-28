@@ -4,6 +4,8 @@
 `RemoteRandom` shuffles that order once and preserves every candidate.
 An endpoint's address family, transport, expected certificate identity,
 SNI and control protection travel together through every attempt.
+Remote socket targets must be unicast. Literal and resolved IPv4 limited
+broadcast addresses are rejected, including IPv4-mapped representations.
 
 `Connect(ctx)` tries the first candidate immediately. A failed recoverable
 attempt advances to the next candidate and waits through backoff. The
@@ -48,6 +50,10 @@ device. In-flight packets from the failed session are discarded.
 
 Each successful handshake creates fresh control state and data keys. An
 auth token is scoped to the session that received it, including its rekeys.
+During promotion, a terminal decision dispatched by the authenticated
+control link retains authority even if the replacement is already ready.
+Retirement ends that authority. Ordinary closure of a retiring control
+stream lets the pending exchange complete.
 Another session uses the credentials supplied to `client.New`. The embedding
 application owns the device and its addresses and routes. Read `ControlInfo`
 after a connection event to obtain the newly negotiated tunnel settings.
@@ -61,6 +67,12 @@ configuration callback runs. [Tunnel callback contract](TUNNEL.md#transactional-
 Cancel `Connect` or `Run` to stop the corresponding operation. `Close`
 permanently stops the client, interrupts waits and joins active operations.
 The embedding application closes the borrowed device.
+
+If the session ends between a successful `Connect` and the first
+`RunConfigured` or `Run`, forwarding uses the ordinary recovery policy.
+The caller can read state or statistics in between. Those reads can finish
+accounting for the ended generation while retaining its redacted cause.
+An explicit new `Connect` starts a fresh attempt sequence.
 
 ## Custom packet transports and proxy streams
 

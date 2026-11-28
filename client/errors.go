@@ -15,6 +15,7 @@ const (
 	CodeAuthentication ErrorCode = "authentication failure"
 	CodeCertificate    ErrorCode = "certificate verification failure"
 	CodeProtocol       ErrorCode = "protocol failure"
+	CodeKeyExhausted   ErrorCode = "data key packet limit exhausted"
 	CodeUnavailable    ErrorCode = "OpenVPN data channel unavailable"
 	CodeNotConnected   ErrorCode = "client is not connected"
 	CodeBusy           ErrorCode = "client operation already in progress"

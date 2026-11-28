@@ -63,16 +63,8 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 		}
 	}
 	opts := profile.Options{AllowPasswordOnly: *passwordOnly, ProtonVPNServerName: *protonName, ProtonVPNVerifyIP: *protonVerifyIP, ExpressVPNManual: *express, AccessServerName: *accessName, PritunlServerName: *pritunlName}
-	if *pritunlName != "" && (*accessName != "" || *express || *protonVerifyIP || *protonName != "" || *passwordOnly) {
-		fmt.Fprintln(stderr, "Pritunl import requires its own certificate and identity policy")
-		return 2
-	}
-	if *protonVerifyIP && *protonName != "" {
-		fmt.Fprintln(stderr, "choose one Proton VPN server identity option")
-		return 2
-	}
-	if *express && (*protonVerifyIP || *protonName != "" || *passwordOnly) {
-		fmt.Fprintln(stderr, "ExpressVPN import requires its own certificate and identity policy")
+	if err := opts.ValidateImportPolicy(); err != nil {
+		fmt.Fprintln(stderr, err)
 		return 2
 	}
 	if *authPath != "" {

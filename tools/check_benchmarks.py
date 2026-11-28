@@ -28,6 +28,9 @@ def check(path):
         if name in measurements:
             if len(fields) < 4 or len(fields) % 2:
                 raise ValueError(f"{name} line {line_no}: malformed benchmark row")
+            iterations = fields[1]
+            if not re.fullmatch(r"[0-9]+", iterations) or not iterations.lstrip("0"):
+                raise ValueError(f"{name} line {line_no}: invalid benchmark iteration count")
             sample = {}
             for value, unit in zip(fields[2::2], fields[3::2], strict=True):
                 if unit in sample:

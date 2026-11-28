@@ -22,7 +22,7 @@ func (c *tcpConn) ReadPacket(ctx context.Context, dst []byte) (int, error) {
 	var header [2]byte
 	n, err := io.ReadFull(c.conn, header[:])
 	if err != nil {
-		err = c.ioError(ctx, err)
+		err = op.ioError(ctx, err)
 		if n > 0 || !isContextError(err) {
 			c.Close()
 		}
@@ -36,14 +36,16 @@ func (c *tcpConn) ReadPacket(ctx context.Context, dst []byte) (int, error) {
 	}
 	if length > len(dst) {
 		if _, err := io.CopyN(io.Discard, c.conn, int64(length)); err != nil {
+			err = op.ioError(ctx, truncatedFrame(err))
 			c.Close()
-			return 0, c.ioError(ctx, truncatedFrame(err))
+			return 0, err
 		}
 		return 0, io.ErrShortBuffer
 	}
 	if _, err := io.ReadFull(c.conn, dst[:length]); err != nil {
+		err = op.ioError(ctx, truncatedFrame(err))
 		c.Close()
-		return 0, c.ioError(ctx, truncatedFrame(err))
+		return 0, err
 	}
 	return length, nil
 }
@@ -70,7 +72,7 @@ func (c *tcpConn) WritePacket(ctx context.Context, packet []byte) error {
 		n, err := c.conn.Write(frame[sent:])
 		sent += n
 		if err != nil {
-			err = c.ioError(ctx, err)
+			err = op.ioError(ctx, err)
 			if sent > 0 || !isContextError(err) {
 				c.Close()
 			}

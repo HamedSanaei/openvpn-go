@@ -25,6 +25,7 @@ type RekeyResult struct {
 	KeyUsage      bool
 	Started       time.Time
 	Duration      time.Duration
+	AdmissionWait time.Duration
 	Phase         observability.Phase
 	Err           error
 }
@@ -116,15 +117,21 @@ func (s *Session) run(active *tlscontrol.Link) {
 		s.mux.Close()
 		s.closeErr = s.raw.Close()
 		workers.Wait()
+		shutdown := s.ctx.Err()
+		if s.keyExhausted.Load() && (s.terminal == nil || errors.Is(s.terminal, context.Canceled)) {
+			shutdown = data.ErrKeyLimit
+			s.terminal = shutdown
+		}
 		if waiting != nil {
 			waiting.PeerInitiated = queuedReset.KeyID != 0
-			waiting.Err, waiting.Phase = s.ctx.Err(), observability.PhaseAdmission
+			waiting.AdmissionWait = time.Since(waiting.Started)
+			waiting.Err, waiting.Phase = shutdown, observability.PhaseAdmission
 			s.recordRekey(*waiting)
 		}
 		select {
 		case result := <-rekeyResults:
-			if result.report.Err == nil {
-				result.report.Err = s.ctx.Err()
+			if result.report.Err == nil || errors.Is(result.report.Err, context.Canceled) {
+				result.report.Err = shutdown
 			}
 			s.recordRekey(result.report)
 		default:
@@ -147,7 +154,6 @@ func (s *Session) run(active *tlscontrol.Link) {
 	}()
 
 	watch(active)
-	s.sampleKeyRate(time.Now())
 	nextRekey := time.Now().Add(s.opts.RekeyInterval)
 	tick := time.NewTicker(250 * time.Millisecond)
 	defer tick.Stop()
@@ -271,6 +277,7 @@ func (s *Session) run(active *tlscontrol.Link) {
 			}
 		case admission := <-admissions:
 			report, first := *waiting, queuedReset
+			report.AdmissionWait = time.Since(report.Started)
 			waiting, queuedReset = nil, control.Reset{}
 			if first.KeyID == 0 {
 				select {
@@ -286,14 +293,27 @@ func (s *Session) run(active *tlscontrol.Link) {
 				return
 			}
 		case result := <-rekeyResults:
+			if decision := active.RetireControl(); decision != nil {
+				result.report.Err = decision
+				s.recordRekey(result.report)
+				s.terminal = decision
+				return
+			}
 			if result.report.Err != nil {
 				s.recordRekey(result.report)
 				s.terminal = rekeyError(result.report.Err)
 				return
 			}
 			s.mu.Lock()
-			err := s.channel.Promote(result.report.KeyID, result.keys, time.Now().Add(rekeyOverlap))
+			usage := s.channel.KeyUsage()
+			awaitingPeerKey := result.report.KeyUsage || usage.Limit-usage.Received <= s.rate.receiveHeadroom
+			overlap := rekeyOverlap
+			if awaitingPeerKey {
+				overlap = usageReceiveOverlap
+			}
+			err := s.channel.Promote(result.report.KeyID, result.keys, time.Now().Add(overlap))
 			if err == nil {
+				s.awaitingPeerKey, s.retiringReceiveExhausted = awaitingPeerKey, false
 				if s.fragments != nil {
 					s.fragments.retire(s.channel)
 				}
@@ -375,10 +395,14 @@ func (s *Session) maintain(now time.Time) (bool, error) {
 	idle := now.Sub(s.lastRecv)
 	silent := now.Sub(s.lastSent)
 	info := s.info
+	exhausted := s.retiringReceiveExhausted
 	s.mu.Unlock()
 	if info.PingTimeout > 0 && idle >= info.PingTimeout {
 		if info.PingExit {
 			return false, tlscontrol.ErrPeerStopped
+		}
+		if exhausted {
+			return false, data.ErrKeyLimit
 		}
 		return false, context.DeadlineExceeded
 	}

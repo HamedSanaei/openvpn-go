@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -45,16 +46,38 @@ type Options struct {
 	// PritunlServerName authorizes trusted Pritunl exports with an exact
 	// administrator-confirmed VPN server certificate common name.
 	PritunlServerName string
-	// Authentication authorizes caller-managed credentials and interaction.
+	// Authentication authorizes interaction and supplies credentials for bare
+	// auth-user-pass. Without that directive, the credential callback is unused.
 	Authentication client.Authentication
 	// Identity supplies a matching key for a profile with cert and no key.
 	Identity KeyIdentity
+}
+
+// ValidateImportPolicy checks provider selections without reading profile
+// material, credentials or referenced files.
+func (opts Options) ValidateImportPolicy() error {
+	modes := 0
+	for _, selected := range []bool{
+		opts.ProtonVPNServerName != "", opts.ProtonVPNVerifyIP, opts.ExpressVPNManual,
+		opts.AccessServerName != "", opts.PritunlServerName != "",
+	} {
+		if selected {
+			modes++
+		}
+	}
+	if modes > 1 || opts.AllowPasswordOnly && (opts.ExpressVPNManual || opts.PritunlServerName != "") {
+		return (location{name: "verify-x509-name"}).diagnostic(CodeConflict)
+	}
+	return nil
 }
 
 // Parse reads a bounded profile and returns a validated configuration in
 // declared remote order. A fatal error returns a zero Config and any warnings
 // collected beforehand. The caller retains ownership of the reader.
 func Parse(r io.Reader, opts Options) (client.Config, []Diagnostic, error) {
+	if err := opts.ValidateImportPolicy(); err != nil {
+		return client.Config{}, nil, err
+	}
 	if opts.Root != nil && opts.Resolver != nil {
 		return client.Config{}, nil, (location{}).diagnostic(CodeConflict)
 	}
@@ -70,7 +93,13 @@ func Parse(r io.Reader, opts Options) (client.Config, []Diagnostic, error) {
 		return client.Config{}, nil, (location{}).diagnostic(CodeLimit)
 	}
 	p := parser{
-		opts: opts, cfg: client.Config{TLS: &client.TLSConfig{}, Authentication: opts.Authentication},
+		opts: opts,
+		cfg: client.Config{
+			TLS: &client.TLSConfig{}, Authentication: opts.Authentication,
+			ResolveRetry: client.ResolveUntilDialDeadline,
+			Retry: client.RetryPolicy{MaxAttempts: client.UnlimitedAttempts,
+				InitialBackoff: time.Second, MaxBackoff: profileRetryMaximum},
+		},
 		filesLeft: maxFileBytes, loaded: make(map[*material][]byte),
 	}
 	if err := p.read(bytes.TrimPrefix(data, []byte("\xef\xbb\xbf")), nil); err != nil {
@@ -120,6 +149,7 @@ func (p *parser) read(remaining []byte, report *Report) error {
 	var inline *material
 	var body []byte
 	var skipTag string
+	var skipped location
 	for number := 1; len(remaining) != 0; number++ {
 		previous := remaining
 		line, rest, _ := bytes.Cut(remaining, []byte{'\n'})
@@ -143,7 +173,7 @@ func (p *parser) read(remaining []byte, report *Report) error {
 		trimmed := bytes.Trim(line, " \t")
 		if skipTag != "" {
 			if string(trimmed) == skipTag {
-				skipTag = ""
+				skipTag, skipped = "", location{}
 			}
 			continue
 		}
@@ -154,8 +184,7 @@ func (p *parser) read(remaining []byte, report *Report) error {
 					return err
 				}
 				inline, body = nil, nil
-			} else if bytes.HasPrefix(trimmed, []byte("</")) ||
-				(inline.loc.name != "auth-user-pass" && bytes.HasPrefix(trimmed, []byte("<"))) {
+			} else if inline.loc.name != "auth-user-pass" && bytes.HasPrefix(trimmed, []byte("<")) {
 				loc.name = inline.loc.name
 				if err := report.record(loc, loc.diagnostic(CodeSyntax), false); err != nil {
 					return err
@@ -189,6 +218,7 @@ func (p *parser) read(remaining []byte, report *Report) error {
 				}
 				// An unsupported inline section can still contain secrets.
 				skipTag = "</" + name + ">"
+				skipped = loc
 			}
 			if err := report.record(loc, rejected, false); err != nil {
 				return err
@@ -206,6 +236,11 @@ func (p *parser) read(remaining []byte, report *Report) error {
 	}
 	if inline != nil {
 		if err := report.record(inline.loc, inline.loc.diagnostic(CodeSyntax), false); err != nil {
+			return err
+		}
+	}
+	if skipTag != "" {
+		if err := report.record(skipped, skipped.diagnostic(CodeSyntax), false); err != nil {
 			return err
 		}
 	}

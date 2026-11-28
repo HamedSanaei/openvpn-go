@@ -10,6 +10,34 @@ import (
 
 const pushBase = "PUSH_REPLY,peer-id 5,key-derivation tls-ekm,cipher AES-256-GCM"
 
+func TestPushedIPv4RouteDefaultPlaceholders(t *testing.T) {
+	p := pushState{allowed: []string{"AES-256-GCM"}}
+	reply := pushBase + ",topology subnet,ifconfig 10.49.0.2 255.255.255.0,route-gateway 10.49.0.1,route-metric 21" +
+		",route 10.20.1.2 default default default,route 10.21.1.2 255.255.0.0 default 2" +
+		",route 10.22.1.2 default 10.49.0.9 default,route 10.23.1.2 default vpn_gateway 0"
+	if done, err := p.add([]byte(reply)); !done || err != nil {
+		t.Fatalf("valid pushed route defaults: done = %v, %v", done, err)
+	}
+	routes := p.Tunnel.Routes()
+	if len(routes) != 4 || routes[0].Destination.String() != "10.20.1.2/32" || routes[0].Gateway.IsValid() ||
+		!routes[0].HasMetric || routes[0].Metric != 21 || routes[1].Destination.String() != "10.21.0.0/16" ||
+		routes[1].Gateway.IsValid() || routes[1].Metric != 2 || routes[2].Gateway.String() != "10.49.0.9" ||
+		routes[2].Metric != 21 || routes[3].Gateway.IsValid() || !routes[3].HasMetric || routes[3].Metric != 0 {
+		t.Fatalf("unexpected negotiated routes: %+v", routes)
+	}
+	for _, bad := range []string{
+		"route 10.20.1.2 255.0.255.0", "route 10.20.1.2 default fd49::1",
+		"route 10.20.1.2 default net_gateway", "route 10.20.1.2 default gateway.example.test",
+		"route 10.20.1.2 default default 4294967296", "route-ipv6 fd42::/64 vpn_gateway default",
+		"route 10.21.1.2 255.255.0.0,route 10.21.4.5 255.255.0.0 default default",
+	} {
+		p := pushState{allowed: []string{"AES-256-GCM"}}
+		if done, err := p.add([]byte(pushBase + "," + bad)); done || err != ErrNegotiation {
+			t.Fatalf("invalid route %q: done = %v, %v", bad, done, err)
+		}
+	}
+}
+
 func TestAuthenticatedTunnelPush(t *testing.T) {
 	p := pushState{allowed: []string{"AES-256-GCM"}}
 	first := pushBase + ",ifconfig 10.49.0.2 255.255.255.0,ifconfig-ipv6 fd49::2/64 fd49::1,route 10.52.0.2 255.255.0.0 vpn_gateway 12,dns server 3 resolve-domains corp.example,dns server 3 transport DoT,push-continuation 2"
@@ -98,6 +126,34 @@ func TestTunnelPushPolicy(t *testing.T) {
 	p = pushState{allowed: []string{"AES-256-GCM"}, policy: tunnel.PushPolicy{Routes: tunnel.PushIgnore}}
 	if done, err := p.add([]byte(pushBase + ",up synthetic-secret")); done || err != ErrNegotiation {
 		t.Fatal("policy weakened unrelated push restrictions")
+	}
+}
+
+func TestRedirectGatewayAdvisoryPolicies(t *testing.T) {
+	for _, tt := range []struct {
+		flags  string
+		action tunnel.PushAction
+		accept bool
+	}{
+		{"", tunnel.PushAccept, true},
+		{" local def1 bypass-dhcp bypass-dns block-local", tunnel.PushAccept, true},
+		{" autolocal ipv6 !ipv4", tunnel.PushAccept, true},
+		{" def1 ipv6 !ipv4", tunnel.PushAccept, true},
+		{" local autolocal", tunnel.PushAccept, false},
+		{" !ipv4", tunnel.PushAccept, false},
+		{" ipv6 ipv6", tunnel.PushAccept, false},
+		{" flags-unknown", tunnel.PushAccept, false},
+		{" flags-unknown", tunnel.PushIgnore, true},
+		{" def1", tunnel.PushReject, false},
+	} {
+		p := pushState{allowed: []string{"AES-256-GCM"}, policy: tunnel.PushPolicy{Routes: tt.action}}
+		done, err := p.add([]byte(pushBase + ",redirect-gateway" + tt.flags + ",tun-mtu 1400"))
+		if done != tt.accept || (err == nil) != tt.accept {
+			t.Fatalf("redirect-gateway%s with action %d: %t, %v", tt.flags, tt.action, done, err)
+		}
+		if tt.accept && (len(p.Tunnel.Routes()) != 0 || p.Tunnel.MTU != 1400) {
+			t.Fatalf("advisory option changed the route list or hid a later push: %+v", p.Tunnel)
+		}
 	}
 }
 

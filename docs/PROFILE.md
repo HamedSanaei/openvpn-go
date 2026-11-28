@@ -66,12 +66,12 @@ their own lines.
 | `ca` | Relative PEM certificate bundle path or `<ca>` block. Required. |
 | `cert` | Relative PEM client certificate chain path or `<cert>` block. Required with `key`, except when password-only authentication is explicitly authorized. |
 | `key` | Relative PEM client private key path or `<key>` block. The unencrypted key must match the certificate. Omit it when the caller supplies `profile.Options.Identity`. |
-| `auth-user-pass` | Relative path, `<auth-user-pass>` block, or bare directive with `profile.Options.Credentials` or `profile.Options.Authentication.Credentials`. Material contains exactly the username and password on separate lines. Their surrounding spaces are preserved. |
+| `auth-user-pass` | Relative path, `<auth-user-pass>` block, or bare directive with `profile.Options.Credentials` or `profile.Options.Authentication.Credentials`. Material contains exactly the username and password on separate lines. Their surrounding spaces are preserved. In the inline form a line matching `</auth-user-pass>` after trimming spaces or tabs closes the block. Other tag-like values are literal credentials. |
 | `auth-nocache` | With `auth-user-pass`, requires bare `auth-user-pass` and a caller credential callback. The client retains no callback password between handshakes. |
 | `tls-auth` | Relative Static Key V1 path with optional direction `0` or `1`, or `<tls-auth>` block. |
 | `tls-crypt` | Relative Static Key V1 path or `<tls-crypt>` block. |
 | `tls-crypt-v2` | Relative wrapped client PEM key path or `<tls-crypt-v2>` block. |
-| `key-direction` | `0` or `1` for `tls-auth`. Omission allows bidirectional mode. Both forms must agree when supplied together. A conflicting repeat in the same scope is rejected. A connection block can override the inherited value. |
+| `key-direction` | `0` or `1` for `tls-auth`. Omission allows bidirectional mode. Explicit directions on `tls-auth` and `key-direction` must agree within the same scope. Either form in a connection block takes precedence over an explicit inherited direction. |
 | `auth` | `SHA1`, `SHA256`, `SHA384` or `SHA512`, case-insensitive. Selects the OpenVPN auth digest, including the HMAC for `tls-auth`. The default is `SHA1`. |
 | `data-ciphers` | Ordered, colon-separated subset of `AES-256-GCM`, `AES-128-GCM` and `CHACHA20-POLY1305`, with each cipher listed at most once. Omission offers all three. |
 | `cipher` | A single supported AEAD produces an `ignored_directive` warning. Configure the negotiated offer with `data-ciphers`. |
@@ -87,16 +87,20 @@ their own lines.
 | `bind`, `local`, `lport` | Bind the built-in socket. `local` accepts an IP literal and `lport` a numeric source port. Explicit `bind` uses source port 1194 if neither `lport` nor `port` sets it. Binding conflicts with `nobind` in the same scope. |
 | `disable-dco` | Requests the standard userspace data path. |
 | `persist-key`, `persist-tun` | Accepted with an `ignored_directive` warning. The library owns session keys and the caller manages the tunnel. |
-| `resolv-retry` | DNS retry budget of 0–120 seconds. Each dial has its own deadline. `infinite` retries DNS until that deadline or cancellation. |
+| `resolv-retry` | DNS retry budget of 0–120 seconds. Zero disables DNS retries. `infinite` and omission retry DNS until the dial deadline or cancellation. |
 | `connect-timeout` | Alias for `server-poll-timeout`. The last assignment in a scope wins. |
 | `server-poll-timeout` | Per-remote deadline in seconds, 1–300, covering dialing and the initial OpenVPN control response. The handshake and authentication use their existing deadlines after that response. |
-| `connect-retry` | Initial and optional maximum retry delay ceilings in seconds, 1–300. Uses the client retry policy's jitter. |
-| `connect-retry-max` | Number of visits per remote in rotating order. The total per sequence must be at most 1024. |
+| `connect-retry` | Initial and optional maximum retry delay ceilings in seconds, 1–300. Defaults to 1 and 300 seconds. An omitted maximum uses 300 seconds. Uses the client retry policy's jitter. |
+| `connect-retry-max` | Number of visits per remote in rotating order. The total per sequence must be at most 1024. Omission allows retries until canceled or a terminal failure occurs. |
 | `hand-window` | Initial TLS/control deadline and rekey deadline in seconds, 1–300. |
 | `reneg-sec` | Client timer-driven rekey interval in seconds, 1–86400. Zero disables the timer. The key usage limit and peer resets still trigger rekey. |
 | `explicit-exit-notify` | Optional count from 0–255, default 1. A positive value enables authenticated exit on a capable UDP peer when the application calls `Close`. The count applies to legacy OpenVPN data-channel retransmissions. This client uses the reliable control channel. ExpressVPN imports default to enabled when omitted, with explicit zero honored in global and connection settings. |
 | `tun-mtu` | Inner IP packet ceiling, 68–65535 bytes. See the packet size policy. |
 | `verb` | Levels 0 through 11. Reports `ignored_directive`. |
+
+Certificate-only imports without `auth-user-pass` leave both caller credential
+sources unused. Applications that previously relied on the callback in such
+profiles can add a bare `auth-user-pass` directive to authorize it.
 
 Every other directive is a fatal error. This includes server mode, static-key
 mode, compression, legacy framing outside an authorized provider import, cipher fallback, executable
@@ -180,6 +184,13 @@ A block's protection replaces its inherited protection. Conflicting modes
 within the same scope are errors. Empty or nested connection blocks and
 profiles combining block and top-level remotes are errors. Defaults are
 UDP and port 1194. Address-family constraints also apply to IP literals.
+
+This importer gives a block-local standalone `key-direction` precedence
+over the direction on an inherited `tls-auth` file. In the pinned
+Community 2.6.23 and 2.7.9 configuration traces, that form kept the
+file's direction. Both clients recognize the direction supplied with a
+block-local `tls-auth` file. Set complementary directions on the two
+authenticated peers when migrating profiles that mix these forms.
 
 `client.New` keeps all candidates, with their verification policies and
 control keys attached when `remote-random` reorders them. `Connect`

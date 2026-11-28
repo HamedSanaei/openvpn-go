@@ -24,7 +24,7 @@ func (c *udpConn) ReadPacket(ctx context.Context, dst []byte) (int, error) {
 	}
 	n, err := c.conn.Read(c.datagram)
 	if err != nil {
-		return 0, c.ioError(ctx, err)
+		return 0, op.ioError(ctx, err)
 	}
 	if err := c.checkSize(n); err != nil {
 		return 0, err
@@ -47,7 +47,7 @@ func (c *udpConn) WritePacket(ctx context.Context, packet []byte) error {
 
 	n, err := c.conn.Write(packet)
 	if err != nil {
-		return c.ioError(ctx, err)
+		return op.ioError(ctx, err)
 	}
 	if n != len(packet) {
 		return io.ErrShortWrite

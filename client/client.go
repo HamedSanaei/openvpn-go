@@ -81,6 +81,7 @@ type Client struct {
 	run           *operation
 	active        *connection
 	closing       *connection // retained until final counters are committed
+	beforeRun     *runHandoff
 	cleanupFailed bool
 
 	stats       Stats
@@ -160,6 +161,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	attempt := &operation{cancel: cancel, done: make(chan struct{})}
 	c.attempt = attempt
+	c.beforeRun = nil
 	c.mu.Unlock()
 	defer c.finish(attempt, &c.attempt)
 
@@ -234,12 +236,17 @@ func (c *Client) dial(ctx context.Context, index int, cursor *candidateCursor) (
 		if conn != nil {
 			cleanupFailed = failedCleanup(conn.Close()) || cleanupFailed
 		}
+		if errors.Is(err, transport.ErrProxyTarget) {
+			return nil, stage, rejectedEndpointError{&Error{Op: "dial", Code: CodeConfig}}, cleanupFailed
+		}
 		code := contextCode(err, CodeNetwork)
 		if errors.Is(err, transport.ErrInvalidPacketLimit) || errors.Is(err, transport.ErrUnsupportedNetwork) ||
 			errors.Is(err, transport.ErrInvalidConnection) {
 			code = CodeConfig
 		} else if errors.Is(err, transport.ErrPeerCertificate) {
 			code = CodeCertificate
+		} else if errors.Is(err, transport.ErrProxyAuthentication) {
+			code = CodeAuthentication
 		}
 		return nil, stage, &Error{Op: "dial", Code: code}, cleanupFailed
 	}
@@ -303,6 +310,7 @@ func (c *Client) Close() error {
 		c.mu.Lock()
 		c.liveConnection()
 		c.state = StateClosing
+		c.beforeRun = nil
 		c.record(EventClosing, -1, "", 0)
 		attempt, run, active := c.attempt, c.run, c.active
 		if active != nil {

@@ -54,9 +54,12 @@ def check_payload(row, received, octets):
 
 def report(directory, *, require_fds=False):
     environment = json.loads((directory / "environment.json").read_text())
+    if environment.get("schema") != 2:
+        raise ValueError("native load comparison requires scheduling metadata schema 2")
     system = environment["system"]
     if environment["dirty"] or system["profiled"]:
         raise ValueError("comparison requires clean commits and unprofiled samples")
+    system["constraints"] = process_constraints(directory / "metrics.jsonl.constraints.json")
     rows = [json.loads(line) for line in (directory / "metrics.jsonl").read_text().splitlines()]
     if len(rows) < 3 or len(rows) != count(rows[0], "expected_windows", 720):
         raise ValueError("at least three windows and the complete sample set are required")
@@ -97,6 +100,25 @@ def report(directory, *, require_fds=False):
     losses = samples["loss_ppm"]
     stats["loss_ppm"]["worst_window"] = losses.index(max(losses)) + 1
     return system, workload, stats
+
+
+def process_constraints(path):
+    data = json.loads(path.read_text())
+    if type(data) is not dict or set(data) != {"driver", "peer"}:
+        raise ValueError("missing native-load participant scheduling metadata")
+    for value in data.values():
+        if type(value) is not dict:
+            raise ValueError("invalid native-load participant scheduling metadata")
+        nice, policy = value.get("nice"), value.get("scheduler")
+        quota, cpus, affinity = (value.get(k) for k in ("quota_period_us", "cpuset_effective", "affinity"))
+        if (type(nice) is not int or not -20 <= nice <= 19 or type(policy) is not int or policy < 0 or
+                type(affinity) is not list or not affinity or
+                any(type(cpu) is not int or cpu < 0 for cpu in affinity) or
+                type(cpus) is not str or not cpus or type(quota) is not list or
+                any(type(item) is not list or len(item) != 2 or
+                    any(type(number) is not int or number <= 0 for number in item) for item in quota)):
+            raise ValueError("invalid native-load participant scheduling metadata")
+    return data
 
 
 def main():

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/hamedsanaei/openvpn-go/internal/control"
@@ -27,6 +28,9 @@ type Link struct {
 	conn        *tls.Conn
 	auth        *Authentication
 	classicKeys crypt.DataKeys
+	authorityMu sync.Mutex
+	retired     bool
+	terminal    error
 }
 
 type Options struct {

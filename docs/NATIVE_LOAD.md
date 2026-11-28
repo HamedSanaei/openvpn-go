@@ -50,6 +50,13 @@ workflow requires a dedicated `openvpn-native` runner. Regular CI checks
 allocation counts in `TestReusableDataAllocationBudget`.
 [Native workflow](../.github/workflows/native-load.yml) · [Comparison tool](../tools/check_native_load.py)
 
+Schema 2 compares the driver and peer scheduling policy, nice level, CPU
+affinity, effective cpuset and visible finite cgroup v2 CPU quotas. The
+harness reads those settings from the running participants at startup and
+at window boundaries, including after peer restarts. Use a runner with the
+participant CPU hierarchy visible. Legacy reports and runs with unverifiable
+or changing participant constraints are ineligible for the comparison gate.
+
 New reports include the delivered packet counts for 64-, 256- and
 1,400-byte inner IP packets. The gate validates the exact UDP payload
 bytes after excluding the 28-byte IPv4 and UDP headers. Earlier mixed

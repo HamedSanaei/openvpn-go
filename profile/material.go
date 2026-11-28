@@ -177,6 +177,7 @@ func (p *parser) loadTrust() error {
 func (p *parser) loadCredentials() error {
 	m := p.auth
 	if m == nil {
+		p.cfg.Authentication.Credentials = nil
 		return nil
 	}
 	var credentials client.Credentials

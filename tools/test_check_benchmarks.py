@@ -9,7 +9,7 @@ from check_benchmarks import LIMITS, check
 
 
 class BenchmarkCheck(unittest.TestCase):
-    def measurements(self, change=None):
+    def measurements(self, change=None, counts=None):
         lines = []
         for name, metrics in LIMITS.items():
             for position in range(3):
@@ -19,7 +19,8 @@ class BenchmarkCheck(unittest.TestCase):
                     if change:
                         value = change(name, unit, position, value)
                     pairs.extend((value, unit))
-                lines.append(f"{name}-8 100 {' '.join(pairs)}")
+                count = counts[position] if counts else "100"
+                lines.append(f"{name}-8 {count} {' '.join(pairs)}")
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "benchmarks.txt"
             path.write_text("\n".join(lines), encoding="utf-8")
@@ -28,6 +29,16 @@ class BenchmarkCheck(unittest.TestCase):
 
     def test_valid_exact_limits_and_zero_allocations(self):
         self.assertEqual(self.measurements(), [])
+
+    def test_iteration_counts(self):
+        self.assertEqual(self.measurements(counts=["1", "100", "10000000"]), [])
+        for invalid in ("zero", "0", "000", "-1", "+5", "1.5", "24e3", "NaN", "1_000", "１２"):
+            for position in range(3):
+                with self.subTest(count=invalid, sample=position):
+                    counts = ["100"] * 3
+                    counts[position] = invalid
+                    with self.assertRaisesRegex(ValueError, "line .*invalid benchmark iteration count"):
+                        self.measurements(counts=counts)
 
     def test_invalid_measurements_anywhere(self):
         for invalid in ("NaN", "inf", "-inf", "-1"):

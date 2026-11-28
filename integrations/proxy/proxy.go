@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"io"
@@ -16,10 +17,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hamedsanaei/openvpn-go/internal/hostname"
 	"github.com/hamedsanaei/openvpn-go/transport"
 )
 
 var ErrProxy = errors.New("OpenVPN proxy negotiation failed")
+
+var errProxyAuthentication = errors.Join(ErrProxy, transport.ErrProxyAuthentication)
+var errProxyTarget = errors.Join(ErrProxy, transport.ErrProxyTarget)
 
 // Config identifies a proxy. TLS enables verified TLS to the proxy itself.
 // Credentials require TLS and are scoped to the proxy.
@@ -57,6 +62,22 @@ func newDialer(c Config, negotiate func(net.Conn, string, string, uint16, Config
 			return nil, ErrProxy
 		}
 		c.TLS = c.TLS.Clone()
+		if verify := c.TLS.VerifyConnection; verify != nil {
+			c.TLS.VerifyConnection = func(state tls.ConnectionState) error {
+				if verify(state) != nil {
+					return transport.ErrPeerCertificate
+				}
+				return nil
+			}
+		}
+		if verify := c.TLS.VerifyPeerCertificate; verify != nil {
+			c.TLS.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+				if verify(rawCerts, verifiedChains) != nil {
+					return transport.ErrPeerCertificate
+				}
+				return nil
+			}
+		}
 		if c.TLS.ServerName == "" {
 			c.TLS.ServerName = host
 		}
@@ -75,11 +96,11 @@ func newDialer(c Config, negotiate func(net.Conn, string, string, uint16, Config
 		}
 		host, port, err := splitTarget(address)
 		if err != nil {
-			return nil, err
+			return nil, errProxyTarget
 		}
 		ip, _ := netip.ParseAddr(host)
 		if network == "tcp4" && !ip.Unmap().Is4() || network == "tcp6" && !ip.Unmap().Is6() {
-			return nil, ErrProxy
+			return nil, errProxyTarget
 		}
 		ctx, cancel := context.WithTimeout(ctx, c.Timeout)
 		defer cancel()
@@ -113,8 +134,12 @@ func newDialer(c Config, negotiate func(net.Conn, string, string, uint16, Config
 		}
 		if err != nil || ctx.Err() != nil || raw.SetDeadline(time.Time{}) != nil {
 			raw.Close()
-			if ctx.Err() == nil && errors.As(err, &trustFailure) {
+			if proxyError(ctx) == ErrProxy &&
+				(errors.As(err, &trustFailure) || errors.Is(err, transport.ErrPeerCertificate)) {
 				return nil, errors.Join(ErrProxy, transport.ErrPeerCertificate)
+			}
+			if proxyError(ctx) == ErrProxy && errors.Is(err, transport.ErrProxyAuthentication) {
+				return nil, errProxyAuthentication
 			}
 			return nil, proxyError(ctx)
 		}
@@ -135,21 +160,14 @@ func proxyError(ctx context.Context) error {
 func splitTarget(address string) (string, uint16, error) {
 	host, port, err := net.SplitHostPort(address)
 	n, parseErr := strconv.ParseUint(port, 10, 16)
-	if err != nil || parseErr != nil || n == 0 || host == "" || len(host) > 253 {
+	if err != nil || parseErr != nil || n == 0 {
 		return "", 0, ErrProxy
 	}
 	if ip, err := netip.ParseAddr(host); err == nil && ip.Zone() == "" {
 		return host, uint16(n), nil
 	}
-	for label := range strings.SplitSeq(strings.TrimSuffix(host, "."), ".") {
-		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
-			return "", 0, ErrProxy
-		}
-		for _, r := range label {
-			if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r == '-') {
-				return "", 0, ErrProxy
-			}
-		}
+	if !hostname.Valid(host) {
+		return "", 0, ErrProxy
 	}
 	return host, uint16(n), nil
 }
@@ -187,6 +205,8 @@ func connectHTTP(conn net.Conn, address, _ string, _ uint16, c Config) (net.Conn
 			return nil, ErrProxy
 		}
 		switch {
+		case status == 407:
+			return nil, errProxyAuthentication
 		case status >= 200 && status < 300:
 			// Successful CONNECT framing ends at the blank line. Keep the
 			// buffered bytes and leave body framing fields uninterpreted.
@@ -219,8 +239,11 @@ func connectSOCKS(conn net.Conn, _ string, host string, port uint16, c Config) (
 		if err != nil {
 			return nil, err
 		}
-		if _, err := io.ReadFull(conn, pair[:]); err != nil || pair != [2]byte{1, 0} {
+		if _, err := io.ReadFull(conn, pair[:]); err != nil || pair[0] != 1 {
 			return nil, ErrProxy
+		}
+		if pair[1] != 0 {
+			return nil, errProxyAuthentication
 		}
 	}
 	request := []byte{5, 1, 0}

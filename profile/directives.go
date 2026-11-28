@@ -13,6 +13,7 @@ import (
 )
 
 const maxFields = 4
+const profileRetryMaximum = 300 * time.Second
 
 type directive struct {
 	min, max   int
@@ -219,7 +220,7 @@ func (p *parser) apply(loc location, args []string) error {
 		if !ok {
 			return loc.diagnostic(CodeValue)
 		}
-		maximum := time.Duration(0)
+		maximum := profileRetryMaximum
 		if len(args) == 2 {
 			maximum, ok = seconds(args[1], int(initial/time.Second), 300)
 			if !ok {

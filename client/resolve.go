@@ -94,6 +94,7 @@ func resolvedHosts(addresses []netip.Addr, family string) []string {
 func validRemoteIP(addr netip.Addr, family string) bool {
 	addr = addr.Unmap()
 	return addr.IsValid() && !addr.IsUnspecified() && !addr.IsMulticast() &&
+		addr != netip.AddrFrom4([4]byte{255, 255, 255, 255}) &&
 		(family != "ip4" || addr.Is4()) && (family != "ip6" || addr.Is6())
 }
 
@@ -180,7 +181,8 @@ func (c *Client) connectSocket(ctx context.Context, endpoint Endpoint, cursor *c
 		}
 		if err == nil || errors.Is(err, transport.ErrInvalidPacketLimit) ||
 			errors.Is(err, transport.ErrUnsupportedNetwork) || errors.Is(err, transport.ErrInvalidConnection) ||
-			errors.Is(err, transport.ErrPeerCertificate) {
+			errors.Is(err, transport.ErrPeerCertificate) || errors.Is(err, transport.ErrProxyAuthentication) ||
+			errors.Is(err, transport.ErrProxyTarget) {
 			if err == nil {
 				err = transport.ErrInvalidConnection
 			}

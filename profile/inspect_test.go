@@ -2,6 +2,7 @@ package profile
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -65,5 +66,36 @@ func TestInspectRecoversAfterMissingBlockRemote(t *testing.T) {
 	}
 	if _, _, err := Parse(strings.NewReader(source), Options{}); err == nil {
 		t.Fatal("strict import accepted the incomplete block")
+	}
+}
+
+func TestInspectSkippedInlineSectionsRequireClosingTag(t *testing.T) {
+	for _, inspect := range []func(string) (Report, error){
+		func(s string) (Report, error) { return Inspect(strings.NewReader(s)) },
+		func(s string) (Report, error) {
+			return InspectWithOptions(strings.NewReader(s), Options{ProtonVPNVerifyIP: true})
+		},
+	} {
+		for _, tc := range []struct {
+			tail   string
+			closed bool
+		}{
+			{"", false},
+			{"</different>", false},
+			{"</secret>\n", true},
+			{"  </secret>\t\n", true},
+		} {
+			report, err := inspect("client\n<secret>\nprivate-marker\nremote private-host\n" + tc.tail)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []CapabilityEntry{{1, "client", Supported, ""}, {2, "secret", PolicyDisabled, CodeUnsupported}}
+			if !tc.closed {
+				want = append(want, CapabilityEntry{2, "secret", Rejected, CodeSyntax})
+			}
+			if !slices.Equal(report.Entries, want) {
+				t.Fatalf("unexpected report: %+v", report.Entries)
+			}
+		}
 	}
 }

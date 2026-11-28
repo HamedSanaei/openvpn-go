@@ -10,10 +10,12 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/hamedsanaei/openvpn-go/client"
 	"github.com/hamedsanaei/openvpn-go/internal/testkit"
 	"github.com/hamedsanaei/openvpn-go/transport"
 )
@@ -81,7 +83,24 @@ func TestProxyTCPAdapters(t *testing.T) {
 				conn.SetDeadline(time.Now().Add(4 * time.Second))
 				done <- tc.serve(conn)
 			}()
-			d, err := tc.dial(Config{Address: ln.Addr().String(), TLS: &tls.Config{RootCAs: roots},
+			var verification []string
+			verify := &tls.Config{RootCAs: roots,
+				VerifyPeerCertificate: func(_ [][]byte, chains [][]*x509.Certificate) error {
+					if len(chains) == 0 {
+						return errors.New("missing verified chain")
+					}
+					verification = append(verification, "peer")
+					return nil
+				},
+				VerifyConnection: func(state tls.ConnectionState) error {
+					if len(state.VerifiedChains) == 0 {
+						return errors.New("missing verified connection")
+					}
+					verification = append(verification, "connection")
+					return nil
+				},
+			}
+			d, err := tc.dial(Config{Address: ln.Addr().String(), TLS: verify,
 				Username: "user", Password: "secret", Timeout: 2 * time.Second})
 			if err != nil {
 				t.Fatal(err)
@@ -91,6 +110,9 @@ func TestProxyTCPAdapters(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer conn.Close()
+			if !slices.Equal(verification, []string{"peer", "connection"}) || verify.ServerName != "" || verify.MinVersion != 0 {
+				t.Fatal("TLS policy or callback order changed")
+			}
 			var received [8]byte
 			if n, err := conn.ReadPacket(t.Context(), received[:]); err != nil || string(received[:n]) != "ok" {
 				t.Fatalf("read after negotiation: %d %v", n, err)
@@ -101,10 +123,81 @@ func TestProxyTCPAdapters(t *testing.T) {
 			if _, err := d.DialPacket(t.Context(), "udp", "peer.example.test:443"); err != transport.ErrUnsupportedNetwork {
 				t.Fatalf("UDP over a stream proxy: %v", err)
 			}
-			if _, err := d.DialPacket(t.Context(), "tcp4", "peer.example.test:443"); err != ErrProxy {
-				t.Fatalf("proxy-resolved DNS ignored an explicit address family: %v", err)
+			for _, network := range []string{"tcp4", "tcp6"} {
+				if _, err := d.DialPacket(t.Context(), network, "peer.example.test:443"); !errors.Is(err, ErrProxy) || !errors.Is(err, transport.ErrProxyTarget) {
+					t.Fatalf("proxy-resolved DNS ignored an explicit address family: %v", err)
+				}
 			}
 		})
+	}
+}
+
+func TestCustomProxyTrustRejectionIsTerminal(t *testing.T) {
+	pki := testkit.NewPKI(t)
+	key, err := tls.X509KeyPair(pki.Server.Certificate, pki.Server.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	roots.AppendCertsFromPEM(pki.CA)
+	for _, create := range []func(Config) (transport.Dialer, error){HTTPConnect, SOCKS5} {
+		for _, rejectPeer := range []bool{false, true} {
+			ln, err := tls.Listen("tcp4", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{key}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { ln.Close() })
+			read := make(chan int, 1)
+			go func() {
+				conn, err := ln.Accept()
+				if err != nil {
+					read <- -1
+					return
+				}
+				defer conn.Close()
+				conn.SetDeadline(time.Now().Add(time.Second))
+				n, _ := conn.Read(make([]byte, 1))
+				read <- n
+			}()
+			verifier := &tls.Config{RootCAs: roots}
+			private := errors.New("synthetic-private-verification")
+			if rejectPeer {
+				verifier.VerifyPeerCertificate = func([][]byte, [][]*x509.Certificate) error { return private }
+				verifier.VerifyConnection = func(tls.ConnectionState) error {
+					t.Error("VerifyConnection called after VerifyPeerCertificate rejected")
+					return private
+				}
+			} else {
+				verifier.VerifyConnection = func(tls.ConnectionState) error { return private }
+			}
+			dialer, err := create(Config{Address: ln.Addr().String(), TLS: verifier, Username: "fixture", Password: "synthetic"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			c, err := client.New(client.Config{
+				TLS:       &client.TLSConfig{CA: pki.CA, Certificate: pki.Client.Certificate, PrivateKey: pki.Client.PrivateKey},
+				Endpoints: []client.Endpoint{{Host: "vpn.example.test", Network: "tcp"}},
+				Dialer:    dialer, Retry: client.RetryPolicy{MaxAttempts: client.UnlimitedAttempts, InitialBackoff: time.Millisecond},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			err = c.Connect(ctx)
+			cancel()
+			var failure *client.Error
+			attempts := c.AttemptReports(0)
+			c.Close()
+			ln.Close()
+			if !errors.As(err, &failure) || failure.Code != client.CodeCertificate ||
+				len(attempts) != 1 || attempts[0].Code != client.CodeCertificate ||
+				strings.Contains(err.Error(), private.Error()) {
+				t.Fatalf("custom trust failure = %v, reports = %+v", err, attempts)
+			}
+			if n := <-read; n != 0 {
+				t.Fatal("application bytes reached a proxy that failed a custom verifier")
+			}
+		}
 	}
 }
 

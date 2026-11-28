@@ -12,7 +12,6 @@ import (
 
 	"github.com/hamedsanaei/openvpn-go/internal/control"
 	"github.com/hamedsanaei/openvpn-go/internal/crypt"
-	"github.com/hamedsanaei/openvpn-go/internal/data"
 	"github.com/hamedsanaei/openvpn-go/internal/session"
 	"github.com/hamedsanaei/openvpn-go/internal/tlscontrol"
 	"github.com/hamedsanaei/openvpn-go/transport"
@@ -292,16 +291,15 @@ func prepareHandshakes(cfg Config) ([]handshakeFunc, error) {
 		if endpoint.TunnelMTU != 0 {
 			opts.TunnelMTU = endpoint.TunnelMTU
 		}
-		if opts.TunnelMTU != 0 && endpoint.ExpressVPNFragmentSize == 0 &&
-			opts.MaxPacketSize-data.Overhead < 68 {
-			return nil, configError("tunnel MTU")
-		}
 		opts.TLS = tlscontrol.Options{TLS: peer, Digest: wireDigest, Ciphers: offer, PushPolicy: cfg.PushPolicy,
 			Interaction: auth, ExitNotify: (cfg.ExplicitExitNotify || endpoint.ExplicitExitNotify) && strings.HasPrefix(endpoint.Network, "udp"),
 			TunnelMTU: opts.TunnelMTU, FixedAEAD: endpoint.FixedAEAD, FixedDataV1: endpoint.FixedAEADDataV1,
 			AllowLZOStub: endpoint.ExpressVPNFragmentSize != 0, AdvertiseDNS: cfg.AdvertiseDNS}
 		opts.Protection = protection
 		opts.FragmentSize = endpoint.ExpressVPNFragmentSize
+		if err := session.ValidatePacketBudget(opts, strings.HasPrefix(endpoint.Network, "udp")); err != nil {
+			return nil, configError("data frame size")
+		}
 		handshakes[i] = openHandshake(opts, user)
 	}
 	return handshakes, nil

@@ -28,6 +28,11 @@ var (
 	// ErrPeerCertificate classifies a dialer's sanitized TLS trust failure,
 	// for example when validating a TLS proxy before talking to the VPN peer.
 	ErrPeerCertificate = errors.New("transport peer certificate verification failed")
+	// ErrProxyAuthentication indicates an explicit rejection at a proxy.
+	ErrProxyAuthentication = errors.New("proxy authentication rejected")
+	// ErrProxyTarget indicates that local configuration cannot represent the
+	// requested destination through this proxy without changing its policy.
+	ErrProxyTarget = errors.New("invalid proxy target configuration")
 )
 
 // PacketConn exchanges complete OpenVPN protocol packets.

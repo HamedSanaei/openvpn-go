@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"net"
 	"net/netip"
 	"slices"
 	"time"
@@ -45,14 +46,20 @@ func (a *Adapter) ExchangeDNS(ctx context.Context, server netip.AddrPort, reques
 func (a *Adapter) dnsExchange(ctx context.Context, network string, server netip.AddrPort, request []byte, question dnsQuestion) ([]byte, error) {
 	conn, err := a.dial(ctx, network, server)
 	if err != nil {
-		return nil, err
+		if cause := ctx.Err(); cause != nil {
+			return nil, cause
+		}
+		if errors.Is(err, ErrSocketLimit) || errors.Is(err, net.ErrClosed) {
+			return nil, err
+		}
+		return nil, a.dnsFailure(ctx, err)
 	}
 	defer conn.Close()
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
 	deadline, _ := ctx.Deadline()
 	if err := conn.SetDeadline(deadline); err != nil {
-		return nil, err
+		return nil, a.dnsFailure(ctx, err)
 	}
 	wire := request
 	if network == "tcp" {
@@ -61,13 +68,13 @@ func (a *Adapter) dnsExchange(ctx context.Context, network string, server netip.
 		wire = append(wire, request...)
 	}
 	if n, err := conn.Write(wire); err != nil || n != len(wire) {
-		return nil, a.dnsFailure(ctx)
+		return nil, a.dnsFailure(ctx, err)
 	}
 	var response []byte
 	if network == "tcp" {
 		var frame [2]byte
 		if _, err := io.ReadFull(conn, frame[:]); err != nil {
-			return nil, a.dnsFailure(ctx)
+			return nil, a.dnsFailure(ctx, err)
 		}
 		size := int(binary.BigEndian.Uint16(frame[:]))
 		if size < 12 || size > maxDNSPacket {
@@ -75,13 +82,13 @@ func (a *Adapter) dnsExchange(ctx context.Context, network string, server netip.
 		}
 		response = make([]byte, size)
 		if _, err := io.ReadFull(conn, response); err != nil {
-			return nil, a.dnsFailure(ctx)
+			return nil, a.dnsFailure(ctx, err)
 		}
 	} else {
 		buf := make([]byte, maxDNSPacket+1)
 		n, err := conn.Read(buf)
 		if err != nil {
-			return nil, a.dnsFailure(ctx)
+			return nil, a.dnsFailure(ctx, err)
 		}
 		if n < 12 || n > maxDNSPacket {
 			return nil, ErrDNS
@@ -98,12 +105,18 @@ func (a *Adapter) dnsExchange(ctx context.Context, network string, server netip.
 	return response, ctx.Err()
 }
 
-func (a *Adapter) dnsFailure(ctx context.Context) error {
+func (a *Adapter) dnsFailure(ctx context.Context, cause error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if err := a.life.Err(); err != nil {
 		return err
+	}
+	deadline, hasDeadline := ctx.Deadline()
+	timeout, ok := errors.AsType[net.Error](cause)
+	if errors.Is(cause, context.DeadlineExceeded) || ok && timeout.Timeout() ||
+		hasDeadline && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
 	}
 	return ErrDNS
 }
@@ -119,38 +132,24 @@ func dnsQuestionOf(message []byte) (dnsQuestion, bool) {
 	if len(message) < 12 || binary.BigEndian.Uint16(message[4:6]) != 1 {
 		return question, false
 	}
-	// Compression pointers point backwards. Keep the offset to QTYPE
-	// after the encoded name while bounding the expanded wire name.
-	pos, size, tail, ceiling := 12, 0, 0, len(message)
+	// A single question's QNAME is the first domain name in the message,
+	// so it has no earlier name or label for a compression pointer.
+	pos, size := 12, 0
 	for {
-		if pos >= ceiling {
+		if pos >= len(message) {
 			return question, false
 		}
 		label := int(message[pos])
 		switch {
 		case label == 0:
-			if tail == 0 {
-				tail = pos + 1
-			}
+			tail := pos + 1
 			if tail+4 > len(message) {
 				return question, false
 			}
 			question.qtype = binary.BigEndian.Uint16(message[tail:])
 			question.class = binary.BigEndian.Uint16(message[tail+2:])
 			return question, true
-		case label&0xc0 == 0xc0:
-			if pos+1 >= ceiling {
-				return question, false
-			}
-			pointer := (label&0x3f)<<8 | int(message[pos+1])
-			if pointer < 12 || pointer >= pos {
-				return question, false
-			}
-			if tail == 0 {
-				tail = pos + 2
-			}
-			ceiling, pos = pos, pointer
-		case label > 63 || pos+1+label > ceiling || size+1+label >= len(question.name):
+		case label > 63 || pos+1+label > len(message) || size+1+label >= len(question.name):
 			return question, false
 		default:
 			question.name[size] = byte(label)

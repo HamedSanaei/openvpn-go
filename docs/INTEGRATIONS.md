@@ -15,10 +15,19 @@ uses CONNECT with either the no-authentication method or RFC 1929
 username/password. Credentials require verified TLS to the proxy.
 `tcp` may delegate destination DNS to the proxy. For `tcp4` or `tcp6`,
 specify a literal or configure a family-aware `client.Resolver` to
-provide a matching address. UDP ASSOCIATE, HTTP authentication
-negotiation, and proxy directives in untrusted profiles are disabled.
+provide a matching address. A locally rejected target reports `CodeConfig`
+and is skipped for the rest of the current retry sequence. Eligible
+alternates still share the configured attempt budget. UDP ASSOCIATE, HTTP
+authentication negotiation and proxy directives in untrusted profiles are disabled.
+For imported profiles using delegated TCP DNS, set `resolv-retry 0`
+and leave the explicit resolver unset.
 Rejected replies, malformed responses, and TLS failures produce
 redacted proxy errors. [HTTP CONNECT](https://www.rfc-editor.org/rfc/rfc9110.html#name-connect) · [SOCKS5](https://www.rfc-editor.org/rfc/rfc1928) · [SOCKS5 authentication](https://www.rfc-editor.org/rfc/rfc1929)
+
+An HTTP 407 or SOCKS5 username/password rejection stops the client retry
+sequence with `CodeAuthentication`. Direct dialer callers can check
+`transport.ErrProxyAuthentication` or the general `proxy.ErrProxy` with
+`errors.Is`. Network failures remain eligible for retry under the client policy.
 
 ## Session leases and reports
 
