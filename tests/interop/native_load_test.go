@@ -49,6 +49,7 @@ type loadSample struct {
 	Sent                uint64        `json:"sent"`
 	Received            uint64        `json:"received"`
 	PayloadBytes        uint64        `json:"payload_bytes"`
+	ReceivedBySize      [3]uint64     `json:"received_by_size"`
 	P50                 time.Duration `json:"p50_ns"`
 	P95                 time.Duration `json:"p95_ns"`
 	P99                 time.Duration `json:"p99_ns"`
@@ -132,6 +133,7 @@ var waitManagedLoad func(*testing.T, []loadTunnel)
 
 type loadTraffic struct {
 	sent, received, payload uint64
+	receivedBySize          [3]uint64
 	latency                 loadHistogram
 	failed                  bool
 	firstResponse           time.Time
@@ -335,6 +337,9 @@ func runLoadWindow(t *testing.T, settings loadSettings, tunnels []loadTunnel, ec
 		sample.Sent += result.sent
 		sample.Received += result.received
 		sample.PayloadBytes += result.payload
+		for j, count := range result.receivedBySize {
+			sample.ReceivedBySize[j] += count
+		}
 		sample.MinTunnelEchoes = min(sample.MinTunnelEchoes, result.received)
 		sample.MaxTunnelEchoes = max(sample.MaxTunnelEchoes, result.received)
 		for j, count := range result.latency {
@@ -519,6 +524,14 @@ func loadLoop(ctx context.Context, settings loadSettings, tunnel loadTunnel, ech
 			}
 			traffic.received++
 			traffic.payload += uint64(n - 28)
+			switch n {
+			case 64:
+				traffic.receivedBySize[0]++
+			case 256:
+				traffic.receivedBySize[1]++
+			case 1400:
+				traffic.receivedBySize[2]++
+			}
 			traffic.latency.observe(arrived.Sub(sent[index]))
 		}
 		sequence += uint64(settings.batch)
