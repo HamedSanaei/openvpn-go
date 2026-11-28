@@ -240,6 +240,8 @@ func (c *Client) dial(ctx context.Context, index int, cursor *candidateCursor) (
 			code = CodeConfig
 		} else if errors.Is(err, transport.ErrPeerCertificate) {
 			code = CodeCertificate
+		} else if errors.Is(err, transport.ErrProxyAuthentication) {
+			code = CodeAuthentication
 		}
 		return nil, stage, &Error{Op: "dial", Code: code}, cleanupFailed
 	}

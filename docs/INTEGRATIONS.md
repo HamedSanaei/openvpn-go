@@ -20,6 +20,11 @@ negotiation, and proxy directives in untrusted profiles are disabled.
 Rejected replies, malformed responses, and TLS failures produce
 redacted proxy errors. [HTTP CONNECT](https://www.rfc-editor.org/rfc/rfc9110.html#name-connect) · [SOCKS5](https://www.rfc-editor.org/rfc/rfc1928) · [SOCKS5 authentication](https://www.rfc-editor.org/rfc/rfc1929)
 
+An HTTP 407 or SOCKS5 username/password rejection stops the client retry
+sequence with `CodeAuthentication`. Direct dialer callers can check
+`transport.ErrProxyAuthentication` or the general `proxy.ErrProxy` with
+`errors.Is`. Network failures remain eligible for retry under the client policy.
+
 ## Session leases and reports
 
 `integrations/sessions.Manager` reserves a unique caller-supplied ID,
