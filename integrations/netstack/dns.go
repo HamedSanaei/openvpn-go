@@ -46,6 +46,9 @@ func (a *Adapter) ExchangeDNS(ctx context.Context, server netip.AddrPort, reques
 func (a *Adapter) dnsExchange(ctx context.Context, network string, server netip.AddrPort, request []byte, question dnsQuestion) ([]byte, error) {
 	conn, err := a.dial(ctx, network, server)
 	if err != nil {
+		if cause := ctx.Err(); cause != nil {
+			return nil, cause
+		}
 		if errors.Is(err, ErrSocketLimit) || errors.Is(err, net.ErrClosed) {
 			return nil, err
 		}
