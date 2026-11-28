@@ -76,11 +76,20 @@ type controlEnd struct {
 	err  error
 }
 
+type rekeyAdmission struct {
+	ctx  context.Context
+	done func()
+	err  error
+}
+
 func (s *Session) run(active *tlscontrol.Link) {
 	var pending *control.Stream
+	var waiting *RekeyResult
+	var queuedReset control.Reset
 	var workers sync.WaitGroup
 	rekeyResults := make(chan replacement, 1)
 	controlEnds := make(chan controlEnd, 2)
+	admissions := make(chan rekeyAdmission)
 	watch := func(link *tlscontrol.Link) {
 		workers.Go(func() {
 			err := link.ReadUntilClosed()
@@ -101,6 +110,11 @@ func (s *Session) run(active *tlscontrol.Link) {
 		s.mux.Close()
 		s.closeErr = s.raw.Close()
 		workers.Wait()
+		if waiting != nil {
+			waiting.PeerInitiated = queuedReset.KeyID != 0
+			waiting.Err, waiting.Phase = s.ctx.Err(), observability.PhaseAdmission
+			s.recordRekey(*waiting)
+		}
 		select {
 		case result := <-rekeyResults:
 			if result.report.Err == nil {
@@ -131,16 +145,16 @@ func (s *Session) run(active *tlscontrol.Link) {
 	tick := time.NewTicker(250 * time.Millisecond)
 	defer tick.Stop()
 
-	start := func(first control.Reset) error {
-		if pending != nil {
-			s.mux.RelayReset(first)
-			return nil
+	open := func(first control.Reset, report RekeyResult, admission rekeyAdmission) error {
+		report.PeerInitiated = first.KeyID != 0
+		if admission.err == nil {
+			admission.err = admission.ctx.Err()
 		}
-		s.mu.Lock()
-		id := data.NextKeyID(s.channel.KeyID())
-		s.mu.Unlock()
-		if first.KeyID != 0 && first.KeyID != id {
-			return nil
+		if admission.err != nil {
+			admission.done()
+			report.Err, report.Phase = admission.err, observability.PhaseAdmission
+			s.recordRekey(report)
+			return rekeyError(admission.err)
 		}
 		// A UDP peer may still be retransmitting its previous key exchange
 		// when we start locally. Keep that stream available to ACK the
@@ -153,30 +167,19 @@ func (s *Session) run(active *tlscontrol.Link) {
 		if !keepPrevious {
 			previous.Close()
 		}
-		report := RekeyResult{KeyID: id, PeerInitiated: first.KeyID != 0, Started: time.Now(), Phase: observability.PhaseResetACK}
-		stream, err := s.mux.StartRekey(id, first)
+		stream, err := s.mux.StartRekey(report.KeyID, first)
 		if err != nil {
+			admission.done()
 			report.Err = err
 			s.recordRekey(report)
 			return rekeyError(err)
 		}
 		pending = stream
 		workers.Go(func() {
-			ctx, cancel := context.WithTimeout(s.ctx, s.opts.HandshakeLimit)
-			defer cancel()
+			defer admission.done()
 			progress := new(observability.Progress)
-			ctx = observability.WithProgress(ctx, progress)
+			ctx := observability.WithProgress(admission.ctx, progress)
 			result := replacement{stream: stream, report: report}
-			if s.opts.AcquireHandshake != nil {
-				observability.Enter(ctx, observability.PhaseAdmission)
-				release, err := s.opts.AcquireHandshake(ctx)
-				if err != nil {
-					result.report.Err, result.report.Phase = err, progress.Phase
-					rekeyResults <- result
-					return
-				}
-				defer release()
-			}
 			if keepPrevious {
 				observability.Enter(ctx, observability.PhaseResetACK)
 				if err := stream.WaitReady(ctx); err != nil {
@@ -197,6 +200,48 @@ func (s *Session) run(active *tlscontrol.Link) {
 		return nil
 	}
 
+	start := func(first control.Reset) error {
+		if pending != nil {
+			s.mux.RelayReset(first)
+			return nil
+		}
+		s.mu.Lock()
+		id := data.NextKeyID(s.channel.KeyID())
+		s.mu.Unlock()
+		if first.KeyID != 0 && first.KeyID != id {
+			return nil
+		}
+		if waiting != nil {
+			// A peer reset can arrive during local admission. Preserve
+			// the first authenticated reset, including on TCP.
+			if queuedReset.KeyID == 0 && first.KeyID != 0 {
+				queuedReset = first
+			}
+			return nil
+		}
+		report := RekeyResult{KeyID: id, Started: time.Now(), Phase: observability.PhaseResetACK}
+		ctx, cancel := context.WithTimeout(s.ctx, s.opts.HandshakeLimit)
+		if s.opts.AcquireHandshake == nil {
+			return open(first, report, rekeyAdmission{ctx: ctx, done: cancel})
+		}
+		waiting, queuedReset = &report, first
+		workers.Go(func() {
+			release, err := s.opts.AcquireHandshake(ctx)
+			admission := rekeyAdmission{ctx: ctx, err: err, done: func() {
+				cancel()
+				if release != nil {
+					release()
+				}
+			}}
+			select {
+			case admissions <- admission:
+			case <-s.ctx.Done():
+				admission.done()
+			}
+		})
+		return nil
+	}
+
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -210,6 +255,22 @@ func (s *Session) run(active *tlscontrol.Link) {
 			}
 		case <-s.rotate:
 			if err := start(control.Reset{}); err != nil {
+				s.terminal = err
+				return
+			}
+		case admission := <-admissions:
+			report, first := *waiting, queuedReset
+			waiting, queuedReset = nil, control.Reset{}
+			if first.KeyID == 0 {
+				select {
+				case reset := <-s.mux.Resets():
+					if reset.KeyID == report.KeyID {
+						first = reset
+					}
+				default:
+				}
+			}
+			if err := open(first, report, admission); err != nil {
 				s.terminal = err
 				return
 			}
@@ -252,7 +313,7 @@ func (s *Session) run(active *tlscontrol.Link) {
 				s.terminal = err
 				return
 			}
-			if s.opts.RekeyInterval > 0 && pending == nil && !now.Before(nextRekey) {
+			if s.opts.RekeyInterval > 0 && pending == nil && waiting == nil && !now.Before(nextRekey) {
 				if err := start(control.Reset{}); err != nil {
 					s.terminal = err
 					return
