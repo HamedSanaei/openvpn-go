@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -125,4 +127,125 @@ func TestDialDNSPreservesAuthorizedCallerCancellation(t *testing.T) {
 		t.Fatalf("retired scope = %v", err)
 	}
 	scope.close()
+}
+
+type failingDNSClose struct {
+	net.Conn
+	err   error
+	count *atomic.Int32
+}
+
+func (c failingDNSClose) Close() error {
+	c.count.Add(1)
+	c.Conn.Close()
+	return c.err
+}
+
+func TestDNSCleanupReportedBeforeRollback(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		fail bool
+	}{
+		{"uncertain", errors.New("private DNS close error"), true},
+		{"already_closed", net.ErrClosed, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			server := netip.MustParseAddrPort("192.0.2.1:53")
+			gen := client.TunnelGeneration{Number: 1}
+			gen.Control.Tunnel = gen.Control.Tunnel.WithNetworkOptions(nil,
+				tunnel.DNSConfig{Servers: []tunnel.DNSServer{{Addresses: []netip.AddrPort{server}}}})
+			socket, peer := net.Pipe()
+			defer peer.Close()
+			var closes atomic.Int32
+			var rollbacks, setups int
+			a := new(Adapter)
+			a.options = Options{
+				DNSDialer: func(context.Context, string, netip.AddrPort) (net.Conn, error) {
+					return failingDNSClose{socket, tc.err, &closes}, nil
+				},
+				Configure: func(context.Context, client.TunnelGeneration) (func(), error) {
+					setups++
+					return func() {
+						rollbacks++
+						if closes.Load() != 1 || a.dnsCleanupFailed != tc.fail {
+							t.Error("rollback started before the DNS socket result was recorded")
+						}
+					}, nil
+				},
+			}
+			rollback, err := a.prepare(ctx, gen)
+			if err != nil {
+				t.Fatal(err)
+			}
+			conn, err := a.DialDNS(ctx, gen.Number, "udp", server)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cancel()
+			rollback()
+			if err := conn.Close(); errors.Is(err, ErrDNSCleanup) != tc.fail || closes.Load() != 1 || rollbacks != 1 ||
+				(tc.fail && strings.Contains(err.Error(), "private")) {
+				t.Fatalf("redacted registered socket result: %v", err)
+			}
+			if _, err := a.DialDNS(t.Context(), gen.Number, "udp", server); !errors.Is(err, ErrDNSUnavailable) {
+				t.Fatal("retired DNS generation remained callable")
+			}
+			if tc.fail {
+				gen.Number++
+				if _, err := a.prepare(t.Context(), gen); !errors.Is(err, ErrDNSCleanup) || setups != 1 {
+					t.Fatalf("uncertain scope allowed host reconfiguration: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestDNSRetirementJoinsPartialSocketFailure(t *testing.T) {
+	server := netip.MustParseAddrPort("192.0.2.1:53")
+	scopeCtx, retire := context.WithCancel(t.Context())
+	defer retire()
+	scope := &dnsScope{ctx: scopeCtx, generation: 1,
+		config: tunnel.DNSConfig{Servers: []tunnel.DNSServer{{Addresses: []netip.AddrPort{server}}}}}
+	raw, peer := net.Pipe()
+	defer peer.Close()
+	var closes atomic.Int32
+	entered, finishing := make(chan struct{}), make(chan struct{})
+	a := &Adapter{options: Options{DNSDialer: func(ctx context.Context, _ string, _ netip.AddrPort) (net.Conn, error) {
+		close(entered)
+		<-ctx.Done()
+		<-finishing
+		return failingDNSClose{raw, errors.New("private close failure"), &closes}, errors.New("private dial failure")
+	}}}
+	a.dns.Store(scope)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	dial := make(chan error, 1)
+	go func() {
+		_, err := a.DialDNS(ctx, 1, "udp", server)
+		dial <- err
+	}()
+	<-entered
+	retire()
+	cancel()
+	result := make(chan bool, 1)
+	go func() { result <- scope.close() }()
+	if _, err := a.DialDNS(t.Context(), 1, "udp", server); !errors.Is(err, ErrDNSUnavailable) {
+		t.Fatalf("retired scope accepted another dial: %v", err)
+	}
+	select {
+	case <-result:
+		t.Fatal("scope returned before pending DNS cleanup")
+	default:
+	}
+	close(finishing)
+	if err := <-dial; !errors.Is(err, context.Canceled) || !errors.Is(err, ErrDNSCleanup) ||
+		strings.Contains(err.Error(), "private") {
+		t.Fatalf("lost canceled dial or cleanup result: %v", err)
+	}
+	if !<-result || closes.Load() != 1 {
+		t.Fatal("partial socket outcome or ownership lost during retirement")
+	}
 }

@@ -7,11 +7,15 @@ import (
 	"net/netip"
 	"slices"
 	"sync"
+	"sync/atomic"
 
 	"github.com/hamedsanaei/openvpn-go/tunnel"
 )
 
 var ErrDNSUnavailable = errors.New("VPN DNS server unavailable on the acknowledged tunnel")
+
+// ErrDNSCleanup means a generation's owned DNS socket could not be closed.
+var ErrDNSCleanup = errors.New("VPN DNS socket cleanup failed")
 
 // DNSDialer opens an explicitly selected numeric server through the tunnel.
 // It must bind the socket to the generation's VPN path and honor cancellation.
@@ -26,6 +30,7 @@ type dnsScope struct {
 	mu          sync.Mutex
 	closed      bool
 	dials       sync.WaitGroup
+	failed      atomic.Bool
 	connections map[*dnsConn]struct{}
 }
 
@@ -45,6 +50,7 @@ func (a *Adapter) ActiveDNS() (generation uint64, config tunnel.DNSConfig, activ
 // authorized dial reports its caller's cancellation or deadline, even
 // if its generation retires in flight. Requests for already retired
 // generations and retirement without caller cancellation are unavailable.
+// A failed close on a partial dial adds ErrDNSCleanup to that cause.
 func (a *Adapter) DialDNS(ctx context.Context, generation uint64, network string, server netip.AddrPort) (net.Conn, error) {
 	s := a.dns.Load()
 	if s == nil || s.generation != generation || (network != "udp" && network != "tcp") {
@@ -77,13 +83,15 @@ func (a *Adapter) DialDNS(ctx context.Context, generation uint64, network string
 	s.mu.Lock()
 	if err != nil || conn == nil || s.closed || s.ctx.Err() != nil || dialCtx.Err() != nil {
 		s.mu.Unlock()
-		if conn != nil {
-			conn.Close()
+		cleanupFailed := conn != nil && s.recordClose(conn.Close())
+		cause := ctx.Err()
+		if cause == nil {
+			cause = ErrDNSUnavailable
 		}
-		if err := ctx.Err(); err != nil {
-			return nil, err
+		if cleanupFailed {
+			cause = errors.Join(cause, ErrDNSCleanup)
 		}
-		return nil, ErrDNSUnavailable
+		return nil, cause
 	}
 	wrapped := &dnsConn{Conn: conn, scope: s}
 	s.connections[wrapped] = struct{}{}
@@ -91,7 +99,15 @@ func (a *Adapter) DialDNS(ctx context.Context, generation uint64, network string
 	return wrapped, nil
 }
 
-func (s *dnsScope) close() {
+func (s *dnsScope) recordClose(err error) bool {
+	if err == nil || errors.Is(err, net.ErrClosed) {
+		return false
+	}
+	s.failed.Store(true)
+	return true
+}
+
+func (s *dnsScope) close() bool {
 	s.mu.Lock()
 	s.closed = true
 	connections := s.connections
@@ -101,6 +117,7 @@ func (s *dnsScope) close() {
 	for c := range connections {
 		c.Close()
 	}
+	return s.failed.Load()
 }
 
 type dnsConn struct {
@@ -130,7 +147,11 @@ func (c *dnsConn) Write(p []byte) (int, error) {
 
 func (c *dnsConn) Close() error {
 	c.once.Do(func() {
-		c.closeErr = c.Conn.Close()
+		if err := c.Conn.Close(); c.scope.recordClose(err) {
+			c.closeErr = ErrDNSCleanup
+		} else if err != nil {
+			c.closeErr = net.ErrClosed
+		}
 		c.scope.mu.Lock()
 		delete(c.scope.connections, c)
 		c.scope.mu.Unlock()
