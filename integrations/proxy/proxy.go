@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"io"
@@ -57,6 +58,22 @@ func newDialer(c Config, negotiate func(net.Conn, string, string, uint16, Config
 			return nil, ErrProxy
 		}
 		c.TLS = c.TLS.Clone()
+		if verify := c.TLS.VerifyConnection; verify != nil {
+			c.TLS.VerifyConnection = func(state tls.ConnectionState) error {
+				if verify(state) != nil {
+					return transport.ErrPeerCertificate
+				}
+				return nil
+			}
+		}
+		if verify := c.TLS.VerifyPeerCertificate; verify != nil {
+			c.TLS.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+				if verify(rawCerts, verifiedChains) != nil {
+					return transport.ErrPeerCertificate
+				}
+				return nil
+			}
+		}
 		if c.TLS.ServerName == "" {
 			c.TLS.ServerName = host
 		}
@@ -113,7 +130,8 @@ func newDialer(c Config, negotiate func(net.Conn, string, string, uint16, Config
 		}
 		if err != nil || ctx.Err() != nil || raw.SetDeadline(time.Time{}) != nil {
 			raw.Close()
-			if ctx.Err() == nil && errors.As(err, &trustFailure) {
+			if proxyError(ctx) == ErrProxy &&
+				(errors.As(err, &trustFailure) || errors.Is(err, transport.ErrPeerCertificate)) {
 				return nil, errors.Join(ErrProxy, transport.ErrPeerCertificate)
 			}
 			return nil, proxyError(ctx)
