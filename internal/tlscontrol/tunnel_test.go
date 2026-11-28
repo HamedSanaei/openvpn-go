@@ -101,6 +101,34 @@ func TestTunnelPushPolicy(t *testing.T) {
 	}
 }
 
+func TestRedirectGatewayAdvisoryPolicies(t *testing.T) {
+	for _, tt := range []struct {
+		flags  string
+		action tunnel.PushAction
+		accept bool
+	}{
+		{"", tunnel.PushAccept, true},
+		{" local def1 bypass-dhcp bypass-dns block-local", tunnel.PushAccept, true},
+		{" autolocal ipv6 !ipv4", tunnel.PushAccept, true},
+		{" def1 ipv6 !ipv4", tunnel.PushAccept, true},
+		{" local autolocal", tunnel.PushAccept, false},
+		{" !ipv4", tunnel.PushAccept, false},
+		{" ipv6 ipv6", tunnel.PushAccept, false},
+		{" flags-unknown", tunnel.PushAccept, false},
+		{" flags-unknown", tunnel.PushIgnore, true},
+		{" def1", tunnel.PushReject, false},
+	} {
+		p := pushState{allowed: []string{"AES-256-GCM"}, policy: tunnel.PushPolicy{Routes: tt.action}}
+		done, err := p.add([]byte(pushBase + ",redirect-gateway" + tt.flags + ",tun-mtu 1400"))
+		if done != tt.accept || (err == nil) != tt.accept {
+			t.Fatalf("redirect-gateway%s with action %d: %t, %v", tt.flags, tt.action, done, err)
+		}
+		if tt.accept && (len(p.Tunnel.Routes()) != 0 || p.Tunnel.MTU != 1400) {
+			t.Fatalf("advisory option changed the route list or hid a later push: %+v", p.Tunnel)
+		}
+	}
+}
+
 func TestDisabledPushPingTimersAndDuplicates(t *testing.T) {
 	for _, option := range []string{"ping", "ping-restart", "ping-exit"} {
 		p := pushState{allowed: []string{"AES-256-GCM"}}

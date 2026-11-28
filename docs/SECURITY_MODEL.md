@@ -62,6 +62,12 @@ guarantees.
   validation remain in the core. Pushed route/DNS settings, when supported,
   are validated metadata for the embedding application. The core does not
   execute profile or server commands or mutate host settings.
+- Under route `PushAccept`, a `redirect-gateway` advisory may be empty or
+  contain one occurrence of each supported flag. The recognized flags are
+  `local`, `autolocal`, `def1`, `bypass-dhcp`, `bypass-dns`,
+  `block-local`, `ipv6` and `!ipv4`. This parser treats `local` and
+  `autolocal` as mutually exclusive and requires `ipv6` with `!ipv4`.
+  The advisory does not create a route. [Community 2.6 manual](https://openvpn.net/community-docs/community-articles/openvpn-2-6-manual/) · [Community 2.7.9 manual](https://github.com/OpenVPN/openvpn/blob/v2.7.9/doc/man-sections/vpn-network-options.rst)
 - Retry transport timeouts and I/O loss with bounded per-attempt resources.
   Treat a UDP packet rejected before authentication as an input drop.
   Authentication failure from a verified peer is terminal. The same

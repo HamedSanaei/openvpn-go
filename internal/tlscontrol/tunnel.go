@@ -89,6 +89,26 @@ func (p *pushState) tunnelOption(name, value string) error {
 	case "redirect-gateway":
 		// This is a host routing command. Explicit numeric routes are
 		// represented separately and routing remains caller-owned.
+		return validateRedirectGateway(args)
+	}
+	return nil
+}
+
+func validateRedirectGateway(args []string) error {
+	seen := make(map[string]bool, len(args))
+	for _, arg := range args {
+		switch arg {
+		case "local", "autolocal", "def1", "bypass-dhcp", "bypass-dns", "block-local", "ipv6", "!ipv4":
+		default:
+			return ErrNegotiation
+		}
+		if seen[arg] {
+			return ErrNegotiation
+		}
+		seen[arg] = true
+	}
+	if seen["local"] && seen["autolocal"] || seen["!ipv4"] && !seen["ipv6"] {
+		return ErrNegotiation
 	}
 	return nil
 }
