@@ -13,6 +13,43 @@ import (
 	"time"
 )
 
+func TestWebAuthRejectsMalformedURLsBeforeCallback(t *testing.T) {
+	for _, bad := range []string{
+		"https://login.example.test:/flow", "https://login.example.test:0/flow",
+		"https://login.example.test:99999/flow", "https://login.example.test/flow#",
+		"https://login.example.test/flow\\unsafe", "https://user@login.example.test/flow",
+		"https://2001:db8::1/flow", "https://[login.example.test]/flow",
+	} {
+		p := pendingAuth{ctx: t.Context(), Interaction: Interaction{
+			WebAuth: func(context.Context, string) error { t.Error("malformed URL reached callback"); return nil },
+		}}
+		if handled, _, err := p.handle(t.Context(), []byte("INFO_PRE,WEB_AUTH:external:"+bad)); !handled || err != ErrAuth || p.webUsed {
+			t.Fatalf("invalid WEB_AUTH URL %q: %v", bad, err)
+		}
+	}
+	for _, good := range []string{
+		"https://login.example.test/login%2Fstep?state=a", "https://192.0.2.1:08443/login",
+		"https://[2001:db8::1]:443/login", "https://login.example.test/login%23data",
+	} {
+		calls := 0
+		p := pendingAuth{ctx: t.Context(), Interaction: Interaction{
+			WebAuth: func(_ context.Context, value string) error {
+				calls++
+				if value != good {
+					t.Fatalf("browser received unexpected URL %q", value)
+				}
+				return nil
+			},
+		}}
+		if _, _, err := p.handle(t.Context(), []byte("INFO_PRE,WEB_AUTH:external:"+good)); err != nil || calls != 1 {
+			t.Fatalf("valid WEB_AUTH URL %q: %v", good, err)
+		}
+		if _, _, err := p.handle(t.Context(), []byte("INFO_PRE,WEB_AUTH:external:"+good)); err != ErrAuth || calls != 1 {
+			t.Fatalf("accepted a repeated browser interaction: %v", err)
+		}
+	}
+}
+
 func TestPendingAuthenticationExchange(t *testing.T) {
 	for _, scenario := range []string{"roundtrip", "optional-empty", "web", "denied", "canceled", "callback-canceled", "unsolicited", "deadline", "callback-error"} {
 		t.Run(scenario, func(t *testing.T) {

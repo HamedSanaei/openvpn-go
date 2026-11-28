@@ -9,11 +9,11 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
-	"unicode"
+
+	"github.com/hamedsanaei/openvpn-go/internal/httpsurl"
 )
 
 var ErrWebAuth = errors.New("OpenVPN web authentication failed")
@@ -76,21 +76,7 @@ func New(loginOrigin, callbackLocation string, timeout time.Duration, browser Br
 }
 
 func secureURL(value string) *url.URL {
-	if len(value) > 4096 || strings.ContainsAny(value, "\\#") || strings.ContainsFunc(value, unicode.IsControl) {
-		return nil
-	}
-	uri, err := url.Parse(value)
-	if err != nil || uri.Scheme != "https" || uri.Hostname() == "" ||
-		uri.User != nil || strings.HasSuffix(uri.Host, ":") {
-		return nil
-	}
-	if port := uri.Port(); port != "" {
-		n, err := strconv.ParseUint(port, 10, 16)
-		if err != nil || n == 0 {
-			return nil
-		}
-	}
-	return uri
+	return httpsurl.Parse(value, 4096)
 }
 
 func sameOrigin(a, b *url.URL) bool {

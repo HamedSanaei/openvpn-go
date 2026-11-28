@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/hamedsanaei/openvpn-go/internal/httpsurl"
 )
 
 // Challenge is a text prompt from the verified VPN peer.
@@ -139,10 +140,8 @@ func (p *pendingAuth) textChallenge(flags, prompt string) ([]byte, error) {
 }
 
 func (p *pendingAuth) webAuth(flags, address string) error {
-	uri, err := url.Parse(address)
 	if p.WebAuth == nil || p.webUsed || flags != "" && flags != "external" ||
-		err != nil || uri.Scheme != "https" || uri.Hostname() == "" ||
-		uri.User != nil || uri.Fragment != "" || strings.ContainsRune(address, '\\') {
+		httpsurl.Parse(address, 1000) == nil {
 		return ErrAuth
 	}
 	p.webUsed = true
