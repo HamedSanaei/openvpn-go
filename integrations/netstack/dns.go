@@ -129,38 +129,24 @@ func dnsQuestionOf(message []byte) (dnsQuestion, bool) {
 	if len(message) < 12 || binary.BigEndian.Uint16(message[4:6]) != 1 {
 		return question, false
 	}
-	// Compression pointers point backwards. Keep the offset to QTYPE
-	// after the encoded name while bounding the expanded wire name.
-	pos, size, tail, ceiling := 12, 0, 0, len(message)
+	// A single question's QNAME is the first domain name in the message,
+	// so it has no earlier name or label for a compression pointer.
+	pos, size := 12, 0
 	for {
-		if pos >= ceiling {
+		if pos >= len(message) {
 			return question, false
 		}
 		label := int(message[pos])
 		switch {
 		case label == 0:
-			if tail == 0 {
-				tail = pos + 1
-			}
+			tail := pos + 1
 			if tail+4 > len(message) {
 				return question, false
 			}
 			question.qtype = binary.BigEndian.Uint16(message[tail:])
 			question.class = binary.BigEndian.Uint16(message[tail+2:])
 			return question, true
-		case label&0xc0 == 0xc0:
-			if pos+1 >= ceiling {
-				return question, false
-			}
-			pointer := (label&0x3f)<<8 | int(message[pos+1])
-			if pointer < 12 || pointer >= pos {
-				return question, false
-			}
-			if tail == 0 {
-				tail = pos + 2
-			}
-			ceiling, pos = pos, pointer
-		case label > 63 || pos+1+label > ceiling || size+1+label >= len(question.name):
+		case label > 63 || pos+1+label > len(message) || size+1+label >= len(question.name):
 			return question, false
 		default:
 			question.name[size] = byte(label)
