@@ -142,6 +142,13 @@ func Open(ctx context.Context, raw transport.PacketConn, opts Options) (*Session
 	return s, nil
 }
 
+// ValidatePacketBudget checks the known frame and tunnel limits before dialing.
+// The connected adapter can impose a smaller runtime limit.
+func ValidatePacketBudget(opts Options, udp bool) error {
+	_, _, _, err := packetBudget(nil, opts, udp)
+	return err
+}
+
 // packetBudget computes the outer frame limit and the local whole-packet MTU.
 func packetBudget(raw transport.PacketConn, opts Options, udp bool) (int, int, *fragmenter, error) {
 	frameLimit := opts.MaxPacketSize
