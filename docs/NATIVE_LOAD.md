@@ -74,6 +74,13 @@ the actual arrival order, which can differ between runs. Existing
 deadlines and test assertions still apply. Production SLO evaluation and
 the 72-hour soak remain pending.
 
+Long native runs now mint a synthetic CA and leaf certificates with
+a validity period covering the planned windows, warmup, scheduled peer
+restarts and two hours of margin. The usual short test certificates
+still expire after one hour. The runner continues to verify certificate
+identity and expiry during every rekey and reconnect.
+[Soak restart and seed-29 evidence](evidence/soak-follow-up-2026-11-28.md)
+
 ## Workstation measurements
 
 On WSL2 Linux amd64 `6.18.33.2-microsoft-standard-WSL2`, Intel Core
@@ -225,5 +232,5 @@ On 2026-11-27, the earlier paced soak was superseded by an unrestricted
 24-hour run with 64 UDP tunnels, normal scheduling priority, 240 windows
 of 360 seconds, and no request pacing. It requests timed rekeys every
 60 seconds and restarts the local peer after every 20 windows. The run
-entered its traffic phase. The 24-hour result and 72-hour run remain
-qualification gates.
+ended after 12 windows when the original synthetic certificates expired.
+The renewed 24-hour run and the 72-hour run remain qualification gates.
