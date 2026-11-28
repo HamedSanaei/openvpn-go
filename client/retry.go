@@ -15,6 +15,8 @@ import (
 type RetryPolicy struct {
 	// MaxAttempts is the total attempt count per sequence. Zero tries each
 	// endpoint once. UnlimitedAttempts keeps trying until canceled.
+	// During automatic recovery, a full shared handshake queue consumes
+	// one attempt and backs off without changing the selected endpoint.
 	MaxAttempts int
 	// InitialBackoff and MaxBackoff set the delay ceilings. Zero selects
 	// 250 milliseconds and 10 seconds, respectively. Jitter samples between
@@ -121,10 +123,11 @@ func (c *Client) establish(ctx context.Context, start int, recovery bool, lost E
 		if remaining > 0 {
 			remaining--
 		}
-		if remaining == 0 || !canRetry(lost) {
+		capacity := recovery && lost == CodeCapacity && report.Phase == PhaseAdmission
+		if remaining == 0 || (!capacity && !canRetry(lost)) {
 			return nil, err
 		}
-		if _, same := errors.AsType[restartSameError](err); !same {
+		if _, same := errors.AsType[restartSameError](err); !same && !capacity {
 			position = (position + 1) % len(c.order)
 		}
 	}
@@ -132,4 +135,8 @@ func (c *Client) establish(ctx context.Context, start int, recovery bool, lost E
 
 func canRetry(code ErrorCode) bool {
 	return code == CodeNetwork || code == CodeTimeout || code == CodePeerRestart
+}
+
+func canRecover(code ErrorCode) bool {
+	return code == CodeCapacity || canRetry(code)
 }
