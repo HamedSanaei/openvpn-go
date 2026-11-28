@@ -19,6 +19,8 @@ provide a matching address. A locally rejected target reports `CodeConfig`
 and is skipped for the rest of the current retry sequence. Eligible
 alternates still share the configured attempt budget. UDP ASSOCIATE, HTTP authentication
 negotiation, and proxy directives in untrusted profiles are disabled.
+For imported profiles using delegated TCP DNS, set `resolv-retry 0`
+and leave the explicit resolver unset.
 Rejected replies, malformed responses, and TLS failures produce
 redacted proxy errors. [HTTP CONNECT](https://www.rfc-editor.org/rfc/rfc9110.html#name-connect) · [SOCKS5](https://www.rfc-editor.org/rfc/rfc1928) · [SOCKS5 authentication](https://www.rfc-editor.org/rfc/rfc1929)
 

@@ -38,15 +38,22 @@ func TestRunConfiguredStopsOnIndependentDeviceFailure(t *testing.T) {
 	for _, sessionFirst := range []bool{true, false} {
 		dials := 0
 		deviceErr := errors.New("private device detail")
+		readingSession, readingDevice := make(chan struct{}), make(chan struct{})
 		sessionRead := func(ctx context.Context) (int, error) {
-			if !sessionFirst {
+			close(readingSession)
+			if sessionFirst {
+				<-readingDevice
+			} else {
 				<-ctx.Done()
 			}
 			return 0, io.EOF
 		}
 		deviceRead := func(ctx context.Context) (int, error) {
+			close(readingDevice)
 			if sessionFirst {
 				<-ctx.Done()
+			} else {
+				<-readingSession
 			}
 			return 0, deviceErr
 		}

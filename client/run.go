@@ -341,7 +341,9 @@ func packetErrorCode(err error, fallback ErrorCode) ErrorCode {
 		return CodePeerStopped
 	case errors.Is(err, control.ErrProtection):
 		return CodeConfig
-	case errors.Is(err, data.ErrKeyLimit), errors.Is(err, data.ErrPacket), errors.Is(err, crypt.ErrDataKeys),
+	case errors.Is(err, data.ErrKeyLimit):
+		return CodeKeyExhausted
+	case errors.Is(err, data.ErrPacket), errors.Is(err, crypt.ErrDataKeys),
 		errors.Is(err, tlscontrol.ErrNegotiation):
 		return CodeProtocol
 	}

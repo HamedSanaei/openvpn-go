@@ -97,7 +97,7 @@ endpoint through an untrusted proxy.
 The default socket dialer delegates DNS to Go. A custom
 `client.Resolver` supplies ordered addresses per attempt. The client
 filters by `tcp4`/`udp4`, `tcp6`/`udp6` or source address family
-and excludes unspecified and multicast destinations. Literal remotes
+and excludes unspecified, multicast and IPv4 limited broadcast destinations. Literal remotes
 use this same destination policy. Delegated DNS and proxy resolution
 keep their transport-specific policy. The client
 deduplicates and considers up to 16 addresses. Socket errors try later

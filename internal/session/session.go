@@ -51,6 +51,7 @@ type Session struct {
 	inbound      chan []byte
 	inboundQueue observability.Queue
 	earlyDrops   atomic.Uint64
+	keyExhausted atomic.Bool
 	writeGate    chan struct{}
 	writeBuffer  []byte // Accessed only by the write gate owner.
 	rotate       chan struct{}
@@ -323,6 +324,7 @@ func (s *Session) write(ctx context.Context, plain []byte, onlyIdle bool) error 
 	}
 	if err != nil {
 		if errors.Is(err, data.ErrKeyLimit) {
+			s.keyExhausted.Store(true)
 			s.cancel()
 		}
 		return err

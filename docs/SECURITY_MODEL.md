@@ -111,8 +111,9 @@ reserve is capped at one quarter of the key limit. For AES-GCM with
 a four-second rekey budget, a sustained 100,000 packets per second
 in one direction reserves about 450,000 packets. Bursts above the
 sampled envelope or delays exceeding the cap may reach the hard limit.
-Transmission stops at that limit. Rekey reports identify usage-based
-triggers and include the time spent awaiting admission.
+Transmission stops at that limit with `CodeKeyExhausted`. Rekey reports
+identify usage-based triggers and include the time spent awaiting
+admission and the total exchange duration.
 
 An invalid MAC or AEAD tag never moves an acceptance window, updates
 liveness, releases plaintext or generates an ACK. Use constant-time

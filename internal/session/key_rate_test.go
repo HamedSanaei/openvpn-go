@@ -1,6 +1,8 @@
 package session
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -41,6 +43,13 @@ func TestRateHeadroomTriggersEarlierWithoutChangingHardLimit(t *testing.T) {
 	}
 	if _, err := channel.SealInto(scratch, []byte{1}); err != data.ErrKeyLimit {
 		t.Fatalf("hard key limit changed: %v", err)
+	}
+	s.ctx, s.cancel = context.WithCancel(t.Context())
+	defer s.cancel()
+	s.writeGate, s.rotate = make(chan struct{}, 1), make(chan struct{}, 1)
+	if err := s.write(t.Context(), []byte{1}, false); !errors.Is(err, data.ErrKeyLimit) ||
+		!s.keyExhausted.Load() || !errors.Is(s.ctx.Err(), context.Canceled) {
+		t.Fatalf("hard limit did not terminate the session: %v", err)
 	}
 }
 
